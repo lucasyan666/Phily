@@ -28,7 +28,7 @@ class _CameraPageState extends State<CameraPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold();
+    return Scaffold(
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -36,16 +36,38 @@ class _CameraPageState extends State<CameraPage> {
             SizedBox(
               width: 300,
               height: 300,
-              child: image != null ? 
-              
-              //image selected, show it
-              Image.file(image!, fit: BoxFit.cover) : 
-              
-              //no image selected, show camera icon
-              const Icon(Icons.camera_alt, size: 50),
+              child: image != null 
+                  ? 
+                  
+                  //image selected, show it
+                  Image.file(image!, fit: BoxFit.cover) 
+                  : 
+                  
+                  //no image selected, show camera icon
+                  const Icon(Icons.camera_alt, size: 50),
             ),
+            Center(
+              child: const Text('No image selected'),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                //camera button
+                ElevatedButton(
+                  onPressed: () => pickImage(ImageSource.camera), 
+                  child: const Text('Take Photo'),
+                ),
+
+                //gallery button
+                ElevatedButton(
+                  onPressed: () => pickImage(ImageSource.gallery), 
+                  child: const Text('Select from Gallery'),
+                ),
+              ],
+            )
           ],
         ),
       ),
+    );
   }
 }
