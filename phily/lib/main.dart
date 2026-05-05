@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:phily/camera_page.dart';
+import 'package:phily/screens/splash_screen.dart';
 
 void main() {
   runApp( MyApp());
@@ -10,8 +11,16 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: CameraPage(),
+    return MaterialApp(
+      title: 'Phily',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: const SplashScreen(),
+      routes: {
+        '/home': (context) => const CameraPage(),
+      },
     );
   }
 }
