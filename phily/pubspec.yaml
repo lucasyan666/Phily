@@ -47,6 +47,14 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+  flutter_launcher_icons: ^0.13.1 
+  # The "flutter_launcher_icons" package is a development dependency that provides
+  # a convenient way to generate app icons and splash screens for both Android
+  # and iOS platforms. It allows you to create custom icons and splash screens
+  # from a single source image, simplifying the process of preparing your app
+  # for release. By using this package, you can ensure that your app has a
+  # consistent and professional appearance across different devices and screen sizes.   
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
@@ -59,15 +67,9 @@ flutter:
   uses-material-design: true
 
   # To add assets to your application, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
-  #   - images/a_dot_ham.jpeg
-
+  assets:
+    - assets/images/logo.png
   # An image asset can refer to one or more resolution-specific "variants", see
-  # https://flutter.dev/to/resolution-aware-images
-
-  # For details regarding adding assets from package dependencies, see
-  # https://flutter.dev/to/asset-from-package
 
   # To add custom fonts to your application, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a
