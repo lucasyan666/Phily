@@ -12,16 +12,34 @@ class CameraPage extends StatefulWidget {
 class _CameraPageState extends State<CameraPage> {
 
   File? image;
+  bool _isPicking = false;
 
   final picker = ImagePicker();
 
   Future<void> pickImage(ImageSource source) async {
-    final pickedFile = await picker.pickImage(source: source);
+    if (_isPicking) return;
 
-    if (pickedFile != null) {
-      setState(() {
-        image = File(pickedFile.path);
-      });
+    setState(() {
+      _isPicking = true;
+    });
+
+    try {
+      final pickedFile = await picker.pickImage(source: source);
+
+      if (pickedFile != null) {
+        setState(() {
+          image = File(pickedFile.path);
+        });
+      }
+    } catch (error) {
+      // ignore duplicate request and other recoverable plugin errors
+      debugPrint('Failed to pick image: $error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isPicking = false;
+        });
+      }
     }
   }
 
