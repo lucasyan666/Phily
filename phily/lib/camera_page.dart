@@ -12,8 +12,7 @@ class CameraPage extends StatefulWidget {
   State<CameraPage> createState() => _CameraPageState();
 }
 
-class _CameraPageState extends State<CameraPage>
-    with TickerProviderStateMixin {
+class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   CameraController? _controller;
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
@@ -449,16 +448,16 @@ class _CameraPageState extends State<CameraPage>
                 boxShadow: [
                   BoxShadow(
                     color: _isRecording
-                        ? Colors.orange.withValues(alpha: 0.4 * glowIntensity)
+                        ? Colors.white.withValues(alpha: 0.6 * glowIntensity)
                         : Colors.white.withValues(alpha: 0.3),
-                    blurRadius: _isRecording ? 25 : 20,
-                    spreadRadius: _isRecording ? 3 : 2,
+                    blurRadius: _isRecording ? 30 : 20,
+                    spreadRadius: _isRecording ? 4 : 2,
                   ),
                   BoxShadow(
                     color: _isRecording
-                        ? Colors.white.withValues(alpha: 0.3 * glowIntensity)
+                        ? Colors.white.withValues(alpha: 0.4 * glowIntensity)
                         : Colors.black.withValues(alpha: 0.4),
-                    blurRadius: _isRecording ? 15 : 10,
+                    blurRadius: _isRecording ? 20 : 10,
                     offset: const Offset(0, 4),
                   ),
                 ],
@@ -474,16 +473,16 @@ class _CameraPageState extends State<CameraPage>
                           shape: BoxShape.circle,
                           gradient: RadialGradient(
                             colors: [
-                              Colors.white.withValues(alpha: 0.15),
                               Colors.white.withValues(alpha: 0.08),
-                              Colors.white.withValues(alpha: 0.05),
+                              Colors.white.withValues(alpha: 0.04),
+                              Colors.white.withValues(alpha: 0.02),
                             ],
                             stops: const [0.0, 0.5, 1.0],
                           ),
                           border: Border.all(
                             color: _isRecording
-                                ? Colors.orange.withValues(
-                                    alpha: 0.5 + (0.3 * glowIntensity),
+                                ? Colors.white.withValues(
+                                    alpha: 0.6 + (0.3 * glowIntensity),
                                   )
                                 : Colors.white.withValues(alpha: 0.4),
                             width: 2,
@@ -504,8 +503,8 @@ class _CameraPageState extends State<CameraPage>
                         shape: BoxShape.circle,
                         gradient: RadialGradient(
                           colors: [
-                            Colors.white.withValues(alpha: 0.7),
-                            Colors.white.withValues(alpha: 0.3),
+                            Colors.white.withValues(alpha: 0.5),
+                            Colors.white.withValues(alpha: 0.2),
                             Colors.transparent,
                           ],
                         ),
@@ -526,68 +525,13 @@ class _CameraPageState extends State<CameraPage>
                           colors: [
                             Colors.transparent,
                             _isRecording
-                                ? Colors.orange.withValues(
-                                    alpha: 0.8 * glowIntensity,
+                                ? Colors.white.withValues(
+                                    alpha: 0.9 * glowIntensity,
                                   )
-                                : Colors.white.withValues(alpha: 0.8),
+                                : Colors.white.withValues(alpha: 0.7),
                             Colors.transparent,
                           ],
                         ),
-                      ),
-                    ),
-                  ),
-
-                  // Inner circle (center) - fully transparent glass
-                  Center(
-                    child: Container(
-                      width: 58,
-                      height: 58,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [
-                            Colors.white.withValues(alpha: 0.12),
-                            Colors.white.withValues(alpha: 0.06),
-                            Colors.white.withValues(alpha: 0.03),
-                          ],
-                        ),
-                        border: Border.all(
-                          color: _isRecording
-                              ? Colors.orange.withValues(
-                                  alpha: 0.6 * glowIntensity,
-                                )
-                              : Colors.white.withValues(alpha: 0.3),
-                          width: 1.5,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.2),
-                            blurRadius: 6,
-                            spreadRadius: -2,
-                          ),
-                        ],
-                      ),
-                      child: Stack(
-                        children: [
-                          // Inner highlight for glass depth
-                          Positioned(
-                            top: 6,
-                            left: 6,
-                            child: Container(
-                              width: 18,
-                              height: 18,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                gradient: RadialGradient(
-                                  colors: [
-                                    Colors.white.withValues(alpha: 0.5),
-                                    Colors.transparent,
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
                       ),
                     ),
                   ),
@@ -620,10 +564,10 @@ class _CameraPageState extends State<CameraPage>
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                         colors: [
-                          Colors.white.withValues(alpha: 0.5),
+                          Colors.white.withValues(alpha: 0.3),
+                          Colors.white.withValues(alpha: 0.1),
+                          Colors.white.withValues(alpha: 0.05),
                           Colors.white.withValues(alpha: 0.15),
-                          Colors.white.withValues(alpha: 0.08),
-                          Colors.white.withValues(alpha: 0.25),
                         ],
                         stops: const [0.0, 0.3, 0.7, 1.0],
                       ),
