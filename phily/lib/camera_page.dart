@@ -3,6 +3,7 @@ import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'dart:io';
+import 'dart:ui';
 
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
@@ -12,7 +13,7 @@ class CameraPage extends StatefulWidget {
 }
 
 class _CameraPageState extends State<CameraPage>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   CameraController? _controller;
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
@@ -25,6 +26,12 @@ class _CameraPageState extends State<CameraPage>
   Animation<double>? _bounceAnimation;
   File? _animatingMedia;
   bool _showBounceAnimation = false;
+
+  // Animation for button recording effects
+  AnimationController? _buttonBopController;
+  Animation<double>? _buttonBopAnimation;
+  AnimationController? _glowController;
+  Animation<double>? _glowAnimation;
 
   final picker = ImagePicker();
 
@@ -51,6 +58,49 @@ class _CameraPageState extends State<CameraPage>
           _animatingMedia = null;
         });
         _bounceController!.reset();
+      }
+    });
+
+    // Initialize button bop animation (quick expand and contract)
+    _buttonBopController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+
+    _buttonBopAnimation = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 1.0,
+          end: 1.15,
+        ).chain(CurveTween(curve: Curves.easeOut)),
+        weight: 40,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(
+          begin: 1.15,
+          end: 1.0,
+        ).chain(CurveTween(curve: Curves.easeIn)),
+        weight: 60,
+      ),
+    ]).animate(_buttonBopController!);
+
+    // Initialize glow animation (pulsing effect during recording)
+    _glowController = AnimationController(
+      duration: const Duration(milliseconds: 1500),
+      vsync: this,
+    );
+
+    _glowAnimation = Tween<double>(begin: 0.3, end: 1.0).animate(
+      CurvedAnimation(parent: _glowController!, curve: Curves.easeInOut),
+    );
+
+    _glowController!.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        _glowController!.reverse();
+      } else if (status == AnimationStatus.dismissed) {
+        if (_isRecording) {
+          _glowController!.forward();
+        }
       }
     });
   }
@@ -90,6 +140,8 @@ class _CameraPageState extends State<CameraPage>
   void dispose() {
     _controller?.dispose();
     _bounceController?.dispose();
+    _buttonBopController?.dispose();
+    _glowController?.dispose();
     super.dispose();
   }
 
@@ -133,6 +185,12 @@ class _CameraPageState extends State<CameraPage>
       setState(() {
         _isRecording = true;
       });
+
+      // Trigger bop animation
+      _buttonBopController!.forward(from: 0);
+
+      // Start glow pulsing animation
+      _glowController!.forward();
     } catch (e) {
       debugPrint('Error starting video: $e');
     }
@@ -153,6 +211,13 @@ class _CameraPageState extends State<CameraPage>
         _lastCapturedMedia = file;
       });
 
+      // Stop glow animation smoothly
+      _glowController!.stop();
+      _glowController!.animateTo(
+        0.0,
+        duration: const Duration(milliseconds: 400),
+      );
+
       // Trigger bounce animation
       _triggerBounceAnimation(file);
     } catch (e) {
@@ -160,6 +225,10 @@ class _CameraPageState extends State<CameraPage>
       setState(() {
         _isRecording = false;
       });
+
+      // Stop glow animation on error too
+      _glowController!.stop();
+      _glowController!.reset();
     }
   }
 
@@ -240,41 +309,7 @@ class _CameraPageState extends State<CameraPage>
                   ),
 
                   // Capture button (center) - tap for photo, hold for video
-                  GestureDetector(
-                    onTap: _isInitialized && !_isRecording
-                        ? _capturePhoto
-                        : null,
-                    onLongPressStart: _isInitialized
-                        ? (_) => _startVideoRecording()
-                        : null,
-                    onLongPressEnd: _isInitialized
-                        ? (_) => _stopVideoRecording()
-                        : null,
-                    child: Container(
-                      width: 70,
-                      height: 70,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 4),
-                      ),
-                      child: Container(
-                        margin: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _isRecording ? Colors.red : Colors.white,
-                        ),
-                        child: _isRecording
-                            ? Container(
-                                margin: const EdgeInsets.all(18),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                              )
-                            : null,
-                      ),
-                    ),
-                  ),
+                  _buildGlassCaptureButton(),
 
                   // Empty space for symmetry
                   const SizedBox(width: 50),
@@ -383,6 +418,223 @@ class _CameraPageState extends State<CameraPage>
             ),
         ],
       ),
+    );
+  }
+
+  Widget _buildGlassCaptureButton() {
+    return AnimatedBuilder(
+      animation: Listenable.merge([_buttonBopAnimation, _glowAnimation]),
+      builder: (context, child) {
+        final scale = _buttonBopAnimation?.value ?? 1.0;
+        final glowIntensity = _isRecording
+            ? (_glowAnimation?.value ?? 0.3)
+            : 0.3;
+
+        return Transform.scale(
+          scale: scale,
+          child: GestureDetector(
+            onTap: _isInitialized && !_isRecording ? _capturePhoto : null,
+            onLongPressStart: _isInitialized
+                ? (_) => _startVideoRecording()
+                : null,
+            onLongPressEnd: _isInitialized
+                ? (_) => _stopVideoRecording()
+                : null,
+            child: Container(
+              width: 85,
+              height: 85,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                // Outer glow shadow - animated during recording
+                boxShadow: [
+                  BoxShadow(
+                    color: _isRecording
+                        ? Colors.orange.withValues(alpha: 0.4 * glowIntensity)
+                        : Colors.white.withValues(alpha: 0.3),
+                    blurRadius: _isRecording ? 25 : 20,
+                    spreadRadius: _isRecording ? 3 : 2,
+                  ),
+                  BoxShadow(
+                    color: _isRecording
+                        ? Colors.white.withValues(alpha: 0.3 * glowIntensity)
+                        : Colors.black.withValues(alpha: 0.4),
+                    blurRadius: _isRecording ? 15 : 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Stack(
+                children: [
+                  // Main glass container with blur effect
+                  ClipOval(
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(
+                            colors: [
+                              Colors.white.withValues(alpha: 0.15),
+                              Colors.white.withValues(alpha: 0.08),
+                              Colors.white.withValues(alpha: 0.05),
+                            ],
+                            stops: const [0.0, 0.5, 1.0],
+                          ),
+                          border: Border.all(
+                            color: _isRecording
+                                ? Colors.orange.withValues(
+                                    alpha: 0.5 + (0.3 * glowIntensity),
+                                  )
+                                : Colors.white.withValues(alpha: 0.4),
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // Top left light reflection (glass highlight)
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    child: Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [
+                            Colors.white.withValues(alpha: 0.7),
+                            Colors.white.withValues(alpha: 0.3),
+                            Colors.transparent,
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // Top edge shimmer
+                  Positioned(
+                    top: 5,
+                    left: 25,
+                    right: 25,
+                    child: Container(
+                      height: 2,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(2),
+                        gradient: LinearGradient(
+                          colors: [
+                            Colors.transparent,
+                            _isRecording
+                                ? Colors.orange.withValues(
+                                    alpha: 0.8 * glowIntensity,
+                                  )
+                                : Colors.white.withValues(alpha: 0.8),
+                            Colors.transparent,
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // Inner circle (center) - fully transparent glass
+                  Center(
+                    child: Container(
+                      width: 58,
+                      height: 58,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [
+                            Colors.white.withValues(alpha: 0.12),
+                            Colors.white.withValues(alpha: 0.06),
+                            Colors.white.withValues(alpha: 0.03),
+                          ],
+                        ),
+                        border: Border.all(
+                          color: _isRecording
+                              ? Colors.orange.withValues(
+                                  alpha: 0.6 * glowIntensity,
+                                )
+                              : Colors.white.withValues(alpha: 0.3),
+                          width: 1.5,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.2),
+                            blurRadius: 6,
+                            spreadRadius: -2,
+                          ),
+                        ],
+                      ),
+                      child: Stack(
+                        children: [
+                          // Inner highlight for glass depth
+                          Positioned(
+                            top: 6,
+                            left: 6,
+                            child: Container(
+                              width: 18,
+                              height: 18,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: RadialGradient(
+                                  colors: [
+                                    Colors.white.withValues(alpha: 0.5),
+                                    Colors.transparent,
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // Bottom right subtle shadow for depth
+                  Positioned(
+                    bottom: 10,
+                    right: 10,
+                    child: Container(
+                      width: 25,
+                      height: 25,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [
+                            Colors.transparent,
+                            Colors.black.withValues(alpha: 0.15),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // Outer ring with gradient border
+                  Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(width: 0, color: Colors.transparent),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Colors.white.withValues(alpha: 0.5),
+                          Colors.white.withValues(alpha: 0.15),
+                          Colors.white.withValues(alpha: 0.08),
+                          Colors.white.withValues(alpha: 0.25),
+                        ],
+                        stops: const [0.0, 0.3, 0.7, 1.0],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
