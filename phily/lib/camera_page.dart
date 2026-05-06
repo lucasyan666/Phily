@@ -445,131 +445,96 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 // Outer glow shadow - animated during recording
-                boxShadow: [
-                  BoxShadow(
-                    color: _isRecording
-                        ? Colors.white.withValues(alpha: 0.6 * glowIntensity)
-                        : Colors.white.withValues(alpha: 0.3),
-                    blurRadius: _isRecording ? 30 : 20,
-                    spreadRadius: _isRecording ? 4 : 2,
-                  ),
-                  BoxShadow(
-                    color: _isRecording
-                        ? Colors.white.withValues(alpha: 0.4 * glowIntensity)
-                        : Colors.black.withValues(alpha: 0.4),
-                    blurRadius: _isRecording ? 20 : 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
+                boxShadow: _isRecording
+                    ? [
+                        BoxShadow(
+                          color: Colors.white.withValues(
+                            alpha: 0.6 * glowIntensity,
+                          ),
+                          blurRadius: 30,
+                          spreadRadius: 4,
+                        ),
+                        BoxShadow(
+                          color: Colors.white.withValues(
+                            alpha: 0.4 * glowIntensity,
+                          ),
+                          blurRadius: 20,
+                        ),
+                      ]
+                    : null,
               ),
               child: Stack(
                 children: [
-                  // Main glass container with blur effect
-                  ClipOval(
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                  // Magnifying glass effect in the center
+                  Center(
+                    child: ClipOval(
                       child: Container(
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: RadialGradient(
-                            colors: [
-                              Colors.white.withValues(alpha: 0.08),
-                              Colors.white.withValues(alpha: 0.04),
-                              Colors.white.withValues(alpha: 0.02),
-                            ],
-                            stops: const [0.0, 0.5, 1.0],
+                        width: 70,
+                        height: 70,
+                        child: BackdropFilter(
+                          filter: ImageFilter.matrix(
+                            Matrix4.identity().scaled(1.5, 1.5, 1.0).storage,
                           ),
-                          border: Border.all(
-                            color: _isRecording
-                                ? Colors.white.withValues(
-                                    alpha: 0.6 + (0.3 * glowIntensity),
-                                  )
-                                : Colors.white.withValues(alpha: 0.4),
-                            width: 2,
-                          ),
+                          child: Container(color: Colors.transparent),
                         ),
+                      ),
+                    ),
+                  ),
+
+                  // Main glass container - no blur
+                  Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.transparent,
+                      border: Border.all(
+                        color: _isRecording
+                            ? Colors.white.withValues(
+                                alpha: 0.6 + (0.3 * glowIntensity),
+                              )
+                            : Colors.white.withValues(alpha: 0.7),
+                        width: 2.5,
                       ),
                     ),
                   ),
 
                   // Top left light reflection (glass highlight)
                   Positioned(
-                    top: 8,
-                    left: 8,
+                    top: 6,
+                    left: 6,
                     child: Container(
-                      width: 30,
-                      height: 30,
+                      width: 35,
+                      height: 35,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         gradient: RadialGradient(
                           colors: [
                             Colors.white.withValues(alpha: 0.5),
                             Colors.white.withValues(alpha: 0.2),
+                            Colors.white.withValues(alpha: 0.08),
                             Colors.transparent,
                           ],
+                          stops: const [0.0, 0.3, 0.6, 1.0],
                         ),
                       ),
                     ),
                   ),
 
-                  // Top edge shimmer
+                  // Secondary subtle reflection (right side)
                   Positioned(
-                    top: 5,
-                    left: 25,
-                    right: 25,
-                    child: Container(
-                      height: 2,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(2),
-                        gradient: LinearGradient(
-                          colors: [
-                            Colors.transparent,
-                            _isRecording
-                                ? Colors.white.withValues(
-                                    alpha: 0.9 * glowIntensity,
-                                  )
-                                : Colors.white.withValues(alpha: 0.7),
-                            Colors.transparent,
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-
-                  // Bottom right subtle shadow for depth
-                  Positioned(
-                    bottom: 10,
+                    top: 25,
                     right: 10,
                     child: Container(
-                      width: 25,
-                      height: 25,
+                      width: 15,
+                      height: 15,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         gradient: RadialGradient(
                           colors: [
+                            Colors.white.withValues(alpha: 0.25),
+                            Colors.white.withValues(alpha: 0.08),
                             Colors.transparent,
-                            Colors.black.withValues(alpha: 0.15),
                           ],
                         ),
-                      ),
-                    ),
-                  ),
-
-                  // Outer ring with gradient border
-                  Container(
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(width: 0, color: Colors.transparent),
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          Colors.white.withValues(alpha: 0.3),
-                          Colors.white.withValues(alpha: 0.1),
-                          Colors.white.withValues(alpha: 0.05),
-                          Colors.white.withValues(alpha: 0.15),
-                        ],
-                        stops: const [0.0, 0.3, 0.7, 1.0],
                       ),
                     ),
                   ),
