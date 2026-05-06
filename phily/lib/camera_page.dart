@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'dart:io';
 
 class CameraPage extends StatefulWidget {
@@ -14,7 +15,6 @@ class _CameraPageState extends State<CameraPage> {
   CameraController? _controller;
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
-  bool _isVideoMode = false;
   bool _isRecording = false;
   File? _lastCapturedMedia;
   String? _error;
@@ -69,65 +69,86 @@ class _CameraPageState extends State<CameraPage> {
 
     try {
       final image = await _controller!.takePicture();
+      final file = File(image.path);
+
+      // Save to gallery
+      await ImageGallerySaver.saveFile(file.path);
+
       setState(() {
-        _lastCapturedMedia = File(image.path);
+        _lastCapturedMedia = file;
       });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Photo saved to gallery'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
     } catch (e) {
       debugPrint('Error taking photo: $e');
     }
   }
 
-  Future<void> _toggleVideoRecording() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
+  Future<void> _startVideoRecording() async {
+    if (_controller == null ||
+        !_controller!.value.isInitialized ||
+        _isRecording)
+      return;
 
-    if (_isRecording) {
-      // Stop recording
-      try {
-        final video = await _controller!.stopVideoRecording();
-        setState(() {
-          _isRecording = false;
-          _lastCapturedMedia = File(video.path);
-        });
-      } catch (e) {
-        debugPrint('Error stopping video: $e');
+    try {
+      await _controller!.startVideoRecording();
+      setState(() {
+        _isRecording = true;
+      });
+    } catch (e) {
+      debugPrint('Error starting video: $e');
+    }
+  }
+
+  Future<void> _stopVideoRecording() async {
+    if (_controller == null || !_isRecording) return;
+
+    try {
+      final video = await _controller!.stopVideoRecording();
+      final file = File(video.path);
+
+      // Save to gallery
+      await ImageGallerySaver.saveFile(file.path);
+
+      setState(() {
+        _isRecording = false;
+        _lastCapturedMedia = file;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Video saved to gallery'),
+            duration: Duration(seconds: 1),
+          ),
+        );
       }
-    } else {
-      // Start recording
-      try {
-        await _controller!.startVideoRecording();
-        setState(() {
-          _isRecording = true;
-        });
-      } catch (e) {
-        debugPrint('Error starting video: $e');
-      }
+    } catch (e) {
+      debugPrint('Error stopping video: $e');
+      setState(() {
+        _isRecording = false;
+      });
     }
   }
 
   Future<void> _selectFromGallery() async {
     try {
-      final XFile? pickedFile;
-      if (_isVideoMode) {
-        pickedFile = await picker.pickVideo(source: ImageSource.gallery);
-      } else {
-        pickedFile = await picker.pickImage(source: ImageSource.gallery);
-      }
+      final pickedFile = await picker.pickMedia();
 
       if (pickedFile != null) {
         setState(() {
-          _lastCapturedMedia = File(pickedFile!.path);
+          _lastCapturedMedia = File(pickedFile.path);
         });
       }
     } catch (e) {
       debugPrint('Error picking from gallery: $e');
-    }
-  }
-
-  void _captureMedia() {
-    if (_isVideoMode) {
-      _toggleVideoRecording();
-    } else {
-      _capturePhoto();
     }
   }
 
@@ -162,130 +183,76 @@ class _CameraPageState extends State<CameraPage> {
                   ],
                 ),
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  // Mode toggle (PHOTO / VIDEO)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      GestureDetector(
-                        onTap: _isRecording
-                            ? null
-                            : () => setState(() => _isVideoMode = false),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 8,
-                          ),
-                          child: Text(
-                            'PHOTO',
-                            style: TextStyle(
-                              color: _isVideoMode
-                                  ? Colors.white60
-                                  : Colors.white,
-                              fontWeight: _isVideoMode
-                                  ? FontWeight.normal
-                                  : FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ),
+                  // Gallery button (bottom left)
+                  GestureDetector(
+                    onTap: _isRecording ? null : _selectFromGallery,
+                    child: Container(
+                      width: 50,
+                      height: 50,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white, width: 2),
                       ),
-                      const SizedBox(width: 8),
-                      GestureDetector(
-                        onTap: _isRecording
-                            ? null
-                            : () => setState(() => _isVideoMode = true),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 8,
-                          ),
-                          child: Text(
-                            'VIDEO',
-                            style: TextStyle(
-                              color: _isVideoMode
-                                  ? Colors.white
-                                  : Colors.white60,
-                              fontWeight: _isVideoMode
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                              fontSize: 14,
+                      child: _lastCapturedMedia != null
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: Image.file(
+                                _lastCapturedMedia!,
+                                fit: BoxFit.cover,
+                              ),
+                            )
+                          : const Icon(
+                              Icons.photo_library,
+                              color: Colors.white,
+                              size: 24,
                             ),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                  const SizedBox(height: 16),
-                  // Camera controls row
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      // Gallery button (bottom left)
-                      GestureDetector(
-                        onTap: _isRecording ? null : _selectFromGallery,
-                        child: Container(
-                          width: 50,
-                          height: 50,
-                          decoration: BoxDecoration(
-                            color: Colors.white24,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.white, width: 2),
-                          ),
-                          child: _lastCapturedMedia != null
-                              ? ClipRRect(
-                                  borderRadius: BorderRadius.circular(6),
-                                  child: Image.file(
-                                    _lastCapturedMedia!,
-                                    fit: BoxFit.cover,
-                                  ),
-                                )
-                              : const Icon(
-                                  Icons.photo_library,
+
+                  // Capture button (center) - tap for photo, hold for video
+                  GestureDetector(
+                    onTap: _isInitialized && !_isRecording
+                        ? _capturePhoto
+                        : null,
+                    onLongPressStart: _isInitialized
+                        ? (_) => _startVideoRecording()
+                        : null,
+                    onLongPressEnd: _isInitialized
+                        ? (_) => _stopVideoRecording()
+                        : null,
+                    child: Container(
+                      width: 70,
+                      height: 70,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 4),
+                      ),
+                      child: Container(
+                        margin: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _isRecording ? Colors.red : Colors.white,
+                        ),
+                        child: _isRecording
+                            ? Container(
+                                margin: const EdgeInsets.all(18),
+                                decoration: BoxDecoration(
                                   color: Colors.white,
-                                  size: 24,
+                                  borderRadius: BorderRadius.circular(4),
                                 ),
-                        ),
+                              )
+                            : null,
                       ),
-
-                      // Capture button (center)
-                      GestureDetector(
-                        onTap: _isInitialized ? _captureMedia : null,
-                        child: Container(
-                          width: 70,
-                          height: 70,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white, width: 4),
-                          ),
-                          child: Container(
-                            margin: const EdgeInsets.all(4),
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: _isRecording
-                                  ? Colors.red
-                                  : (_isVideoMode ? Colors.red : Colors.white),
-                            ),
-                            child: _isRecording
-                                ? Container(
-                                    margin: const EdgeInsets.all(18),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                  )
-                                : null,
-                          ),
-                        ),
-                      ),
-
-                      // Empty space for symmetry
-                      const SizedBox(width: 50),
-                    ],
+                    ),
                   ),
+
+                  // Empty space for symmetry
+                  const SizedBox(width: 50),
                 ],
               ),
             ),
