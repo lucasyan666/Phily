@@ -11,7 +11,8 @@ class CameraPage extends StatefulWidget {
   State<CameraPage> createState() => _CameraPageState();
 }
 
-class _CameraPageState extends State<CameraPage> {
+class _CameraPageState extends State<CameraPage>
+    with SingleTickerProviderStateMixin {
   CameraController? _controller;
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
@@ -19,12 +20,39 @@ class _CameraPageState extends State<CameraPage> {
   File? _lastCapturedMedia;
   String? _error;
 
+  // Animation for bounce effect
+  AnimationController? _bounceController;
+  Animation<double>? _bounceAnimation;
+  File? _animatingMedia;
+  bool _showBounceAnimation = false;
+
   final picker = ImagePicker();
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
+
+    // Initialize bounce animation
+    _bounceController = AnimationController(
+      duration: const Duration(milliseconds: 600),
+      vsync: this,
+    );
+
+    _bounceAnimation = CurvedAnimation(
+      parent: _bounceController!,
+      curve: Curves.easeOutCubic,
+    );
+
+    _bounceController!.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        setState(() {
+          _showBounceAnimation = false;
+          _animatingMedia = null;
+        });
+        _bounceController!.reset();
+      }
+    });
   }
 
   Future<void> _initializeCamera() async {
@@ -61,7 +89,16 @@ class _CameraPageState extends State<CameraPage> {
   @override
   void dispose() {
     _controller?.dispose();
+    _bounceController?.dispose();
     super.dispose();
+  }
+
+  void _triggerBounceAnimation(File capturedFile) {
+    setState(() {
+      _animatingMedia = capturedFile;
+      _showBounceAnimation = true;
+    });
+    _bounceController!.forward();
   }
 
   Future<void> _capturePhoto() async {
@@ -78,14 +115,8 @@ class _CameraPageState extends State<CameraPage> {
         _lastCapturedMedia = file;
       });
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Photo saved to gallery'),
-            duration: Duration(seconds: 1),
-          ),
-        );
-      }
+      // Trigger bounce animation
+      _triggerBounceAnimation(file);
     } catch (e) {
       debugPrint('Error taking photo: $e');
     }
@@ -122,14 +153,8 @@ class _CameraPageState extends State<CameraPage> {
         _lastCapturedMedia = file;
       });
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Video saved to gallery'),
-            duration: Duration(seconds: 1),
-          ),
-        );
-      }
+      // Trigger bounce animation
+      _triggerBounceAnimation(file);
     } catch (e) {
       debugPrint('Error stopping video: $e');
       setState(() {
@@ -290,6 +315,71 @@ class _CameraPageState extends State<CameraPage> {
                   ),
                 ),
               ),
+            ),
+
+          // Bounce animation from capture button to gallery
+          if (_showBounceAnimation && _animatingMedia != null)
+            AnimatedBuilder(
+              animation: _bounceAnimation!,
+              builder: (context, child) {
+                final screenWidth = MediaQuery.of(context).size.width;
+
+                // Start position (capture button center bottom)
+                final startLeft =
+                    (screenWidth / 2) - 35; // Center - half of button size
+
+                // End position (gallery button left bottom)
+                const endBottom = 40.0;
+                const endLeft = 20.0;
+
+                // Interpolate positions
+                final currentLeft =
+                    startLeft + (endLeft - startLeft) * _bounceAnimation!.value;
+                final currentBottom = endBottom;
+
+                // Scale animation - starts at button size, shrinks to gallery size
+                final scale =
+                    1.4 -
+                    (0.7 * _bounceAnimation!.value); // 70px to 50px equivalent
+
+                // Opacity fade in the beginning
+                final opacity = _bounceAnimation!.value < 0.1
+                    ? _bounceAnimation!.value * 10
+                    : 1.0;
+
+                return Positioned(
+                  left: currentLeft,
+                  bottom: currentBottom,
+                  child: Opacity(
+                    opacity: opacity,
+                    child: Transform.scale(
+                      scale: scale,
+                      child: Container(
+                        width: 50,
+                        height: 50,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.white, width: 2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.5),
+                              blurRadius: 10,
+                              spreadRadius: 2,
+                            ),
+                          ],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: Image.file(
+                            _animatingMedia!,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
         ],
       ),
