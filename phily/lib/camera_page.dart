@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'package:photo_manager/photo_manager.dart';
 import 'dart:io';
 import 'dart:ui';
+import 'dart:typed_data';
 
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
@@ -17,8 +19,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
   bool _isRecording = false;
-  File? _lastCapturedMedia;
+  Uint8List? _latestThumbnail;
   String? _error;
+
+  // Camera settings
+  FlashMode _flashMode = FlashMode.off;
+  ResolutionPreset _resolution = ResolutionPreset.veryHigh; // 24MP
+  String _imageFormat = 'HEIF'; // HEIF or RAW
 
   // Animation for bounce effect
   AnimationController? _bounceController;
@@ -38,6 +45,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _initializeCamera();
+    // Delay thumbnail loading to ensure permissions are ready
+    Future.delayed(const Duration(milliseconds: 500), () {
+      _loadLatestThumbnail();
+    });
 
     // Initialize bounce animation
     _bounceController = AnimationController(
@@ -116,11 +127,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
       _controller = CameraController(
         _cameras![0],
-        ResolutionPreset.high,
+        _resolution,
         enableAudio: true,
       );
 
       await _controller!.initialize();
+      await _controller!.setFlashMode(_flashMode);
 
       if (mounted) {
         setState(() {
@@ -132,6 +144,75 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         _error = 'Camera initialization failed: $e';
       });
       debugPrint('Camera error: $e');
+    }
+  }
+
+  Future<void> _loadLatestThumbnail() async {
+    try {
+      debugPrint('Starting thumbnail load...');
+
+      // Request permissions
+      final PermissionState ps = await PhotoManager.requestPermissionExtend();
+
+      debugPrint(
+        'Permission state: $ps, isAuth: ${ps.isAuth}, hasAccess: ${ps.hasAccess}',
+      );
+
+      if (!ps.isAuth && !ps.hasAccess) {
+        debugPrint('Photo library permission denied or not granted');
+        return;
+      }
+
+      // Get all assets sorted by creation date (most recent first)
+      final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
+        type: RequestType.common, // Gets both images and videos
+        hasAll: true,
+        onlyAll: true,
+      );
+
+      debugPrint('Found ${albums.length} albums');
+
+      if (albums.isEmpty) {
+        debugPrint('No albums found');
+        return;
+      }
+
+      // Get the most recent asset from the "All" album
+      final recentAlbum = albums.first;
+      final assetCount = await recentAlbum.assetCountAsync;
+      debugPrint('Album "${recentAlbum.name}" has $assetCount assets');
+
+      if (assetCount == 0) {
+        debugPrint('No assets in album');
+        return;
+      }
+
+      final List<AssetEntity> recentAssets = await recentAlbum
+          .getAssetListRange(start: 0, end: 1);
+
+      if (recentAssets.isEmpty) {
+        debugPrint('Failed to get recent assets');
+        return;
+      }
+
+      debugPrint('Loading thumbnail for asset: ${recentAssets.first.id}');
+
+      // Get thumbnail data
+      final Uint8List? thumbnail = await recentAssets.first
+          .thumbnailDataWithSize(const ThumbnailSize(200, 200), quality: 90);
+
+      debugPrint(
+        'Thumbnail loaded: ${thumbnail != null ? "${thumbnail.length} bytes" : "null"}',
+      );
+
+      if (mounted && thumbnail != null) {
+        setState(() {
+          _latestThumbnail = thumbnail;
+        });
+        debugPrint('Thumbnail set in state');
+      }
+    } catch (e) {
+      debugPrint('Error loading latest thumbnail: $e');
     }
   }
 
@@ -162,9 +243,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // Save to gallery
       await ImageGallerySaver.saveFile(file.path);
 
-      setState(() {
-        _lastCapturedMedia = file;
-      });
+      // Refresh thumbnail
+      _loadLatestThumbnail();
 
       // Trigger bounce animation
       _triggerBounceAnimation(file);
@@ -207,8 +287,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
       setState(() {
         _isRecording = false;
-        _lastCapturedMedia = file;
       });
+
+      // Refresh thumbnail
+      _loadLatestThumbnail();
 
       // Stop glow animation smoothly
       _glowController!.stop();
@@ -233,16 +315,78 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Future<void> _selectFromGallery() async {
     try {
-      final pickedFile = await picker.pickMedia();
-
-      if (pickedFile != null) {
-        setState(() {
-          _lastCapturedMedia = File(pickedFile.path);
-        });
-      }
+      // Refresh thumbnail when tapping gallery button
+      await _loadLatestThumbnail();
+      // Also open gallery picker
+      await picker.pickMedia();
     } catch (e) {
       debugPrint('Error picking from gallery: $e');
     }
+  }
+
+  Future<void> _toggleFlash() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+
+    FlashMode newMode;
+    switch (_flashMode) {
+      case FlashMode.off:
+        newMode = FlashMode.auto;
+        break;
+      case FlashMode.auto:
+        newMode = FlashMode.always;
+        break;
+      case FlashMode.always:
+        newMode = FlashMode.off;
+        break;
+      default:
+        newMode = FlashMode.off;
+    }
+
+    try {
+      await _controller!.setFlashMode(newMode);
+      setState(() {
+        _flashMode = newMode;
+      });
+    } catch (e) {
+      debugPrint('Error setting flash mode: $e');
+    }
+  }
+
+  void _toggleResolution() async {
+    ResolutionPreset newResolution;
+    if (_resolution == ResolutionPreset.veryHigh) {
+      newResolution = ResolutionPreset.max; // 48MP
+    } else {
+      newResolution = ResolutionPreset.veryHigh; // 24MP
+    }
+
+    // Show loading while reinitializing
+    setState(() {
+      _isInitialized = false;
+    });
+
+    // Reinitialize camera with new resolution
+    await _controller?.dispose();
+    _controller = CameraController(
+      _cameras![0],
+      newResolution,
+      enableAudio: true,
+    );
+    await _controller!.initialize();
+    await _controller!.setFlashMode(_flashMode);
+
+    if (mounted) {
+      setState(() {
+        _resolution = newResolution;
+        _isInitialized = true;
+      });
+    }
+  }
+
+  void _toggleImageFormat() {
+    setState(() {
+      _imageFormat = _imageFormat == 'HEIF' ? 'RAW' : 'HEIF';
+    });
   }
 
   @override
@@ -253,6 +397,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         children: [
           // Live camera preview
           Positioned.fill(child: _buildPreview()),
+
+          // Top settings panel
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: _buildTopSettingsPanel(),
+          ),
 
           // Bottom controls overlay
           Positioned(
@@ -291,11 +443,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: Colors.white, width: 2),
                       ),
-                      child: _lastCapturedMedia != null
+                      child: _latestThumbnail != null
                           ? ClipRRect(
                               borderRadius: BorderRadius.circular(6),
-                              child: Image.file(
-                                _lastCapturedMedia!,
+                              child: Image.memory(
+                                _latestThumbnail!,
                                 fit: BoxFit.cover,
                               ),
                             )
@@ -547,6 +699,111 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
+  Widget _buildTopSettingsPanel() {
+    return SafeArea(
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          color: Colors.white.withValues(alpha: 0.08),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.3),
+            width: 1.5,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 20,
+              spreadRadius: -5,
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            // Flash control
+            _buildSettingButton(
+              label: _flashMode == FlashMode.off
+                  ? 'Flash: Off'
+                  : _flashMode == FlashMode.auto
+                  ? 'Flash: Auto'
+                  : 'Flash: On',
+              onTap: _toggleFlash,
+            ),
+
+            // Divider
+            Container(
+              height: 20,
+              width: 1,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.white.withValues(alpha: 0.3),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
+
+            // Format control
+            _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
+
+            // Divider
+            Container(
+              height: 20,
+              width: 1,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.white.withValues(alpha: 0.3),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
+
+            // Resolution control
+            _buildSettingButton(
+              label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
+              onTap: _toggleResolution,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSettingButton({
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          color: Colors.white.withValues(alpha: 0.05),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPreview() {
     if (_error != null) {
       return Container(
@@ -577,7 +834,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       );
     }
 
-    // Show live camera preview
-    return CameraPreview(_controller!);
+    // Show live camera preview with slight horizontal stretch
+    return Transform(
+      alignment: Alignment.center,
+      transform: Matrix4.diagonal3Values(1.17, 1.0, 1.0),
+      child: CameraPreview(_controller!),
+    );
   }
 }
