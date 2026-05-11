@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_gallery_saver/image_gallery_saver.dart';
@@ -26,12 +27,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   FlashMode _flashMode = FlashMode.off;
   ResolutionPreset _resolution = ResolutionPreset.veryHigh; // 24MP
   String _imageFormat = 'HEIF'; // HEIF or RAW
+  String?
+  _compositionGuide; // null, 'Fibonacci', 'Golden', 'Triangle', 'Diagonal'
 
   // Animation for bounce effect
   AnimationController? _bounceController;
   Animation<double>? _bounceAnimation;
   File? _animatingMedia;
   bool _showBounceAnimation = false;
+  bool _showShutterFlash = false;
 
   // Animation for button recording effects
   AnimationController? _buttonBopController;
@@ -48,6 +52,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // Delay thumbnail loading to ensure permissions are ready
     Future.delayed(const Duration(milliseconds: 500), () {
       _loadLatestThumbnail();
+    });
+    // Pre-warm the camera after short delay
+    Future.delayed(const Duration(seconds: 1), () {
+      _warmUpCamera();
     });
 
     // Initialize bounce animation
@@ -132,6 +140,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       );
 
       await _controller!.initialize();
+      await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
       await _controller!.setFlashMode(_flashMode);
 
       if (mounted) {
@@ -236,20 +245,56 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Future<void> _capturePhoto() async {
     if (_controller == null || !_controller!.value.isInitialized) return;
 
+    // Show shutter flash immediately for instant feedback
+    setState(() {
+      _showShutterFlash = true;
+    });
+
+    // Hide flash after brief moment
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) {
+        setState(() {
+          _showShutterFlash = false;
+        });
+      }
+    });
+
     try {
+      // Capture photo (now feels instant because UI already responded)
       final image = await _controller!.takePicture();
       final file = File(image.path);
 
-      // Save to gallery
-      await ImageGallerySaver.saveFile(file.path);
-
-      // Refresh thumbnail
-      _loadLatestThumbnail();
-
       // Trigger bounce animation
       _triggerBounceAnimation(file);
+
+      // Save to gallery in background (don't await)
+      _saveMediaInBackground(file.path);
     } catch (e) {
       debugPrint('Error taking photo: $e');
+    }
+  }
+
+  Future<void> _warmUpCamera() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+
+    try {
+      // Pre-warm camera by accessing its properties
+      _controller!.value;
+      debugPrint('Camera warmed up');
+    } catch (e) {
+      debugPrint('Error warming up camera: $e');
+    }
+  }
+
+  Future<void> _saveMediaInBackground(String filePath) async {
+    try {
+      // Save to gallery
+      await ImageGallerySaver.saveFile(filePath);
+
+      // Refresh thumbnail after save completes
+      _loadLatestThumbnail();
+    } catch (e) {
+      debugPrint('Error saving media: $e');
     }
   }
 
@@ -259,56 +304,60 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         _isRecording)
       return;
 
+    // Trigger animations immediately for instant feedback
+    setState(() {
+      _isRecording = true;
+    });
+
+    // Trigger bop animation
+    _buttonBopController!.forward(from: 0);
+
+    // Start glow pulsing animation
+    _glowController!.forward();
+
     try {
+      // Start recording in background (now feels instant)
       await _controller!.startVideoRecording();
-      setState(() {
-        _isRecording = true;
-      });
-
-      // Trigger bop animation
-      _buttonBopController!.forward(from: 0);
-
-      // Start glow pulsing animation
-      _glowController!.forward();
     } catch (e) {
       debugPrint('Error starting video: $e');
+      // Revert state if recording failed
+      setState(() {
+        _isRecording = false;
+      });
+      _glowController!.stop();
+      _glowController!.reset();
     }
   }
 
   Future<void> _stopVideoRecording() async {
     if (_controller == null || !_isRecording) return;
 
+    // Update UI state immediately for instant feedback
+    setState(() {
+      _isRecording = false;
+    });
+
+    // Stop glow animation smoothly
+    _glowController!.stop();
+    _glowController!.animateTo(
+      0.0,
+      duration: const Duration(milliseconds: 400),
+    );
+
     try {
+      // Stop recording (UI already responded, so this feels instant)
       final video = await _controller!.stopVideoRecording();
       final file = File(video.path);
 
-      // Save to gallery
-      await ImageGallerySaver.saveFile(file.path);
-
-      setState(() {
-        _isRecording = false;
-      });
-
-      // Refresh thumbnail
-      _loadLatestThumbnail();
-
-      // Stop glow animation smoothly
-      _glowController!.stop();
-      _glowController!.animateTo(
-        0.0,
-        duration: const Duration(milliseconds: 400),
-      );
-
       // Trigger bounce animation
       _triggerBounceAnimation(file);
+
+      // Save to gallery in background (don't await)
+      _saveMediaInBackground(file.path);
     } catch (e) {
       debugPrint('Error stopping video: $e');
-      setState(() {
-        _isRecording = false;
-      });
 
-      // Stop glow animation on error too
-      _glowController!.stop();
+      // Animation already stopped above, just reset controller
       _glowController!.reset();
     }
   }
@@ -373,6 +422,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       enableAudio: true,
     );
     await _controller!.initialize();
+    await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
     await _controller!.setFlashMode(_flashMode);
 
     if (mounted) {
@@ -397,6 +447,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         children: [
           // Live camera preview
           Positioned.fill(child: _buildPreview()),
+
+          // Shutter flash effect
+          if (_showShutterFlash)
+            Positioned.fill(child: Container(color: Colors.white)),
 
           // Top settings panel
           Positioned(
@@ -424,46 +478,68 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                   end: Alignment.topCenter,
                   colors: [
                     Colors.black.withValues(alpha: 0.7),
-                    Colors.transparent,
+                    Colors.black.withValues(alpha: 0.3),
                   ],
                 ),
               ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: CrossAxisAlignment.end,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Gallery button (bottom left)
-                  GestureDetector(
-                    onTap: _isRecording ? null : _selectFromGallery,
-                    child: Container(
-                      width: 50,
-                      height: 50,
-                      decoration: BoxDecoration(
-                        color: Colors.white24,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.white, width: 2),
-                      ),
-                      child: _latestThumbnail != null
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(6),
-                              child: Image.memory(
-                                _latestThumbnail!,
-                                fit: BoxFit.cover,
-                              ),
-                            )
-                          : const Icon(
-                              Icons.photo_library,
-                              color: Colors.white,
-                              size: 24,
-                            ),
+                  // Composition guide buttons
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 20),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _buildCompositionButton('Fibonacci'),
+                        const SizedBox(width: 12),
+                        _buildCompositionButton('Golden'),
+                        const SizedBox(width: 12),
+                        _buildCompositionButton('Triangle'),
+                        const SizedBox(width: 12),
+                        _buildCompositionButton('Diagonal'),
+                      ],
                     ),
                   ),
+                  // Camera controls row
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      // Gallery button (bottom left)
+                      GestureDetector(
+                        onTap: _isRecording ? null : _selectFromGallery,
+                        child: Container(
+                          width: 50,
+                          height: 50,
+                          decoration: BoxDecoration(
+                            color: Colors.white24,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                          child: _latestThumbnail != null
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Image.memory(
+                                    _latestThumbnail!,
+                                    fit: BoxFit.cover,
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.photo_library,
+                                  color: Colors.white,
+                                  size: 24,
+                                ),
+                        ),
+                      ),
 
-                  // Capture button (center) - tap for photo, hold for video
-                  _buildGlassCaptureButton(),
+                      // Capture button (center) - tap for photo, hold for video
+                      _buildGlassCaptureButton(),
 
-                  // Empty space for symmetry
-                  const SizedBox(width: 50),
+                      // Empty space for symmetry
+                      const SizedBox(width: 50),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -700,104 +776,132 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Widget _buildTopSettingsPanel() {
-    return SafeArea(
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          color: Colors.white.withValues(alpha: 0.08),
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.3),
-            width: 1.5,
+    return Container(
+      padding: EdgeInsets.only(
+        top: MediaQuery.of(context).padding.top + 12,
+        bottom: 16,
+        left: 16,
+        right: 16,
+      ),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Colors.black.withValues(alpha: 0.6),
+            Colors.black.withValues(alpha: 0.3),
+          ],
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          // Flash control
+          _buildSettingButton(
+            icon: _flashMode == FlashMode.off
+                ? Icons.flash_off
+                : _flashMode == FlashMode.auto
+                ? Icons.flash_auto
+                : Icons.flash_on,
+            onTap: _toggleFlash,
           ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.2),
-              blurRadius: 20,
-              spreadRadius: -5,
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            // Flash control
-            _buildSettingButton(
-              label: _flashMode == FlashMode.off
-                  ? 'Flash: Off'
-                  : _flashMode == FlashMode.auto
-                  ? 'Flash: Auto'
-                  : 'Flash: On',
-              onTap: _toggleFlash,
-            ),
 
-            // Divider
-            Container(
-              height: 20,
-              width: 1,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.transparent,
-                    Colors.white.withValues(alpha: 0.3),
-                    Colors.transparent,
-                  ],
-                ),
+          // Divider
+          Container(
+            height: 20,
+            width: 1,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.transparent,
+                  Colors.white.withValues(alpha: 0.3),
+                  Colors.transparent,
+                ],
               ),
             ),
+          ),
 
-            // Format control
-            _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
+          // Format control
+          _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
 
-            // Divider
-            Container(
-              height: 20,
-              width: 1,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.transparent,
-                    Colors.white.withValues(alpha: 0.3),
-                    Colors.transparent,
-                  ],
-                ),
+          // Divider
+          Container(
+            height: 20,
+            width: 1,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.transparent,
+                  Colors.white.withValues(alpha: 0.3),
+                  Colors.transparent,
+                ],
               ),
             ),
+          ),
 
-            // Resolution control
-            _buildSettingButton(
-              label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
-              onTap: _toggleResolution,
-            ),
-          ],
-        ),
+          // Resolution control
+          _buildSettingButton(
+            label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
+            onTap: _toggleResolution,
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildSettingButton({
-    required String label,
+    String? label,
+    IconData? icon,
     required VoidCallback onTap,
   }) {
     return GestureDetector(
       onTap: onTap,
-      child: Container(
+      child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: icon != null
+            ? Icon(icon, color: Colors.white, size: 20)
+            : Text(
+                label!,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildCompositionButton(String type) {
+    final isSelected = _compositionGuide == type;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          // Toggle: if already selected, turn off; otherwise select this one
+          _compositionGuide = isSelected ? null : type;
+        });
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
-          color: Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(8),
+          color: isSelected
+              ? Colors.white.withValues(alpha: 0.3)
+              : Colors.white.withValues(alpha: 0.1),
+          border: isSelected
+              ? Border.all(color: Colors.white, width: 1.5)
+              : null,
         ),
         child: Text(
-          label,
-          style: const TextStyle(
+          type,
+          style: TextStyle(
             color: Colors.white,
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
+            fontSize: 11,
+            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
           ),
         ),
       ),
