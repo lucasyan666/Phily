@@ -708,7 +708,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        for (final double z in [0.5, 1.0, 2.0, 3.0])
+                        for (final double z in [0.5, 1.0, 2.0, 5.0])
                           if (z >= _minZoom && z <= _maxZoom) _buildZoomPill(z),
                       ],
                     ),
