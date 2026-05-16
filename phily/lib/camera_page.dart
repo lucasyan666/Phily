@@ -28,7 +28,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   ResolutionPreset _resolution = ResolutionPreset.veryHigh; // 24MP
   String _imageFormat = 'HEIF'; // HEIF or RAW
   // ignore: unused_field
-  String? _compositionGuide; // null, 'Fibonacci', 'Golden', 'Triangle', 'Diagonal' - TODO: Use for rendering guide overlays
+  String?
+  _compositionGuide; // null, 'Fibonacci', 'Golden', 'Triangle', 'Diagonal' - TODO: Use for rendering guide overlays
   final List<String> _compositionOptions = [
     'None',
     'Fibonacci',
