@@ -27,8 +27,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   FlashMode _flashMode = FlashMode.off;
   ResolutionPreset _resolution = ResolutionPreset.veryHigh; // 24MP
   String _imageFormat = 'HEIF'; // HEIF or RAW
-  String?
-  _compositionGuide; // null, 'Fibonacci', 'Golden', 'Triangle', 'Diagonal'
+  // ignore: unused_field
+  String? _compositionGuide; // null, 'Fibonacci', 'Golden', 'Triangle', 'Diagonal' - TODO: Use for rendering guide overlays
+  final List<String> _compositionOptions = [
+    'None',
+    'Fibonacci',
+    'Golden',
+    'Triangle',
+    'Diagonal',
+  ];
+  late PageController _compositionPageController;
+  int _currentCompositionIndex = 0;
 
   // Animation for bounce effect
   AnimationController? _bounceController;
@@ -53,6 +62,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     Future.delayed(const Duration(milliseconds: 500), () {
       _loadLatestThumbnail();
     });
+    // Initialize composition page controller
+    _compositionPageController = PageController(
+      initialPage: 0,
+      viewportFraction: 0.28,
+    );
     // Pre-warm the camera after short delay
     Future.delayed(const Duration(seconds: 1), () {
       _warmUpCamera();
@@ -231,6 +245,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _bounceController?.dispose();
     _buttonBopController?.dispose();
     _glowController?.dispose();
+    _compositionPageController.dispose();
     super.dispose();
   }
 
@@ -448,10 +463,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           // Live camera preview
           Positioned.fill(child: _buildPreview()),
 
-          // Shutter flash effect
-          if (_showShutterFlash)
-            Positioned.fill(child: Container(color: Colors.white)),
-
           // Top settings panel
           Positioned(
             top: 0,
@@ -485,22 +496,47 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Composition guide buttons
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 20),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        _buildCompositionButton('Fibonacci'),
-                        const SizedBox(width: 12),
-                        _buildCompositionButton('Golden'),
-                        const SizedBox(width: 12),
-                        _buildCompositionButton('Triangle'),
-                        const SizedBox(width: 12),
-                        _buildCompositionButton('Diagonal'),
-                      ],
+                  // Composition guide scrollable belt
+                  SizedBox(
+                    height: 45,
+                    child: PageView.builder(
+                      controller: _compositionPageController,
+                      onPageChanged: (index) {
+                        setState(() {
+                          _currentCompositionIndex = index;
+                          _compositionGuide = index == 0
+                              ? null
+                              : _compositionOptions[index];
+                        });
+                      },
+                      itemCount: _compositionOptions.length,
+                      itemBuilder: (context, index) {
+                        return AnimatedBuilder(
+                          animation: _compositionPageController,
+                          builder: (context, child) {
+                            double value = 1.0;
+                            if (_compositionPageController
+                                .position
+                                .haveDimensions) {
+                              value =
+                                  (_compositionPageController.page ?? 0) -
+                                  index;
+                              value = (1 - (value.abs() * 0.5)).clamp(0.5, 1.0);
+                            }
+                            return Center(
+                              child: Opacity(
+                                opacity: value,
+                                child: _buildCompositionButton(
+                                  _compositionOptions[index],
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
                     ),
                   ),
+                  const SizedBox(height: 20),
                   // Camera controls row
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -643,6 +679,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 );
               },
             ),
+
+          // Shutter flash effect (on top of everything)
+          if (_showShutterFlash)
+            Positioned.fill(child: Container(color: Colors.white)),
         ],
       ),
     );
@@ -803,6 +843,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 : _flashMode == FlashMode.auto
                 ? Icons.flash_auto
                 : Icons.flash_on,
+            iconColor: _flashMode == FlashMode.off
+                ? Colors.white
+                : Colors.yellow,
             onTap: _toggleFlash,
           ),
 
@@ -856,6 +899,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Widget _buildSettingButton({
     String? label,
     IconData? icon,
+    Color? iconColor,
     required VoidCallback onTap,
   }) {
     return GestureDetector(
@@ -863,7 +907,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         child: icon != null
-            ? Icon(icon, color: Colors.white, size: 20)
+            ? Icon(icon, color: iconColor ?? Colors.white, size: 20)
             : Text(
                 label!,
                 style: const TextStyle(
@@ -877,35 +921,42 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Widget _buildCompositionButton(String type) {
-    final isSelected = _compositionGuide == type;
-    return GestureDetector(
-      onTap: () {
-        setState(() {
-          // Toggle: if already selected, turn off; otherwise select this one
-          _compositionGuide = isSelected ? null : type;
-        });
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          color: isSelected
-              ? Colors.white.withValues(alpha: 0.3)
-              : Colors.white.withValues(alpha: 0.1),
-          border: isSelected
-              ? Border.all(color: Colors.white, width: 1.5)
-              : null,
-        ),
-        child: Text(
-          type,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 11,
-            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-          ),
-        ),
-      ),
-    );
+    final isSelected =
+        _currentCompositionIndex > 0 &&
+        _compositionOptions[_currentCompositionIndex] == type;
+    return isSelected
+        ? Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              color: Colors.black.withValues(alpha: 0.55),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.2),
+                width: 1,
+              ),
+            ),
+            child: Text(
+              type,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10,
+                fontWeight: FontWeight.w400,
+                letterSpacing: -0.5,
+              ),
+            ),
+          )
+        : Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Text(
+              type,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10,
+                fontWeight: FontWeight.w300,
+                letterSpacing: -0.5,
+              ),
+            ),
+          );
   }
 
   Widget _buildPreview() {
