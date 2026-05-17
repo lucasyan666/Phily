@@ -44,6 +44,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double _baseZoom = 1.0;
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
+  double _targetZoom = 1.0;
+  bool _isAnimatingZoom = false;
+  CameraDescription? _ultraWideCamera;
+  bool _isUsingUltraWide = false;
 
   // Animation for bounce effect
   AnimationController? _bounceController;
@@ -193,6 +197,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         return;
       }
 
+      // Log all cameras.
+      // Note: on iOS, cam.name is device.uniqueID (not a human-readable string),
+      // so name-based detection like contains('ultra') never works.
+      for (int i = 0; i < _cameras!.length; i++) {
+        debugPrint('Camera[$i]: "${_cameras![i].name}" dir=${_cameras![i].lensDirection}');
+      }
+
+      // Probe additional back cameras BEFORE the main controller is initialized.
+      // iOS only allows one AVCaptureSession at a time, so probing must happen
+      // while no other controller is active.
+      _ultraWideCamera = await _detectUltraWideCamera();
+
       _controller = CameraController(
         _cameras![0],
         _resolution,
@@ -205,6 +221,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       _minZoom = await _controller!.getMinZoomLevel();
       _maxZoom = await _controller!.getMaxZoomLevel();
       _currentZoom = _minZoom;
+      debugPrint('Zoom range: $_minZoom – $_maxZoom | ultra-wide: ${_ultraWideCamera?.name}');
 
       if (mounted) {
         setState(() {
@@ -217,6 +234,56 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       });
       debugPrint('Camera error: $e');
     }
+  }
+
+  /// Probes back cameras (excluding cameras[0]) to find one capable of 0.5× zoom.
+  ///
+  /// iOS virtual devices such as [builtInTripleCamera] and [builtInDualWideCamera]
+  /// report minZoom ≤ 0.5 and handle physical lens switching internally — these
+  /// are the ideal target for the 0.5× pill. If none is found, the first
+  /// additional back camera is returned as a physical ultra-wide fallback.
+  ///
+  /// Must be called BEFORE the main [CameraController] is initialized because
+  /// iOS does not allow two [AVCaptureSession]s to run simultaneously.
+  Future<CameraDescription?> _detectUltraWideCamera() async {
+    if (_cameras == null) return null;
+
+    final candidates = _cameras!
+        .where((c) => c.lensDirection == CameraLensDirection.back && c != _cameras![0])
+        .toList();
+
+    if (candidates.isEmpty) {
+      debugPrint('_detectUltraWide: no additional back cameras found');
+      return null;
+    }
+
+    CameraDescription? fallback;
+    for (final cam in candidates) {
+      final probe = CameraController(cam, ResolutionPreset.low, enableAudio: false);
+      try {
+        await probe.initialize();
+        final double minZ = await probe.getMinZoomLevel();
+        final double maxZ = await probe.getMaxZoomLevel();
+        await probe.dispose();
+        debugPrint('_detectUltraWide: "${cam.name}" minZ=$minZ maxZ=$maxZ');
+        fallback ??= cam; // first additional back camera
+        if (minZ <= 0.6) {
+          // Virtual device (builtInTripleCamera / builtInDualWideCamera) —
+          // natively supports 0.5× without a further controller switch.
+          debugPrint('_detectUltraWide: selected "${cam.name}" (virtual, minZ=$minZ)');
+          return cam;
+        }
+      } catch (e) {
+        debugPrint('_detectUltraWide: probe error for "${cam.name}": $e');
+        try { await probe.dispose(); } catch (_) {}
+      }
+    }
+
+    // No virtual device found; fall back to the first physical back camera.
+    if (fallback != null) {
+      debugPrint('_detectUltraWide: fallback to "${fallback.name}"');
+    }
+    return fallback;
   }
 
   Future<void> _loadLatestThumbnail() async {
@@ -321,16 +388,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Future<void> _onScaleUpdate(ScaleUpdateDetails details) async {
     if (_controller == null || !_controller!.value.isInitialized) return;
-    final double newZoom = (_baseZoom * details.scale).clamp(
-      _minZoom,
-      _maxZoom,
-    );
+    // Allow pinching down to 0.5× — _setCameraZoom handles the lens boundary.
+    final double newZoom = (_baseZoom * details.scale).clamp(0.5, _maxZoom);
     if ((newZoom - _currentZoom).abs() < 0.01) return;
-    _currentZoom = newZoom;
-    try {
-      await _controller!.setZoomLevel(_currentZoom);
-    } catch (_) {}
-    setState(() {});
+    await _setCameraZoom(newZoom);
   }
 
   void _triggerBounceAnimation(File capturedFile) {
@@ -556,30 +617,52 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             ),
           ),
 
-          // Focus ring — animated pulse then fade
+          // Focus ring — cinema corner-bracket with AF/AE lock label
           if (_focusPoint != null)
             AnimatedBuilder(
               animation: _focusRingController!,
               builder: (context, _) {
-                const double size = 68.0;
+                const double size = 72.0;
+                const Color gold = Color(0xFFE5C158);
                 return Positioned(
                   left: _focusPoint!.dx - size / 2,
-                  top: _focusPoint!.dy - size / 2,
+                  top: _focusPoint!.dy - size / 2 - 18,
                   child: IgnorePointer(
                     child: Opacity(
                       opacity: _focusRingOpacity.value,
                       child: Transform.scale(
                         scale: _focusRingScale.value,
-                        child: Container(
-                          width: size,
-                          height: size,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(5),
-                            border: Border.all(
-                              color: const Color(0xFFD4AF37),
-                              width: 1.5,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: size,
+                              height: size,
+                              child: CustomPaint(
+                                painter: _FocusBracketPainter(gold: gold),
+                              ),
                             ),
-                          ),
+                            const SizedBox(height: 5),
+                            Text(
+                              'AF · AE LOCK',
+                              style: TextStyle(
+                                color: gold,
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.w300,
+                                letterSpacing: 2.0,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'φ  1.618',
+                              style: TextStyle(
+                                color: gold.withValues(alpha: 0.55),
+                                fontSize: 7.5,
+                                fontWeight: FontWeight.w300,
+                                letterSpacing: 1.5,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -614,30 +697,35 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             child: _buildTopSettingsPanel(),
           ),
 
-          // Zoom level indicator
+          // Zoom level indicator — thin right-edge tag
           if (_currentZoom > _minZoom + 0.05)
             Positioned(
               top: 0,
               bottom: 0,
-              right: 14,
+              right: 12,
               child: Align(
                 alignment: Alignment.center,
                 child: IgnorePointer(
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
+                      horizontal: 7,
                       vertical: 4,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.45),
-                      borderRadius: BorderRadius.circular(12),
+                      color: Colors.black.withValues(alpha: 0.35),
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.10),
+                        width: 0.5,
+                      ),
                     ),
                     child: Text(
                       '${_currentZoom.toStringAsFixed(1)}×',
                       style: const TextStyle(
-                        color: Color(0xFFD4AF37),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
+                        color: Color(0xFFE5C158),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w300,
+                        letterSpacing: 0.8,
                       ),
                     ),
                   ),
@@ -651,142 +739,151 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             left: 0,
             right: 0,
             bottom: 0,
-            child: Container(
-              padding: const EdgeInsets.only(
-                left: 20,
-                right: 20,
-                bottom: 34,
-                top: 10,
-              ),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.bottomCenter,
-                  end: Alignment.topCenter,
-                  colors: [
-                    Colors.black.withValues(alpha: 0.88),
-                    Colors.black.withValues(alpha: 0.45),
-                  ],
-                ),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Composition guide scrollable belt
-                  SizedBox(
-                    height: 45,
-                    child: PageView.builder(
-                      controller: _compositionPageController,
-                      onPageChanged: (index) {
-                        HapticFeedback.selectionClick();
-                        setState(() {
-                          _currentCompositionIndex = index;
-                          _compositionMode = _compositionModes[index];
-                        });
-                      },
-                      itemCount: _compositionModes.length,
-                      itemBuilder: (context, index) {
-                        final double opacity =
-                            (index - _currentCompositionIndex).abs() <= 1
-                            ? 1.0 -
-                                  (index - _currentCompositionIndex).abs() * 0.4
-                            : 0.3;
-                        return Center(
-                          child: Opacity(
-                            opacity: opacity.clamp(0.3, 1.0),
-                            child: _buildCompositionButton(
-                              _compositionModes[index].label,
-                              isSelected: index == _currentCompositionIndex,
-                            ),
-                          ),
-                        );
-                      },
+            child: ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: Container(
+                  padding: const EdgeInsets.only(
+                    left: 20,
+                    right: 20,
+                    bottom: 34,
+                    top: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.48),
+                    border: Border(
+                      top: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.07),
+                        width: 0.5,
+                      ),
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  // Zoom quick-select pills
-                  if (_isInitialized)
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        for (final double z in [0.5, 1.0, 2.0, 5.0])
-                          if (z >= _minZoom && z <= _maxZoom) _buildZoomPill(z),
-                      ],
-                    ),
-                  const SizedBox(height: 10),
-                  // Camera controls row
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.end,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      // Gallery button (bottom left)
-                      GestureDetector(
-                        onTap: _isRecording ? null : _selectFromGallery,
-                        child: Container(
-                          width: 50,
-                          height: 50,
-                          decoration: BoxDecoration(
-                            color: Colors.white24,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.white, width: 2),
-                          ),
-                          child: _latestThumbnail != null
-                              ? ClipRRect(
-                                  borderRadius: BorderRadius.circular(6),
-                                  child: Image.memory(
-                                    _latestThumbnail!,
-                                    fit: BoxFit.cover,
-                                  ),
-                                )
-                              : const Icon(
-                                  Icons.photo_library,
-                                  color: Colors.white,
-                                  size: 24,
+                      // Composition guide scrollable belt
+                      SizedBox(
+                        height: 45,
+                        child: PageView.builder(
+                          controller: _compositionPageController,
+                          onPageChanged: (index) {
+                            HapticFeedback.selectionClick();
+                            setState(() {
+                              _currentCompositionIndex = index;
+                              _compositionMode = _compositionModes[index];
+                            });
+                          },
+                          itemCount: _compositionModes.length,
+                          itemBuilder: (context, index) {
+                            final double opacity =
+                                (index - _currentCompositionIndex).abs() <= 1
+                                ? 1.0 -
+                                      (index - _currentCompositionIndex).abs() *
+                                          0.4
+                                : 0.3;
+                            return Center(
+                              child: Opacity(
+                                opacity: opacity.clamp(0.3, 1.0),
+                                child: _buildCompositionButton(
+                                  _compositionModes[index].label,
+                                  isSelected: index == _currentCompositionIndex,
                                 ),
+                              ),
+                            );
+                          },
                         ),
                       ),
+                      const SizedBox(height: 8),
+                      // Zoom quick-select pills
+                      if (_isInitialized)
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _buildZoomPill(0.5),
+                            for (final double z in [1.0, 2.0, 5.0])
+                              if (z <= _maxZoom) _buildZoomPill(z),
+                          ],
+                        ),
+                      const SizedBox(height: 10),
+                      // Camera controls row
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          // Gallery button (bottom left)
+                          GestureDetector(
+                            onTap: _isRecording ? null : _selectFromGallery,
+                            child: Container(
+                              width: 48,
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.30),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.28),
+                                  width: 1.0,
+                                ),
+                              ),
+                              child: _latestThumbnail != null
+                                  ? ClipRRect(
+                                      borderRadius: BorderRadius.circular(9),
+                                      child: Image.memory(
+                                        _latestThumbnail!,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    )
+                                  : Icon(
+                                      Icons.photo_library_outlined,
+                                      color: Colors.white.withValues(alpha: 0.55),
+                                      size: 22,
+                                    ),
+                            ),
+                          ),
 
-                      // Capture button (center) - tap for photo, hold for video
-                      _buildGlassCaptureButton(),
+                          // Capture button (center) - tap for photo, hold for video
+                          _buildGlassCaptureButton(),
 
-                      // Empty space for symmetry
-                      const SizedBox(width: 50),
+                          // Empty space for symmetry
+                          const SizedBox(width: 50),
+                        ],
+                      ),
                     ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
 
-          // Recording indicator
+          // Recording indicator — minimal red dot + monospace label
+
           if (_isRecording)
             Positioned(
-              top: 60,
+              top: MediaQuery.of(context).padding.top + 70,
               left: 0,
               right: 0,
               child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.red,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.circle, color: Colors.white, size: 12),
-                      SizedBox(width: 8),
-                      Text(
-                        'REC',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFFF3B30),
+                        shape: BoxShape.circle,
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'REC',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w300,
+                        letterSpacing: 3.0,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -918,18 +1015,38 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     ),
                   ),
 
-                  // Magnifying glass effect in the center
+                  // Centre-frame live preview peek.
+                  // BackdropFilter can only sample pixels physically behind the
+                  // widget (bottom of screen). Instead, render a second CameraPreview
+                  // at full-screen dimensions inside an OverflowBox so that the
+                  // centre of the camera frame always appears in the centre of the
+                  // circle, regardless of where the button sits on screen.
+                  // Flutter's Texture widget safely shares the same GPU texture
+                  // across multiple widgets, so there is no performance cost.
                   Center(
                     child: ClipOval(
-                      child: Container(
+                      child: SizedBox(
                         width: 70,
                         height: 70,
-                        child: BackdropFilter(
-                          filter: ImageFilter.matrix(
-                            Matrix4.identity().scaled(1.5, 1.5, 1.0).storage,
-                          ),
-                          child: Container(color: Colors.transparent),
-                        ),
+                        child: _isInitialized && _controller != null
+                            ? OverflowBox(
+                                alignment: Alignment.center,
+                                minWidth: 0,
+                                maxWidth: double.infinity,
+                                minHeight: 0,
+                                maxHeight: double.infinity,
+                                child: SizedBox(
+                                  // Render the preview at full-screen size so the
+                                  // OverflowBox centres the frame and the 70×70 clip
+                                  // reveals only the very centre of the camera feed.
+                                  width: MediaQuery.of(context).size.width,
+                                  height: MediaQuery.of(context).size.height,
+                                  child: CameraPreview(_controller!),
+                                ),
+                              )
+                            : Container(
+                                color: Colors.black.withValues(alpha: 0.30),
+                              ),
                       ),
                     ),
                   ),
@@ -1001,82 +1118,65 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Widget _buildTopSettingsPanel() {
-    return Container(
-      padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + 12,
-        bottom: 16,
-        left: 16,
-        right: 16,
-      ),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Colors.black.withValues(alpha: 0.80),
-            Colors.black.withValues(alpha: 0.45),
-          ],
+    const Color gold = Color(0xFFE5C158);
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Container(
+          padding: EdgeInsets.only(
+            top: MediaQuery.of(context).padding.top + 10,
+            bottom: 14,
+            left: 20,
+            right: 20,
+          ),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.48),
+            border: Border(
+              bottom: BorderSide(
+                color: Colors.white.withValues(alpha: 0.07),
+                width: 0.5,
+              ),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              // Flash control
+              _buildSettingButton(
+                icon: _flashMode == FlashMode.off
+                    ? Icons.flash_off_rounded
+                    : _flashMode == FlashMode.auto
+                    ? Icons.flash_auto_rounded
+                    : Icons.flash_on_rounded,
+                iconColor: _flashMode == FlashMode.off ? Colors.white : gold,
+                onTap: _toggleFlash,
+              ),
+
+              // Divider
+              Container(
+                height: 22,
+                width: 0.5,
+                color: Colors.white.withValues(alpha: 0.15),
+              ),
+
+              // Format control
+              _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
+
+              // Divider
+              Container(
+                height: 22,
+                width: 0.5,
+                color: Colors.white.withValues(alpha: 0.15),
+              ),
+
+              // Resolution control
+              _buildSettingButton(
+                label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
+                onTap: _toggleResolution,
+              ),
+            ],
+          ),
         ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          // Flash control
-          _buildSettingButton(
-            icon: _flashMode == FlashMode.off
-                ? Icons.flash_off
-                : _flashMode == FlashMode.auto
-                ? Icons.flash_auto
-                : Icons.flash_on,
-            iconColor: _flashMode == FlashMode.off
-                ? Colors.white
-                : Colors.yellow,
-            onTap: _toggleFlash,
-          ),
-
-          // Divider
-          Container(
-            height: 20,
-            width: 1,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.transparent,
-                  Colors.white.withValues(alpha: 0.3),
-                  Colors.transparent,
-                ],
-              ),
-            ),
-          ),
-
-          // Format control
-          _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
-
-          // Divider
-          Container(
-            height: 20,
-            width: 1,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.transparent,
-                  Colors.white.withValues(alpha: 0.3),
-                  Colors.transparent,
-                ],
-              ),
-            ),
-          ),
-
-          // Resolution control
-          _buildSettingButton(
-            label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
-            onTap: _toggleResolution,
-          ),
-        ],
       ),
     );
   }
@@ -1087,19 +1187,38 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     Color? iconColor,
     required VoidCallback onTap,
   }) {
+    final bool isIconActive =
+        icon != null && iconColor != null && iconColor != Colors.white;
     return GestureDetector(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
         child: icon != null
-            ? Icon(icon, color: iconColor ?? Colors.white, size: 20)
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, color: iconColor ?? Colors.white, size: 18),
+                  const SizedBox(height: 3),
+                  Text(
+                    'FLASH',
+                    style: TextStyle(
+                      color: isIconActive
+                          ? const Color(0xFFE5C158)
+                          : Colors.white.withValues(alpha: 0.42),
+                      fontSize: 7.5,
+                      fontWeight: FontWeight.w300,
+                      letterSpacing: 1.6,
+                    ),
+                  ),
+                ],
+              )
             : Text(
-                label!,
+                label!.toUpperCase(),
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  letterSpacing: 0.8,
+                  fontWeight: FontWeight.w300,
+                  letterSpacing: 1.8,
                 ),
               ),
       ),
@@ -1107,6 +1226,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Widget _buildCompositionButton(String type, {bool isSelected = false}) {
+    const Color gold = Color(0xFFE5C158);
     return isSelected
         ? ClipRRect(
             borderRadius: BorderRadius.circular(18),
@@ -1115,23 +1235,23 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               child: Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
-                  vertical: 7,
+                  vertical: 6,
                 ),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(18),
-                  color: const Color(0xFFD4AF37).withValues(alpha: 0.15),
+                  color: gold.withValues(alpha: 0.10),
                   border: Border.all(
-                    color: const Color(0xFFD4AF37).withValues(alpha: 0.75),
-                    width: 1.5,
+                    color: gold.withValues(alpha: 0.65),
+                    width: 1.0,
                   ),
                 ),
                 child: Text(
-                  type,
+                  type.toUpperCase(),
                   style: const TextStyle(
-                    color: Colors.white,
+                    color: Color(0xFFE5C158),
                     fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.3,
+                    fontWeight: FontWeight.w300,
+                    letterSpacing: 1.2,
                   ),
                 ),
               ),
@@ -1140,53 +1260,181 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         : Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             child: Text(
-              type,
+              type.toUpperCase(),
               style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.50),
+                color: Colors.white.withValues(alpha: 0.32),
                 fontSize: 10,
                 fontWeight: FontWeight.w300,
-                letterSpacing: 0.2,
+                letterSpacing: 1.2,
               ),
             ),
           );
   }
 
+  Future<void> _switchToUltraWide() async {
+    if (_ultraWideCamera == null || _isUsingUltraWide) return;
+    setState(() { _isInitialized = false; });
+    await _controller?.dispose();
+    _controller = CameraController(_ultraWideCamera!, _resolution, enableAudio: true);
+    await _controller!.initialize();
+    await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
+    await _controller!.setFlashMode(_flashMode);
+    _minZoom = await _controller!.getMinZoomLevel();
+    _maxZoom = await _controller!.getMaxZoomLevel();
+    _currentZoom = _minZoom;
+    _isUsingUltraWide = true;
+    if (mounted) setState(() { _isInitialized = true; });
+  }
+
+  Future<void> _switchToMainCamera() async {
+    if (!_isUsingUltraWide) return;
+    setState(() { _isInitialized = false; });
+    await _controller?.dispose();
+    _controller = CameraController(_cameras![0], _resolution, enableAudio: true);
+    await _controller!.initialize();
+    await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
+    await _controller!.setFlashMode(_flashMode);
+    _minZoom = await _controller!.getMinZoomLevel();
+    _maxZoom = await _controller!.getMaxZoomLevel();
+    _currentZoom = _minZoom;
+    _isUsingUltraWide = false;
+    if (mounted) setState(() { _isInitialized = true; });
+  }
+
+  /// Safely sets the camera zoom level.
+  ///
+  /// The iOS camera plugin enforces that [setZoomLevel] is called within
+  /// [[_minZoom], [_maxZoom]] (typically [1.0, N] for the main lens). Passing
+  /// a sub-1.0 value causes a fatal out-of-bounds assertion. This wrapper
+  /// intercepts those requests and physically switches to the ultra-wide
+  /// camera controller instead, which represents 0.5× on supported devices.
+  Future<void> _setCameraZoom(double value) async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+
+    if (value < 1.0) {
+      // Fast path: current controller already covers this zoom level.
+      // This happens when cameras[0] is itself a virtual device with minZoom ≤ 0.5,
+      // OR after switching to a virtual ultra-wide camera (minZoom ≤ 0.5).
+      if (value >= _minZoom) {
+        final double clamped = value.clamp(_minZoom, _maxZoom);
+        try {
+          await _controller!.setZoomLevel(clamped);
+          if (mounted) setState(() => _currentZoom = clamped);
+        } catch (e) {
+          debugPrint('_setCameraZoom: setZoomLevel($clamped) failed – $e');
+        }
+        return;
+      }
+
+      // Switch to the ultra-wide camera (physical or virtual).
+      if (_ultraWideCamera != null && !_isUsingUltraWide) {
+        await _switchToUltraWide();
+        // After switching, _minZoom is updated. If the new camera is a virtual
+        // device (minZoom ≤ 0.5), call setZoomLevel to land on the exact value.
+        if (_minZoom <= value) {
+          final double clamped = value.clamp(_minZoom, _maxZoom);
+          try {
+            await _controller!.setZoomLevel(clamped);
+          } catch (e) {
+            debugPrint('_setCameraZoom: setZoomLevel($clamped) on ultra-wide failed – $e');
+          }
+        }
+      }
+      // Track the logical zoom so the 0.5× pill highlights correctly.
+      if (mounted) setState(() => _currentZoom = value);
+      return;
+    }
+
+    // Returning from ultra-wide to main lens for ≥1× values.
+    if (_isUsingUltraWide) {
+      await _switchToMainCamera();
+    }
+
+    // Clamp strictly within the controller's reported range before calling
+    // the plugin — avoids any residual assertion if minZoom > 1.0.
+    final double clamped = value.clamp(_minZoom, _maxZoom);
+    try {
+      await _controller!.setZoomLevel(clamped);
+      if (mounted) setState(() => _currentZoom = clamped);
+    } catch (e) {
+      debugPrint('_setCameraZoom: setZoomLevel($clamped) failed – $e');
+    }
+  }
+
+  Future<void> _animateZoom(double target) async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+
+    // Sub-1.0 requires a physical lens switch — delegate entirely and return.
+    if (target < 1.0) {
+      await _setCameraZoom(target);
+      return;
+    }
+
+    // Returning from ultra-wide: switch back to main before animating.
+    if (_isUsingUltraWide) {
+      await _switchToMainCamera();
+    }
+
+    final double dest = target.clamp(_minZoom, _maxZoom);
+    if (_isAnimatingZoom) {
+      _targetZoom = dest;
+      return;
+    }
+    _isAnimatingZoom = true;
+    _targetZoom = dest;
+    const int steps = 30;
+    const Duration stepDuration = Duration(milliseconds: 12);
+    for (int i = 0; i < steps; i++) {
+      if (!mounted) break;
+      // If we just switched from ultra-wide, _currentZoom may be <1.0;
+      // snap to _minZoom so we never pass a sub-range value to setZoomLevel.
+      final double from = _currentZoom < _minZoom ? _minZoom : _currentZoom;
+      final double to = _targetZoom;
+      final double next = (from + (to - from) * 0.25).clamp(_minZoom, _maxZoom);
+      if ((next - to).abs() < 0.005) {
+        _currentZoom = to;
+        try { await _controller!.setZoomLevel(to); } catch (_) {}
+        if (mounted) setState(() {});
+        break;
+      }
+      _currentZoom = next;
+      try { await _controller!.setZoomLevel(next); } catch (_) {}
+      if (mounted) setState(() {});
+      await Future.delayed(stepDuration);
+    }
+    _isAnimatingZoom = false;
+  }
+
   Widget _buildZoomPill(double zoom) {
     final bool isSelected = (_currentZoom - zoom).abs() < 0.15;
+    const Color gold = Color(0xFFE5C158);
     return GestureDetector(
-      onTap: () async {
-        if (_controller == null || !_controller!.value.isInitialized) return;
-        final double z = zoom.clamp(_minZoom, _maxZoom);
-        try {
-          await _controller!.setZoomLevel(z);
-          setState(() => _currentZoom = z);
-        } catch (_) {}
-      },
+      onTap: () => _animateZoom(zoom),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+        margin: const EdgeInsets.symmetric(horizontal: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
         decoration: BoxDecoration(
           color: isSelected
-              ? Colors.white.withValues(alpha: 0.18)
+              ? gold.withValues(alpha: 0.10)
               : Colors.transparent,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: isSelected
-                ? Colors.white.withValues(alpha: 0.55)
-                : Colors.white.withValues(alpha: 0.18),
-            width: 1,
+                ? gold.withValues(alpha: 0.65)
+                : Colors.white.withValues(alpha: 0.16),
+            width: 1.0,
           ),
         ),
         child: Text(
           '${zoom < 1 ? zoom : zoom.toInt()}×',
           style: TextStyle(
             color: isSelected
-                ? Colors.white
-                : Colors.white.withValues(alpha: 0.45),
-            fontSize: 12,
-            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
-            letterSpacing: 0.3,
+                ? gold
+                : Colors.white.withValues(alpha: 0.38),
+            fontSize: 11,
+            fontWeight: isSelected ? FontWeight.w500 : FontWeight.w300,
+            letterSpacing: 0.5,
           ),
         ),
       ),
@@ -1233,6 +1481,54 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Focus bracket painter — corner-bracket focus indicator
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _FocusBracketPainter extends CustomPainter {
+  final Color gold;
+  const _FocusBracketPainter({required this.gold});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = gold
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.square
+      ..isAntiAlias = true;
+
+    const double arm = 14.0;
+    final double w = size.width;
+    final double h = size.height;
+
+    // Top-left corner
+    canvas.drawLine(Offset(0, arm), const Offset(0, 0), paint);
+    canvas.drawLine(const Offset(0, 0), Offset(arm, 0), paint);
+    // Top-right corner
+    canvas.drawLine(Offset(w - arm, 0), Offset(w, 0), paint);
+    canvas.drawLine(Offset(w, 0), Offset(w, arm), paint);
+    // Bottom-right corner
+    canvas.drawLine(Offset(w, h - arm), Offset(w, h), paint);
+    canvas.drawLine(Offset(w, h), Offset(w - arm, h), paint);
+    // Bottom-left corner
+    canvas.drawLine(Offset(arm, h), Offset(0, h), paint);
+    canvas.drawLine(Offset(0, h), Offset(0, h - arm), paint);
+
+    // Center focus dot
+    canvas.drawCircle(
+      Offset(w / 2, h / 2),
+      1.5,
+      paint
+        ..style = PaintingStyle.fill
+        ..color = gold.withValues(alpha: 0.70),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_FocusBracketPainter old) => old.gold != gold;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Composition mode enum
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1242,7 +1538,6 @@ enum CompositionMode {
   goldenSection,
   goldenTriangles,
   spiralSection,
-  goldenSpiral,
   fibonacciSpiral,
   harmoniousTriangles,
   cross,
@@ -1267,8 +1562,6 @@ enum CompositionMode {
         return 'Golden Triangles';
       case CompositionMode.spiralSection:
         return 'Spiral Section';
-      case CompositionMode.goldenSpiral:
-        return 'Golden Spiral';
       case CompositionMode.fibonacciSpiral:
         return 'Fibonacci Spiral';
       case CompositionMode.harmoniousTriangles:
@@ -1303,11 +1596,11 @@ class CompositionPainter extends CustomPainter {
   final CompositionMode mode;
   const CompositionPainter(this.mode);
 
-  static const Color _gold = Color(0xFFD4AF37);
-  static const double _sw = 1.2;
+  static const Color _gold = Color(0xFFFFFFFF);
+  static const double _sw = 0.8;
 
   Paint get _p => Paint()
-    ..color = _gold.withValues(alpha: 0.70)
+    ..color = _gold.withValues(alpha: 0.45)
     ..strokeWidth = _sw
     ..style = PaintingStyle.stroke
     ..strokeCap = StrokeCap.round
@@ -1331,11 +1624,8 @@ class CompositionPainter extends CustomPainter {
       case CompositionMode.spiralSection:
         _drawSpiralSection(canvas, size);
         break;
-      case CompositionMode.goldenSpiral:
-        _drawGoldenSpiral(canvas, size);
-        break;
       case CompositionMode.fibonacciSpiral:
-        _drawFibonacciSpiral(canvas, size);
+        _drawGoldenSpiral(canvas, size);
         break;
       case CompositionMode.harmoniousTriangles:
         _drawHarmoniousTriangles(canvas, size);
@@ -1375,7 +1665,7 @@ class CompositionPainter extends CustomPainter {
   // StrokeCap.butt ensures lines stay strictly within the frame boundaries.
   void _drawRuleOfThirds(Canvas canvas, Size s) {
     final p = Paint()
-      ..color = _gold.withValues(alpha: 0.70)
+      ..color = _gold.withValues(alpha: 0.45)
       ..strokeWidth = _sw
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.butt
@@ -1401,7 +1691,7 @@ class CompositionPainter extends CustomPainter {
   // and at (1/φ²) ≈ 0.382 from the other, giving two lines per axis.
   void _drawGoldenSection(Canvas canvas, Size s) {
     final p = Paint()
-      ..color = _gold.withValues(alpha: 0.70)
+      ..color = _gold.withValues(alpha: 0.45)
       ..strokeWidth = _sw
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.butt
@@ -1430,7 +1720,7 @@ class CompositionPainter extends CustomPainter {
   // Result: 3 unique lines, 4 non-overlapping triangles, all within the frame.
   void _drawGoldenTriangles(Canvas canvas, Size s) {
     final p = Paint()
-      ..color = _gold.withValues(alpha: 0.70)
+      ..color = _gold.withValues(alpha: 0.45)
       ..strokeWidth = _sw
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.butt
@@ -1460,7 +1750,7 @@ class CompositionPainter extends CustomPainter {
   // are no overlapping edges and no lines outside the frame.
   void _drawSpiralSection(Canvas canvas, Size s) {
     final p = Paint()
-      ..color = _gold.withValues(alpha: 0.70)
+      ..color = _gold.withValues(alpha: 0.45)
       ..strokeWidth = _sw
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.butt
@@ -1666,42 +1956,12 @@ class CompositionPainter extends CustomPainter {
     canvas.drawPath(path, p);
   }
 
-  // ── Fibonacci Spiral (parametric) ──────────────────────────────────────────
-  void _drawFibonacciSpiral(Canvas canvas, Size s) {
-    final p = _p;
-    const double phi = 1.6180339887;
-    final double cx = s.width * 0.382;
-    final double cy = s.height * 0.618;
-    const double endTheta = 2.5 * math.pi;
-    final double maxR = s.width * 0.70;
-    final double a = maxR / math.pow(phi, 2 * endTheta / math.pi);
-    const double startTheta = -3.5 * math.pi;
-    final path = Path();
-    const int steps = 600;
-    for (int i = 0; i <= steps; i++) {
-      final double theta = startTheta + (endTheta - startTheta) * i / steps;
-      final double r = a * math.pow(phi, 2 * theta / math.pi).toDouble();
-      final double x = cx + r * math.cos(theta);
-      final double y = cy + r * math.sin(theta);
-      i == 0 ? path.moveTo(x, y) : path.lineTo(x, y);
-    }
-    canvas.drawPath(path, p);
-    // Origin dot
-    canvas.drawCircle(
-      Offset(cx, cy),
-      2.5,
-      Paint()
-        ..color = _gold.withValues(alpha: 0.70)
-        ..style = PaintingStyle.fill,
-    );
-  }
-
   // ── Harmonious Triangles ────────────────────────────────────────────────────
   // Both diagonals, each with its two perpendiculars from the opposite corners.
   // TL→BR set (Golden Triangles) + TR→BL set (its mirror) = 6 lines, 8 triangles.
   void _drawHarmoniousTriangles(Canvas canvas, Size s) {
     final p = Paint()
-      ..color = _gold.withValues(alpha: 0.70)
+      ..color = _gold.withValues(alpha: 0.45)
       ..strokeWidth = _sw
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.butt
@@ -1741,7 +2001,7 @@ class CompositionPainter extends CustomPainter {
   // Scattered dot cluster in the upper-center (like reference image)
   void _drawFocalMass(Canvas canvas, Size s) {
     final dotP = Paint()
-      ..color = _gold.withValues(alpha: 0.70)
+      ..color = _gold.withValues(alpha: 0.45)
       ..style = PaintingStyle.fill;
     // Cluster centered at ~50% x, 40% y
     final double cx = s.width * 0.50;
