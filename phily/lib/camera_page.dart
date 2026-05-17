@@ -201,7 +201,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // Note: on iOS, cam.name is device.uniqueID (not a human-readable string),
       // so name-based detection like contains('ultra') never works.
       for (int i = 0; i < _cameras!.length; i++) {
-        debugPrint('Camera[$i]: "${_cameras![i].name}" dir=${_cameras![i].lensDirection}');
+        debugPrint(
+          'Camera[$i]: "${_cameras![i].name}" dir=${_cameras![i].lensDirection}',
+        );
       }
 
       // Probe additional back cameras BEFORE the main controller is initialized.
@@ -221,7 +223,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       _minZoom = await _controller!.getMinZoomLevel();
       _maxZoom = await _controller!.getMaxZoomLevel();
       _currentZoom = _minZoom;
-      debugPrint('Zoom range: $_minZoom – $_maxZoom | ultra-wide: ${_ultraWideCamera?.name}');
+      debugPrint(
+        'Zoom range: $_minZoom – $_maxZoom | ultra-wide: ${_ultraWideCamera?.name}',
+      );
 
       if (mounted) {
         setState(() {
@@ -249,7 +253,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     if (_cameras == null) return null;
 
     final candidates = _cameras!
-        .where((c) => c.lensDirection == CameraLensDirection.back && c != _cameras![0])
+        .where(
+          (c) =>
+              c.lensDirection == CameraLensDirection.back && c != _cameras![0],
+        )
         .toList();
 
     if (candidates.isEmpty) {
@@ -259,7 +266,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
     CameraDescription? fallback;
     for (final cam in candidates) {
-      final probe = CameraController(cam, ResolutionPreset.low, enableAudio: false);
+      final probe = CameraController(
+        cam,
+        ResolutionPreset.low,
+        enableAudio: false,
+      );
       try {
         await probe.initialize();
         final double minZ = await probe.getMinZoomLevel();
@@ -270,12 +281,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         if (minZ <= 0.6) {
           // Virtual device (builtInTripleCamera / builtInDualWideCamera) —
           // natively supports 0.5× without a further controller switch.
-          debugPrint('_detectUltraWide: selected "${cam.name}" (virtual, minZ=$minZ)');
+          debugPrint(
+            '_detectUltraWide: selected "${cam.name}" (virtual, minZ=$minZ)',
+          );
           return cam;
         }
       } catch (e) {
         debugPrint('_detectUltraWide: probe error for "${cam.name}": $e');
-        try { await probe.dispose(); } catch (_) {}
+        try {
+          await probe.dispose();
+        } catch (_) {}
       }
     }
 
@@ -834,7 +849,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                     )
                                   : Icon(
                                       Icons.photo_library_outlined,
-                                      color: Colors.white.withValues(alpha: 0.55),
+                                      color: Colors.white.withValues(
+                                        alpha: 0.55,
+                                      ),
                                       size: 22,
                                     ),
                             ),
@@ -855,7 +872,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ),
 
           // Recording indicator — minimal red dot + monospace label
-
           if (_isRecording)
             Positioned(
               top: MediaQuery.of(context).padding.top + 70,
@@ -1160,7 +1176,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               ),
 
               // Format control
-              _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
+              _buildSettingButton(
+                label: _imageFormat,
+                onTap: _toggleImageFormat,
+              ),
 
               // Divider
               Container(
@@ -1171,7 +1190,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
               // Resolution control
               _buildSettingButton(
-                label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
+                label: _resolution == ResolutionPreset.veryHigh
+                    ? '24MP'
+                    : '48MP',
                 onTap: _toggleResolution,
               ),
             ],
@@ -1273,9 +1294,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Future<void> _switchToUltraWide() async {
     if (_ultraWideCamera == null || _isUsingUltraWide) return;
-    setState(() { _isInitialized = false; });
+    setState(() {
+      _isInitialized = false;
+    });
     await _controller?.dispose();
-    _controller = CameraController(_ultraWideCamera!, _resolution, enableAudio: true);
+    _controller = CameraController(
+      _ultraWideCamera!,
+      _resolution,
+      enableAudio: true,
+    );
     await _controller!.initialize();
     await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
     await _controller!.setFlashMode(_flashMode);
@@ -1283,14 +1310,23 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _maxZoom = await _controller!.getMaxZoomLevel();
     _currentZoom = _minZoom;
     _isUsingUltraWide = true;
-    if (mounted) setState(() { _isInitialized = true; });
+    if (mounted)
+      setState(() {
+        _isInitialized = true;
+      });
   }
 
   Future<void> _switchToMainCamera() async {
     if (!_isUsingUltraWide) return;
-    setState(() { _isInitialized = false; });
+    setState(() {
+      _isInitialized = false;
+    });
     await _controller?.dispose();
-    _controller = CameraController(_cameras![0], _resolution, enableAudio: true);
+    _controller = CameraController(
+      _cameras![0],
+      _resolution,
+      enableAudio: true,
+    );
     await _controller!.initialize();
     await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
     await _controller!.setFlashMode(_flashMode);
@@ -1298,7 +1334,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _maxZoom = await _controller!.getMaxZoomLevel();
     _currentZoom = _minZoom;
     _isUsingUltraWide = false;
-    if (mounted) setState(() { _isInitialized = true; });
+    if (mounted)
+      setState(() {
+        _isInitialized = true;
+      });
   }
 
   /// Safely sets the camera zoom level.
@@ -1336,7 +1375,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           try {
             await _controller!.setZoomLevel(clamped);
           } catch (e) {
-            debugPrint('_setCameraZoom: setZoomLevel($clamped) on ultra-wide failed – $e');
+            debugPrint(
+              '_setCameraZoom: setZoomLevel($clamped) on ultra-wide failed – $e',
+            );
           }
         }
       }
@@ -1393,12 +1434,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final double next = (from + (to - from) * 0.25).clamp(_minZoom, _maxZoom);
       if ((next - to).abs() < 0.005) {
         _currentZoom = to;
-        try { await _controller!.setZoomLevel(to); } catch (_) {}
+        try {
+          await _controller!.setZoomLevel(to);
+        } catch (_) {}
         if (mounted) setState(() {});
         break;
       }
       _currentZoom = next;
-      try { await _controller!.setZoomLevel(next); } catch (_) {}
+      try {
+        await _controller!.setZoomLevel(next);
+      } catch (_) {}
       if (mounted) setState(() {});
       await Future.delayed(stepDuration);
     }
@@ -1415,9 +1460,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         margin: const EdgeInsets.symmetric(horizontal: 3),
         padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
         decoration: BoxDecoration(
-          color: isSelected
-              ? gold.withValues(alpha: 0.10)
-              : Colors.transparent,
+          color: isSelected ? gold.withValues(alpha: 0.10) : Colors.transparent,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: isSelected
@@ -1429,9 +1472,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         child: Text(
           '${zoom < 1 ? zoom : zoom.toInt()}×',
           style: TextStyle(
-            color: isSelected
-                ? gold
-                : Colors.white.withValues(alpha: 0.38),
+            color: isSelected ? gold : Colors.white.withValues(alpha: 0.38),
             fontSize: 11,
             fontWeight: isSelected ? FontWeight.w500 : FontWeight.w300,
             letterSpacing: 0.5,
