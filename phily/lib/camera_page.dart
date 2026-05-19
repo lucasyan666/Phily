@@ -44,8 +44,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double _baseZoom = 1.0;
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
-  double _targetZoom = 1.0;
-  bool _isAnimatingZoom = false;
+  // Zoom meter drag state
+  static const double _zoomMax = 25.0;
+  double _meterDragStart = 0.0;
+  double _zoomAtDragStart = 1.0;
   CameraDescription? _ultraWideCamera;
   bool _isUsingUltraWide = false;
 
@@ -230,7 +232,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
       await _controller!.setFlashMode(_flashMode);
       _minZoom = await _controller!.getMinZoomLevel();
-      _maxZoom = await _controller!.getMaxZoomLevel();
+      _maxZoom = (await _controller!.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
       _currentZoom = _minZoom;
       debugPrint(
         'Zoom range: $_minZoom – $_maxZoom | ultra-wide: ${_ultraWideCamera?.name}',
@@ -903,18 +905,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           },
                         ),
                       ),
+                      const SizedBox(height: 6),
+                      if (_isInitialized) _buildZoomMeter(),
                       const SizedBox(height: 8),
-                      // Zoom quick-select pills
-                      if (_isInitialized)
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _buildZoomPill(0.5),
-                            for (final double z in [1.0, 2.0, 5.0])
-                              if (z <= _maxZoom) _buildZoomPill(z),
-                          ],
-                        ),
-                      const SizedBox(height: 10),
                       // Camera controls row
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1402,7 +1395,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
     await _controller!.setFlashMode(_flashMode);
     _minZoom = await _controller!.getMinZoomLevel();
-    _maxZoom = await _controller!.getMaxZoomLevel();
+    _maxZoom = (await _controller!.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
     _currentZoom = _minZoom;
     _isUsingUltraWide = true;
     if (mounted)
@@ -1426,7 +1419,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
     await _controller!.setFlashMode(_flashMode);
     _minZoom = await _controller!.getMinZoomLevel();
-    _maxZoom = await _controller!.getMaxZoomLevel();
+    _maxZoom = (await _controller!.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
     _currentZoom = _minZoom;
     _isUsingUltraWide = false;
     if (mounted)
@@ -1497,83 +1490,57 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _animateZoom(double target) async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
+  // ────────────────────────────────────────────────────────────────────────────
+  // Zoom meter — horizontal scroll wheel with hairline ticks
+  // ────────────────────────────────────────────────────────────────────────────
 
-    // Sub-1.0 requires a physical lens switch — delegate entirely and return.
-    if (target < 1.0) {
-      await _setCameraZoom(target);
-      return;
-    }
+  Widget _buildZoomMeter() {
+    // px per zoom unit — determines how far the user must drag to change 1×.
+    const double pxPerUnit = 36.0;
+    // Clamp zoom to [0.5, _zoomMax].
+    final double clampedZoom = _currentZoom.clamp(0.5, _zoomMax);
 
-    // Returning from ultra-wide: switch back to main before animating.
-    if (_isUsingUltraWide) {
-      await _switchToMainCamera();
-    }
-
-    final double dest = target.clamp(_minZoom, _maxZoom);
-    if (_isAnimatingZoom) {
-      _targetZoom = dest;
-      return;
-    }
-    _isAnimatingZoom = true;
-    _targetZoom = dest;
-    const int steps = 30;
-    const Duration stepDuration = Duration(milliseconds: 12);
-    for (int i = 0; i < steps; i++) {
-      if (!mounted) break;
-      // If we just switched from ultra-wide, _currentZoom may be <1.0;
-      // snap to _minZoom so we never pass a sub-range value to setZoomLevel.
-      final double from = _currentZoom < _minZoom ? _minZoom : _currentZoom;
-      final double to = _targetZoom;
-      final double next = (from + (to - from) * 0.25).clamp(_minZoom, _maxZoom);
-      if ((next - to).abs() < 0.005) {
-        _currentZoom = to;
-        try {
-          await _controller!.setZoomLevel(to);
-        } catch (_) {}
-        if (mounted) setState(() {});
-        break;
-      }
-      _currentZoom = next;
-      try {
-        await _controller!.setZoomLevel(next);
-      } catch (_) {}
-      if (mounted) setState(() {});
-      await Future.delayed(stepDuration);
-    }
-    _isAnimatingZoom = false;
-  }
-
-  Widget _buildZoomPill(double zoom) {
-    final bool isSelected = (_currentZoom - zoom).abs() < 0.15;
-    const Color gold = Color(0xFFE5C158);
-    return GestureDetector(
-      onTap: () => _animateZoom(zoom),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        margin: const EdgeInsets.symmetric(horizontal: 3),
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
-        decoration: BoxDecoration(
-          color: isSelected ? gold.withValues(alpha: 0.10) : Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: isSelected
-                ? gold.withValues(alpha: 0.65)
-                : Colors.white.withValues(alpha: 0.16),
-            width: 1.0,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Real-time zoom readout in gold
+        Text(
+          '${clampedZoom < 1 ? clampedZoom.toStringAsFixed(1) : clampedZoom.toStringAsFixed(clampedZoom >= 10 ? 1 : 1)}×',
+          style: const TextStyle(
+            color: Color(0xFFE5C158),
+            fontSize: 13,
+            fontWeight: FontWeight.w300,
+            letterSpacing: 1.4,
           ),
         ),
-        child: Text(
-          '${zoom < 1 ? zoom : zoom.toInt()}×',
-          style: TextStyle(
-            color: isSelected ? gold : Colors.white.withValues(alpha: 0.38),
-            fontSize: 11,
-            fontWeight: isSelected ? FontWeight.w500 : FontWeight.w300,
-            letterSpacing: 0.5,
+        const SizedBox(height: 6),
+        // Tick-mark wheel
+        GestureDetector(
+          onHorizontalDragStart: (d) {
+            _meterDragStart = d.localPosition.dx;
+            _zoomAtDragStart = clampedZoom;
+          },
+          onHorizontalDragUpdate: (d) {
+            final double delta = d.localPosition.dx - _meterDragStart;
+            // Dragging right = zoom out, left = zoom in (wheel scrolls under finger).
+            final double newZoom =
+                (_zoomAtDragStart - delta / pxPerUnit).clamp(0.5, _zoomMax);
+            _setCameraZoom(newZoom);
+          },
+          onHorizontalDragEnd: (_) {},
+          child: SizedBox(
+            width: double.infinity,
+            height: 36,
+            child: CustomPaint(
+              painter: _ZoomMeterPainter(
+                zoom: clampedZoom,
+                maxZoom: _zoomMax,
+                pxPerUnit: pxPerUnit,
+              ),
+            ),
           ),
         ),
-      ),
+      ],
     );
   }
 
@@ -1662,6 +1629,101 @@ class _FocusBracketPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_FocusBracketPainter old) => old.gold != gold;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Zoom meter painter — hairline tick wheel
+// ────────────────────────────────────────────────────────────────────────────
+
+class _ZoomMeterPainter extends CustomPainter {
+  final double zoom;      // current zoom level
+  final double maxZoom;   // software upper bound (25.0)
+  final double pxPerUnit; // logical pixels per 1×
+
+  const _ZoomMeterPainter({
+    required this.zoom,
+    required this.maxZoom,
+    required this.pxPerUnit,
+  });
+
+  static const Color _white = Color(0xFFFFFFFF);
+  static const Color _gold  = Color(0xFFE5C158);
+
+  // Major tick labels shown on the wheel.
+  static const List<double> _major = [0.5, 1, 2, 5, 10, 15, 20, 25];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double cx = size.width / 2;
+    final double cy = size.height;
+
+    // How many zoom units are visible on each side of centre.
+    final double visibleUnits = (size.width / 2) / pxPerUnit;
+
+    final double lo = (zoom - visibleUnits - 1).floorToDouble().clamp(0.5, maxZoom);
+    final double hi = (zoom + visibleUnits + 1).ceilToDouble().clamp(0.5, maxZoom);
+
+    // Draw minor ticks every 0.1×, major ticks at the _major values.
+    final Paint tickPaint = Paint()
+      ..color = _white.withValues(alpha: 0.28)
+      ..strokeWidth = 0.8
+      ..strokeCap = StrokeCap.butt;
+
+    final Paint majorPaint = Paint()
+      ..color = _white.withValues(alpha: 0.55)
+      ..strokeWidth = 1.0
+      ..strokeCap = StrokeCap.butt;
+
+    // Centre indicator line (gold)
+    final Paint centrePaint = Paint()
+      ..color = _gold
+      ..strokeWidth = 1.5
+      ..strokeCap = StrokeCap.butt;
+
+    final TextPainter tp = TextPainter(
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+    );
+
+    // Iterate every 0.1× step in the visible range.
+    double v = (lo * 10).round() / 10;
+    while (v <= hi + 0.05) {
+      final double x = cx + (v - zoom) * pxPerUnit;
+      if (x < 0 || x > size.width) { v = (v * 10).round() / 10 + 0.1; continue; }
+
+      final bool isMajor = _major.any((m) => (v - m).abs() < 0.02);
+      final double tickH = isMajor ? 16.0 : 8.0;
+      final Paint p = isMajor ? majorPaint : tickPaint;
+
+      canvas.drawLine(Offset(x, cy - tickH), Offset(x, cy), p);
+
+      if (isMajor) {
+        final String label = v < 1
+            ? v.toStringAsFixed(1)
+            : v.toInt().toString();
+        tp.text = TextSpan(
+          text: label,
+          style: TextStyle(
+            color: _white.withValues(alpha: 0.55),
+            fontSize: 8,
+            fontWeight: FontWeight.w300,
+            letterSpacing: 0.5,
+          ),
+        );
+        tp.layout();
+        tp.paint(canvas, Offset(x - tp.width / 2, cy - tickH - tp.height - 2));
+      }
+
+      v = ((v * 10).round() / 10) + 0.1;
+      v = double.parse(v.toStringAsFixed(1)); // avoid float drift
+    }
+
+    // Centre indicator
+    canvas.drawLine(Offset(cx, cy - 22), Offset(cx, cy), centrePaint);
+  }
+
+  @override
+  bool shouldRepaint(_ZoomMeterPainter old) => old.zoom != zoom;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
