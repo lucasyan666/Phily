@@ -48,6 +48,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   static const double _zoomMax = 25.0;
   double _meterDragStart = 0.0;
   double _zoomAtDragStart = 1.0;
+  // When on ultra-wide: physicalZoom = logicalZoom × _ultraWideScaleFactor.
+  // The ultra-wide sensor's native FOV = 0.5× logical, so factor = minPhysical / 0.5.
+  double _ultraWideScaleFactor = 2.0;
   CameraDescription? _ultraWideCamera;
   bool _isUsingUltraWide = false;
 
@@ -222,6 +225,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // Resolve the ultra-wide camera via native AVFoundation API.
       _ultraWideCamera = await _resolveUltraWideCamera();
 
+      // Pre-warm the ultra-wide hardware while no session is running.
+      // No AVCaptureSession conflict at this point — main camera not yet init'd.
+      // Subsequent 0.5× switches will be instant after this.
+      if (_ultraWideCamera != null) {
+        await _preWarmUltraWide();
+      }
+
       _controller = CameraController(
         _cameras![0],
         _resolution,
@@ -290,6 +300,28 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       debugPrint('_resolveUltraWide: fallback to "${fallback.name}"');
     }
     return fallback;
+  }
+
+  /// Briefly initialises and immediately disposes the ultra-wide controller
+  /// while no other [AVCaptureSession] is active. Pre-warming means the OS
+  /// has already configured the hardware when the user taps 0.5×, removing
+  /// the visible initialisation lag.
+  Future<void> _preWarmUltraWide() async {
+    if (_ultraWideCamera == null) return;
+    debugPrint('Pre-warming ultra-wide...');
+    final probe = CameraController(
+      _ultraWideCamera!,
+      ResolutionPreset.low,
+      enableAudio: false,
+    );
+    try {
+      await probe.initialize();
+      debugPrint('Ultra-wide pre-warm done');
+    } catch (e) {
+      debugPrint('Ultra-wide pre-warm failed: $e');
+    } finally {
+      try { await probe.dispose(); } catch (_) {}
+    }
   }
 
   Future<void> _loadLatestThumbnail() async {
@@ -1382,39 +1414,31 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Future<void> _switchToUltraWide() async {
     if (_ultraWideCamera == null || _isUsingUltraWide) return;
-    setState(() {
-      _isInitialized = false;
-    });
+    _stopImageStream();
+    setState(() { _isInitialized = false; });
     await _controller?.dispose();
-    _controller = CameraController(
-      _ultraWideCamera!,
-      _resolution,
-      enableAudio: true,
-    );
+    _controller = CameraController(_ultraWideCamera!, _resolution, enableAudio: true);
     await _controller!.initialize();
     await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
     await _controller!.setFlashMode(_flashMode);
     _minZoom = await _controller!.getMinZoomLevel();
     _maxZoom = (await _controller!.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
+    // Ultra-wide physical minZoom (typically 1.0) maps to 0.5× logical.
+    // Store the factor so intermediate values 0.5–1.0 can be dialled in
+    // by calling setZoomLevel on the ultra-wide sensor.
+    _ultraWideScaleFactor = _minZoom / 0.5;
     _currentZoom = _minZoom;
     _isUsingUltraWide = true;
-    if (mounted)
-      setState(() {
-        _isInitialized = true;
-      });
+    if (mounted) setState(() { _isInitialized = true; });
+    await _startImageStream();
   }
 
   Future<void> _switchToMainCamera() async {
     if (!_isUsingUltraWide) return;
-    setState(() {
-      _isInitialized = false;
-    });
+    _stopImageStream();
+    setState(() { _isInitialized = false; });
     await _controller?.dispose();
-    _controller = CameraController(
-      _cameras![0],
-      _resolution,
-      enableAudio: true,
-    );
+    _controller = CameraController(_cameras![0], _resolution, enableAudio: true);
     await _controller!.initialize();
     await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
     await _controller!.setFlashMode(_flashMode);
@@ -1422,71 +1446,57 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _maxZoom = (await _controller!.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
     _currentZoom = _minZoom;
     _isUsingUltraWide = false;
-    if (mounted)
-      setState(() {
-        _isInitialized = true;
-      });
+    if (mounted) setState(() { _isInitialized = true; });
+    await _startImageStream();
   }
 
-  /// Safely sets the camera zoom level.
+  /// Sets the logical zoom level in [0.5, _zoomMax].
   ///
-  /// The iOS camera plugin enforces that [setZoomLevel] is called within
-  /// [[_minZoom], [_maxZoom]] (typically [1.0, N] for the main lens). Passing
-  /// a sub-1.0 value causes a fatal out-of-bounds assertion. This wrapper
-  /// intercepts those requests and physically switches to the ultra-wide
-  /// camera controller instead, which represents 0.5× on supported devices.
+  /// Logical 0.5–1.0× uses the ultra-wide controller. The ultra-wide sensor's
+  /// native focal length = 0.5× logical, so values like 0.6, 0.7, 0.8, 0.9 are
+  /// reached by calling setZoomLevel with a proportionally scaled physical zoom:
+  ///   physicalZoom = logicalZoom × _ultraWideScaleFactor
+  /// Logical ≥1.0× uses the main camera directly.
   Future<void> _setCameraZoom(double value) async {
     if (_controller == null || !_controller!.value.isInitialized) return;
+    final double v = value.clamp(0.5, _zoomMax);
 
-    if (value < 1.0) {
-      // Fast path: current controller already covers this zoom level.
-      // This happens when cameras[0] is itself a virtual device with minZoom ≤ 0.5,
-      // OR after switching to a virtual ultra-wide camera (minZoom ≤ 0.5).
-      if (value >= _minZoom) {
-        final double clamped = value.clamp(_minZoom, _maxZoom);
-        try {
-          await _controller!.setZoomLevel(clamped);
+    if (v < 1.0) {
+      // Ensure we are on the ultra-wide controller.
+      if (!_isUsingUltraWide) {
+        if (_ultraWideCamera != null) {
+          await _switchToUltraWide();
+        } else {
+          // No ultra-wide — clamp to main camera minimum.
+          final double clamped = _minZoom;
+          try { await _controller!.setZoomLevel(clamped); } catch (_) {}
           if (mounted) setState(() => _currentZoom = clamped);
-        } catch (e) {
-          debugPrint('_setCameraZoom: setZoomLevel($clamped) failed – $e');
-        }
-        return;
-      }
-
-      // Switch to the ultra-wide camera (physical or virtual).
-      if (_ultraWideCamera != null && !_isUsingUltraWide) {
-        await _switchToUltraWide();
-        // After switching, _minZoom is updated. If the new camera is a virtual
-        // device (minZoom ≤ 0.5), call setZoomLevel to land on the exact value.
-        if (_minZoom <= value) {
-          final double clamped = value.clamp(_minZoom, _maxZoom);
-          try {
-            await _controller!.setZoomLevel(clamped);
-          } catch (e) {
-            debugPrint(
-              '_setCameraZoom: setZoomLevel($clamped) on ultra-wide failed – $e',
-            );
-          }
+          return;
         }
       }
-      // Track the logical zoom so the 0.5× pill highlights correctly.
-      if (mounted) setState(() => _currentZoom = value);
+      // Convert logical zoom to the physical zoom on the ultra-wide sensor.
+      // Example: logical 0.7× × factor 2.0 = physical 1.4 on the sensor,
+      // which is equivalent to 0.7× field-of-view relative to the main camera.
+      final double physical = (v * _ultraWideScaleFactor).clamp(_minZoom, _maxZoom);
+      try {
+        await _controller!.setZoomLevel(physical);
+        if (mounted) setState(() => _currentZoom = v);
+      } catch (e) {
+        debugPrint('_setCameraZoom ultra-wide physical=$physical: $e');
+      }
       return;
     }
 
-    // Returning from ultra-wide to main lens for ≥1× values.
+    // ≥1.0× — use main camera.
     if (_isUsingUltraWide) {
       await _switchToMainCamera();
     }
-
-    // Clamp strictly within the controller's reported range before calling
-    // the plugin — avoids any residual assertion if minZoom > 1.0.
-    final double clamped = value.clamp(_minZoom, _maxZoom);
+    final double clamped = v.clamp(_minZoom, _maxZoom);
     try {
       await _controller!.setZoomLevel(clamped);
       if (mounted) setState(() => _currentZoom = clamped);
     } catch (e) {
-      debugPrint('_setCameraZoom: setZoomLevel($clamped) failed – $e');
+      debugPrint('_setCameraZoom main $clamped: $e');
     }
   }
 
