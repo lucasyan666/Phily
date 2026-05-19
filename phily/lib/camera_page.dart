@@ -62,7 +62,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   AnimationController? _glowController;
   Animation<double>? _glowAnimation;
 
+  // Composition alignment detection — per-segment glow
+  // Key: normalised 'x1,y1,x2,y2'. Value: _GlowSeg with mutable intensity.
+  final Map<String, _GlowSeg> _glowSegMap = {};
+  bool _isAnalyzingFrame = false;
+  DateTime _lastFrameAnalysis = DateTime.fromMillisecondsSinceEpoch(0);
+
   final picker = ImagePicker();
+
+  /// Platform channel used to query AVCaptureDeviceDiscoverySession
+  /// for the built-in ultra-wide camera uniqueID on iOS.
+  static const MethodChannel _cameraChannel = MethodChannel('phily/camera');
 
   @override
   void initState() {
@@ -185,6 +195,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         }
       }
     });
+
   }
 
   Future<void> _initializeCamera() async {
@@ -206,10 +217,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         );
       }
 
-      // Probe additional back cameras BEFORE the main controller is initialized.
-      // iOS only allows one AVCaptureSession at a time, so probing must happen
-      // while no other controller is active.
-      _ultraWideCamera = await _detectUltraWideCamera();
+      // Resolve the ultra-wide camera via native AVFoundation API.
+      _ultraWideCamera = await _resolveUltraWideCamera();
 
       _controller = CameraController(
         _cameras![0],
@@ -232,6 +241,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           _isInitialized = true;
         });
       }
+      // Begin streaming frames for composition alignment detection.
+      await _startImageStream();
     } catch (e) {
       setState(() {
         _error = 'Camera initialization failed: $e';
@@ -240,63 +251,41 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
-  /// Probes back cameras (excluding cameras[0]) to find one capable of 0.5× zoom.
+  /// Resolves the ultra-wide [CameraDescription] by querying the native
+  /// AVCaptureDeviceDiscoverySession through the [_cameraChannel].
   ///
-  /// iOS virtual devices such as [builtInTripleCamera] and [builtInDualWideCamera]
-  /// report minZoom ≤ 0.5 and handle physical lens switching internally — these
-  /// are the ideal target for the 0.5× pill. If none is found, the first
-  /// additional back camera is returned as a physical ultra-wide fallback.
-  ///
-  /// Must be called BEFORE the main [CameraController] is initialized because
-  /// iOS does not allow two [AVCaptureSession]s to run simultaneously.
-  Future<CameraDescription?> _detectUltraWideCamera() async {
+  /// On iOS the channel returns the [AVCaptureDevice.uniqueID] of the
+  /// `.builtInUltraWideCamera` device, which matches [CameraDescription.name].
+  /// If the channel call fails (non-iOS, simulator, or older device), falls
+  /// back to the first non-primary back camera in the list.
+  Future<CameraDescription?> _resolveUltraWideCamera() async {
     if (_cameras == null) return null;
 
-    final candidates = _cameras!
-        .where(
-          (c) =>
-              c.lensDirection == CameraLensDirection.back && c != _cameras![0],
-        )
-        .toList();
-
-    if (candidates.isEmpty) {
-      debugPrint('_detectUltraWide: no additional back cameras found');
-      return null;
-    }
-
-    CameraDescription? fallback;
-    for (final cam in candidates) {
-      final probe = CameraController(
-        cam,
-        ResolutionPreset.low,
-        enableAudio: false,
-      );
-      try {
-        await probe.initialize();
-        final double minZ = await probe.getMinZoomLevel();
-        final double maxZ = await probe.getMaxZoomLevel();
-        await probe.dispose();
-        debugPrint('_detectUltraWide: "${cam.name}" minZ=$minZ maxZ=$maxZ');
-        fallback ??= cam; // first additional back camera
-        if (minZ <= 0.6) {
-          // Virtual device (builtInTripleCamera / builtInDualWideCamera) —
-          // natively supports 0.5× without a further controller switch.
-          debugPrint(
-            '_detectUltraWide: selected "${cam.name}" (virtual, minZ=$minZ)',
-          );
-          return cam;
+    try {
+      final String? uid =
+          await _cameraChannel.invokeMethod<String>('getUltraWideCameraId');
+      if (uid != null) {
+        final match = _cameras!.where((c) => c.name == uid).firstOrNull;
+        if (match != null) {
+          debugPrint('_resolveUltraWide: matched "${match.name}" via native channel');
+          return match;
         }
-      } catch (e) {
-        debugPrint('_detectUltraWide: probe error for "${cam.name}": $e');
-        try {
-          await probe.dispose();
-        } catch (_) {}
+        debugPrint('_resolveUltraWide: uid "$uid" not found in camera list');
+      } else {
+        debugPrint('_resolveUltraWide: channel returned null (no ultra-wide on device)');
       }
+    } catch (e) {
+      debugPrint('_resolveUltraWide: channel error — $e');
     }
 
-    // No virtual device found; fall back to the first physical back camera.
+    // Fallback: first additional back camera.
+    final fallback = _cameras!
+        .where(
+          (c) => c.lensDirection == CameraLensDirection.back && c != _cameras![0],
+        )
+        .firstOrNull;
     if (fallback != null) {
-      debugPrint('_detectUltraWide: fallback to "${fallback.name}"');
+      debugPrint('_resolveUltraWide: fallback to "${fallback.name}"');
     }
     return fallback;
   }
@@ -372,6 +361,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _stopImageStream();
     _controller?.dispose();
     _bounceController?.dispose();
     _buttonBopController?.dispose();
@@ -417,6 +407,29 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _bounceController!.forward();
   }
 
+  /// Starts the image stream for composition alignment analysis.
+  /// Safe to call when already streaming or when no controller is active.
+  Future<void> _startImageStream() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    if (_controller!.value.isStreamingImages) return;
+    try {
+      await _controller!.startImageStream(_onCameraFrame);
+    } catch (e) {
+      debugPrint('startImageStream: $e');
+    }
+  }
+
+  /// Stops the image stream. Safe to call when not streaming.
+  void _stopImageStream() {
+    try {
+      if (_controller != null && _controller!.value.isStreamingImages) {
+        _controller!.stopImageStream();
+      }
+    } catch (e) {
+      debugPrint('stopImageStream: $e');
+    }
+  }
+
   Future<void> _capturePhoto() async {
     if (_controller == null || !_controller!.value.isInitialized) return;
 
@@ -435,17 +448,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     });
 
     try {
-      // Capture photo (now feels instant because UI already responded)
+      // takePicture() conflicts with an active stream on some devices.
+      _stopImageStream();
       final image = await _controller!.takePicture();
       final file = File(image.path);
-
-      // Trigger bounce animation
       _triggerBounceAnimation(file);
-
-      // Save to gallery in background (don't await)
       _saveMediaInBackground(file.path);
+      // Restart stream after capture.
+      await _startImageStream();
     } catch (e) {
       debugPrint('Error taking photo: $e');
+      await _startImageStream();
     }
   }
 
@@ -491,16 +504,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _glowController!.forward();
 
     try {
-      // Start recording in background (now feels instant)
+      // Video recording cannot run alongside an image stream.
+      _stopImageStream();
       await _controller!.startVideoRecording();
     } catch (e) {
       debugPrint('Error starting video: $e');
-      // Revert state if recording failed
-      setState(() {
-        _isRecording = false;
-      });
+      setState(() { _isRecording = false; });
       _glowController!.stop();
       _glowController!.reset();
+      await _startImageStream();
     }
   }
 
@@ -520,21 +532,104 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
 
     try {
-      // Stop recording (UI already responded, so this feels instant)
       final video = await _controller!.stopVideoRecording();
       final file = File(video.path);
-
-      // Trigger bounce animation
       _triggerBounceAnimation(file);
-
-      // Save to gallery in background (don't await)
       _saveMediaInBackground(file.path);
+      // Resume alignment analysis after recording stops.
+      await _startImageStream();
     } catch (e) {
       debugPrint('Error stopping video: $e');
-
-      // Animation already stopped above, just reset controller
       _glowController!.reset();
+      await _startImageStream();
     }
+  }
+
+  /// Called for every frame from the camera image stream.
+  /// Throttled to ~8 fps. Passes a downsampled Y-plane to native Vision
+  /// for edge-grid alignment analysis and drives the glow animation.
+  Future<void> _onCameraFrame(CameraImage image) async {
+    if (_compositionMode == CompositionMode.none) return;
+    final now = DateTime.now();
+    if (now.difference(_lastFrameAnalysis).inMilliseconds < 125) return;
+    if (_isAnalyzingFrame) return;
+    _isAnalyzingFrame = true;
+    _lastFrameAnalysis = now;
+    try {
+      final plane = image.planes[0];
+      final dstW = 128;
+      final dstH = (128 * image.height / image.width).round();
+      final bytes = _downsampleY(
+        plane.bytes, image.width, image.height, plane.bytesPerRow, dstW, dstH,
+      );
+      final raw = await _cameraChannel.invokeMethod<dynamic>(
+        'analyzeFrame',
+        {
+          'yPlane': bytes,
+          'width': dstW,
+          'height': dstH,
+          'mode': _compositionMode.name,
+        },
+      );
+      if (!mounted) return;
+
+      final List<dynamic> segs = raw is List ? raw : const [];
+      final Set<String> freshKeys = {};
+      bool newAlignment = false;
+
+      for (final seg in segs) {
+        if (seg is! Map) continue;
+        final x1 = (seg['x1'] as num).toDouble();
+        final y1 = (seg['y1'] as num).toDouble();
+        final x2 = (seg['x2'] as num).toDouble();
+        final y2 = (seg['y2'] as num).toDouble();
+        // Key with 3dp precision — stable across frames for the same grid line.
+        final key = '${x1.toStringAsFixed(3)},${y1.toStringAsFixed(3)}'
+            ',${x2.toStringAsFixed(3)},${y2.toStringAsFixed(3)}';
+        freshKeys.add(key);
+        if (!_glowSegMap.containsKey(key)) {
+          _glowSegMap[key] = _GlowSeg(x1, y1, x2, y2, intensity: 0.40);
+          newAlignment = true;
+        } else {
+          _glowSegMap[key]!.intensity =
+              (_glowSegMap[key]!.intensity + 0.40).clamp(0.0, 1.0);
+        }
+      }
+
+      // Fade out lines that were not detected this frame.
+      final toRemove = <String>[];
+      for (final entry in _glowSegMap.entries) {
+        if (!freshKeys.contains(entry.key)) {
+          entry.value.intensity -= 0.18;
+          if (entry.value.intensity <= 0) toRemove.add(entry.key);
+        }
+      }
+      for (final k in toRemove) _glowSegMap.remove(k);
+
+      // Haptic only when a brand-new line first aligns.
+      if (newAlignment) HapticFeedback.heavyImpact();
+
+      setState(() {});
+    } catch (e) {
+      debugPrint('_onCameraFrame: $e');
+    } finally {
+      _isAnalyzingFrame = false;
+    }
+  }
+
+  /// Nearest-neighbour downsampling of the Y (luminance) plane.
+  Uint8List _downsampleY(
+    Uint8List src, int srcW, int srcH, int bytesPerRow, int dstW, int dstH,
+  ) {
+    final out = Uint8List(dstW * dstH);
+    for (int y = 0; y < dstH; y++) {
+      final srcY = (y * srcH / dstH).round().clamp(0, srcH - 1);
+      for (int x = 0; x < dstW; x++) {
+        final srcX = (x * srcW / dstW).round().clamp(0, srcW - 1);
+        out[y * dstW + x] = src[srcY * bytesPerRow + srcX];
+      }
+    }
+    return out;
   }
 
   Future<void> _selectFromGallery() async {
@@ -686,19 +781,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               },
             ),
 
-          // Composition guide overlay — inset to the live camera preview area,
-          // below the top settings panel and above the bottom controls.
+          // Composition guide overlay — per-segment glow on aligned lines.
           if (_compositionMode != CompositionMode.none)
             Positioned(
-              // Top panel: safe-area top + 12 top-padding + content (~32px) + 16 bottom-padding
               top: MediaQuery.of(context).padding.top + 60,
-              // Bottom controls: 34 safe-area + 10 top-padding + 45 belt + 12 gap + 85 capture button
               bottom: 186,
               left: 0,
               right: 0,
               child: IgnorePointer(
                 child: CustomPaint(
-                  painter: CompositionPainter(_compositionMode),
+                  painter: CompositionPainter(
+                    _compositionMode,
+                    glowSegs: _glowSegMap.values.toList(),
+                  ),
                 ),
               ),
             ),
@@ -1633,20 +1728,37 @@ enum CompositionMode {
 // Single painter that dispatches to the correct drawing routine
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Glow segment — a normalised grid-line coordinate with per-frame intensity
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Coordinates are normalised to [0,1]. Intensity fades in/out each analysis frame.
+class _GlowSeg {
+  final double x1, y1, x2, y2;
+  double intensity;
+  _GlowSeg(this.x1, this.y1, this.x2, this.y2, {this.intensity = 0.0});
+}
+
 class CompositionPainter extends CustomPainter {
   final CompositionMode mode;
-  const CompositionPainter(this.mode);
+  /// Lines from the active grid that are currently edge-aligned.
+  final List<_GlowSeg> glowSegs;
+  CompositionPainter(this.mode, {List<_GlowSeg>? glowSegs})
+      : glowSegs = glowSegs ?? const [];
 
   static const Color _gold = Color(0xFFFFFFFF);
   static const double _sw = 0.8;
 
-  Paint get _p => Paint()
+  /// Normal white hairline paint used by all draw methods.
+  Paint _gp({StrokeCap cap = StrokeCap.butt}) => Paint()
     ..color = _gold.withValues(alpha: 0.45)
     ..strokeWidth = _sw
     ..style = PaintingStyle.stroke
-    ..strokeCap = StrokeCap.round
+    ..strokeCap = cap
     ..strokeJoin = StrokeJoin.round
     ..isAntiAlias = true;
+
+  Paint get _p => _gp(cap: StrokeCap.round);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1699,18 +1811,34 @@ class CompositionPainter extends CustomPainter {
         _drawCircular(canvas, size);
         break;
     }
+
+    // Selective glow pass — redraw only the lines that have edge support,
+    // using a gold blur paint so they illuminate without affecting other lines.
+    if (glowSegs.isNotEmpty) {
+      final glowPaint = Paint()
+        ..strokeWidth = _sw + 2.5
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..isAntiAlias = true
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.5);
+      for (final seg in glowSegs) {
+        if (seg.intensity <= 0) continue;
+        glowPaint.color = const Color(0xFFE5C158)
+            .withValues(alpha: (0.65 * seg.intensity).clamp(0.0, 1.0));
+        canvas.drawLine(
+          Offset(seg.x1 * size.width, seg.y1 * size.height),
+          Offset(seg.x2 * size.width, seg.y2 * size.height),
+          glowPaint,
+        );
+      }
+    }
   }
 
   // ── Rule of Thirds ──────────────────────────────────────────────────────────
   // Two equally spaced verticals + two equally spaced horizontals → 9 equal cells.
   // StrokeCap.butt ensures lines stay strictly within the frame boundaries.
   void _drawRuleOfThirds(Canvas canvas, Size s) {
-    final p = Paint()
-      ..color = _gold.withValues(alpha: 0.45)
-      ..strokeWidth = _sw
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.butt
-      ..isAntiAlias = true;
+    final p = _gp();
 
     final double col1 = s.width / 3;
     final double col2 = s.width * 2 / 3;
@@ -1731,12 +1859,7 @@ class CompositionPainter extends CustomPainter {
   // Each dimension is split at (1/φ) ≈ 0.618 from one edge
   // and at (1/φ²) ≈ 0.382 from the other, giving two lines per axis.
   void _drawGoldenSection(Canvas canvas, Size s) {
-    final p = Paint()
-      ..color = _gold.withValues(alpha: 0.45)
-      ..strokeWidth = _sw
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.butt
-      ..isAntiAlias = true;
+    final p = _gp();
 
     const double phi = 1.6180339887;
     // Smaller division: 1/φ² ≈ 0.382 from one edge
@@ -1760,12 +1883,7 @@ class CompositionPainter extends CustomPainter {
   // two remaining corners (TR and BL) onto that diagonal.
   // Result: 3 unique lines, 4 non-overlapping triangles, all within the frame.
   void _drawGoldenTriangles(Canvas canvas, Size s) {
-    final p = Paint()
-      ..color = _gold.withValues(alpha: 0.45)
-      ..strokeWidth = _sw
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.butt
-      ..isAntiAlias = true;
+    final p = _gp();
 
     final double w = s.width;
     final double h = s.height;
@@ -1790,59 +1908,64 @@ class CompositionPainter extends CustomPainter {
   // top-left corner. Each line spans only the current sub-rectangle so there
   // are no overlapping edges and no lines outside the frame.
   void _drawSpiralSection(Canvas canvas, Size s) {
-    final p = Paint()
-      ..color = _gold.withValues(alpha: 0.45)
-      ..strokeWidth = _sw
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.butt
-      ..isAntiAlias = true;
+    final p = _gp();
 
     const double phi = 1.6180339887;
 
-    // Outer frame border
+    // Outer frame border — the first (largest) nested rectangle.
     canvas.drawRect(Rect.fromLTWH(0, 0, s.width, s.height), p);
 
     double x = 0, y = 0, w = s.width, h = s.height;
 
-    // Direction cycle — each step cuts one side off the current rectangle,
-    // keeping the smaller phi-scaled piece for the next iteration.
-    // 0: cut bottom (horizontal) → keep top
-    // 1: cut left  (vertical)   → keep right
-    // 2: cut top   (horizontal) → keep bottom
-    // 3: cut right (vertical)   → keep left
-    for (int i = 0; i < 6; i++) {
+    // At each step, divide the current rectangle at the golden section (1/φ of
+    // the relevant dimension), draw the dividing line, then draw the resulting
+    // nested rectangle border. The cut direction rotates through all four sides
+    // so the rectangles spiral clockwise from the top edge toward an interior
+    // "eye" — the same convergence point as the Fibonacci spiral arc.
+    //
+    // Cut sequence:  bottom → left → top → right  (repeat)
+    //   case 0: horizontal line at y + h/φ        → keep top   h/φ strip
+    //   case 1: vertical   line at x + w − w/φ    → keep right w/φ strip
+    //   case 2: horizontal line at y + h − h/φ    → keep bottom h/φ strip
+    //   case 3: vertical   line at x + w/φ        → keep left  w/φ strip
+    for (int i = 0; i < 8; i++) {
+      if (w < 2 || h < 2) break;
       switch (i % 4) {
         case 0:
-          final double cutH = h / phi;
-          canvas.drawLine(Offset(x, y + cutH), Offset(x + w, y + cutH), p);
-          h = cutH;
+          final double keepH = h / phi;
+          canvas.drawLine(Offset(x, y + keepH), Offset(x + w, y + keepH), p);
+          h = keepH;
           break;
         case 1:
-          final double cutW = w / phi;
+          final double keepW = w / phi;
+          final double removeW = w - keepW; // = w / φ²
           canvas.drawLine(
-            Offset(x + w - cutW, y),
-            Offset(x + w - cutW, y + h),
+            Offset(x + removeW, y),
+            Offset(x + removeW, y + h),
             p,
           );
-          x = x + w - cutW;
-          w = cutW;
+          x += removeW;
+          w = keepW;
           break;
         case 2:
-          final double cutH = h / phi;
+          final double keepH = h / phi;
+          final double removeH = h - keepH; // = h / φ²
           canvas.drawLine(
-            Offset(x, y + h - cutH),
-            Offset(x + w, y + h - cutH),
+            Offset(x, y + removeH),
+            Offset(x + w, y + removeH),
             p,
           );
-          y = y + h - cutH;
-          h = cutH;
+          y += removeH;
+          h = keepH;
           break;
         case 3:
-          final double cutW = w / phi;
-          canvas.drawLine(Offset(x + cutW, y), Offset(x + cutW, y + h), p);
-          w = cutW;
+          final double keepW = w / phi;
+          canvas.drawLine(Offset(x + keepW, y), Offset(x + keepW, y + h), p);
+          w = keepW;
           break;
       }
+      // Draw the nested rectangle produced by this iteration.
+      canvas.drawRect(Rect.fromLTWH(x, y, w, h), p);
     }
   }
 
@@ -2001,66 +2124,152 @@ class CompositionPainter extends CustomPainter {
   // Both diagonals, each with its two perpendiculars from the opposite corners.
   // TL→BR set (Golden Triangles) + TR→BL set (its mirror) = 6 lines, 8 triangles.
   void _drawHarmoniousTriangles(Canvas canvas, Size s) {
-    final p = Paint()
-      ..color = _gold.withValues(alpha: 0.45)
-      ..strokeWidth = _sw
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.butt
-      ..isAntiAlias = true;
+    // Golden Triangles flipped horizontally: x → (w − x).
+    // Original uses TL→BR diagonal; flipped uses TR→BL diagonal,
+    // with perpendiculars from TL and BR to that diagonal.
+    final p = _gp();
 
     final double w = s.width;
     final double h = s.height;
     final double d2 = w * w + h * h;
 
-    // ── Set 1: TL→BR diagonal + perps from TR and BL ─────────────────────────
-    canvas.drawLine(Offset(0, 0), Offset(w, h), p);
-
-    final double t1TR = (w * w) / d2; // perp from TR onto TL→BR
-    canvas.drawLine(Offset(w, 0), Offset(t1TR * w, t1TR * h), p);
-
-    final double t1BL = (h * h) / d2; // perp from BL onto TL→BR
-    canvas.drawLine(Offset(0, h), Offset(t1BL * w, t1BL * h), p);
-
-    // ── Set 2: TR→BL diagonal + perps from TL and BR ─────────────────────────
+    // 1. Main diagonal: top-right → bottom-left  (mirror of TL→BR)
     canvas.drawLine(Offset(w, 0), Offset(0, h), p);
 
-    final double t2TL = (w * w) / d2; // perp from TL onto TR→BL
-    canvas.drawLine(Offset(0, 0), Offset(w - t2TL * w, t2TL * h), p);
+    // 2. Perpendicular from top-left corner (0, 0) to TR→BL diagonal.
+    //    TR→BL direction vector: (−w, h).
+    //    t = [(0−w)·(−w) + (0−0)·h] / d2 = w²/d2
+    final double t2 = (w * w) / d2;
+    canvas.drawLine(Offset(0, 0), Offset(w - t2 * w, t2 * h), p);
 
-    final double t2BR = (h * h) / d2; // perp from BR onto TR→BL
-    canvas.drawLine(Offset(w, h), Offset(w - t2BR * w, t2BR * h), p);
+    // 3. Perpendicular from bottom-right corner (w, h) to TR→BL diagonal.
+    //    t = [(w−w)·(−w) + (h−0)·h] / d2 = h²/d2
+    final double t3 = (h * h) / d2;
+    canvas.drawLine(Offset(w, h), Offset(w - t3 * w, t3 * h), p);
   }
 
   // ── Cross ───────────────────────────────────────────────────────────────────
   void _drawCross(Canvas canvas, Size s) {
     final p = _p;
-    canvas.drawLine(Offset(s.width / 2, 0), Offset(s.width / 2, s.height), p);
-    canvas.drawLine(Offset(0, s.height / 2), Offset(s.width, s.height / 2), p);
+
+    // Christian cross — centered horizontally, positioned in the upper portion
+    // of the frame. The vertical arm is longer below the crossbar than above.
+    final double cx = s.width * 0.50;
+    final double cy = s.height * 0.38; // crossbar sits at upper-center
+
+    // Vertical arm: short above the crossbar, long below — classic cross ratio.
+    final double armUp    = s.height * 0.10;
+    final double armDown  = s.height * 0.30;
+
+    // Horizontal crossbar: symmetric, does not reach screen edges.
+    final double armLeft  = s.width  * 0.18;
+    final double armRight = s.width  * 0.18;
+
+    // Vertical line
+    canvas.drawLine(Offset(cx, cy - armUp), Offset(cx, cy + armDown), p);
+    // Horizontal crossbar
+    canvas.drawLine(Offset(cx - armLeft, cy), Offset(cx + armRight, cy), p);
   }
 
   // ── Focal Mass ──────────────────────────────────────────────────────────────
   // Scattered dot cluster in the upper-center (like reference image)
   void _drawFocalMass(Canvas canvas, Size s) {
-    final dotP = Paint()
-      ..color = _gold.withValues(alpha: 0.45)
-      ..style = PaintingStyle.fill;
-    // Cluster centered at ~50% x, 40% y
+    // Focal center — upper-center of frame.
     final double cx = s.width * 0.50;
-    final double cy = s.height * 0.40;
-    final rng = math.Random(42); // deterministic seed
-    for (int i = 0; i < 45; i++) {
-      // Gaussian-ish spread using two uniform samples
-      final double u1 = rng.nextDouble();
+    final double cy = s.height * 0.38;
+
+    // Vertical spread: tight horizontally, wide vertically.
+    // Dots scatter downward/upward from the core, thinning sharply with distance.
+    const double scatterX = 26.0;   // tight horizontal half-width
+    const double scatterY = 88.0;   // wide vertical half-height
+    const int    count    = 200;    // total dots (increased for denser mass)
+
+    final rng = math.Random(7); // deterministic — same pattern every frame
+    final dotPaint = Paint()..style = PaintingStyle.fill;
+
+    for (int i = 0; i < count; i++) {
+      // Box-Muller → standard normal samples.
+      final double u1 = rng.nextDouble().clamp(1e-9, 1.0);
       final double u2 = rng.nextDouble();
-      final double mag = math.sqrt(-2 * math.log(u1 + 0.0001)) * 30;
-      final double angle = 2 * math.pi * u2;
-      // Squash horizontally to look more like scattered flock
-      final double dx =
-          math.cos(angle) * mag * 1.6 + (rng.nextDouble() - 0.5) * 20;
-      final double dy =
-          math.sin(angle) * mag * 0.8 + (rng.nextDouble() - 0.5) * 10;
-      final double radius = rng.nextDouble() * 1.8 + 0.6;
-      canvas.drawCircle(Offset(cx + dx, cy + dy), radius, dotP);
+      final double n1 = math.sqrt(-2.0 * math.log(u1)) * math.cos(2 * math.pi * u2);
+      final double n2 = math.sqrt(-2.0 * math.log(u1)) * math.sin(2 * math.pi * u2);
+
+      final double dx = n1 * scatterX;
+      final double dy = n2 * scatterY;
+
+      // Anisotropic normalised distance (0 = core, 1 = edge of scatter zone).
+      final double distNorm = math.sqrt(
+        math.pow(dx / scatterX, 2) + math.pow(dy / scatterY, 2),
+      ).clamp(0.0, 1.0);
+
+      // Steeper Gaussian falloff (k=7) so density drops quickly away from core.
+      final double coreInfluence = math.exp(-distNorm * distNorm * 7.0);
+
+      // Dot radius: 0.8px at edge → 2.4px at core.
+      final double radius = 0.8 + 1.6 * coreInfluence;
+
+      // Opacity: 0.10 at edge → 0.70 at core.
+      final double alpha = 0.10 + 0.60 * coreInfluence;
+
+      // Core zone: tiny filled squares for a sharp geometric look.
+      final bool isSquare = distNorm < 0.30 && rng.nextDouble() > 0.4;
+
+      dotPaint.color = _gold.withValues(alpha: alpha);
+      final Offset pos = Offset(cx + dx, cy + dy);
+
+      if (isSquare) {
+        canvas.drawRect(
+          Rect.fromCenter(center: pos, width: radius * 2, height: radius * 2),
+          dotPaint,
+        );
+      } else {
+        canvas.drawCircle(pos, radius, dotPaint);
+      }
+
+      // Micro-halo on scatter-zone markers — offset satellite dot.
+      if (distNorm > 0.25 && distNorm < 0.80 && rng.nextDouble() > 0.55) {
+        final double haloDx = (rng.nextDouble() - 0.5) * 3;
+        final double haloDy = (rng.nextDouble() - 0.5) * 6;
+        dotPaint.color = _gold.withValues(alpha: alpha * 0.30);
+        canvas.drawCircle(
+          Offset(cx + dx + haloDx, cy + dy + haloDy),
+          0.6,
+          dotPaint,
+        );
+      }
+    }
+
+    // ── Dense core pass — extra 90 tightly packed dots in the core zone only.
+    // Distributed with a much smaller sigma so they cluster visibly at the
+    // focal centre on top of the outer scatter field.
+    const double coreScatterX = 10.0;
+    const double coreScatterY = 14.0;
+    const int    coreCount    = 90;
+    final rngCore = math.Random(31); // separate seed keeps pattern stable
+    for (int i = 0; i < coreCount; i++) {
+      final double u1 = rngCore.nextDouble().clamp(1e-9, 1.0);
+      final double u2 = rngCore.nextDouble();
+      final double n1 = math.sqrt(-2.0 * math.log(u1)) * math.cos(2 * math.pi * u2);
+      final double n2 = math.sqrt(-2.0 * math.log(u1)) * math.sin(2 * math.pi * u2);
+      final double dx = n1 * coreScatterX;
+      final double dy = n2 * coreScatterY;
+      final double distNorm = math.sqrt(
+        math.pow(dx / coreScatterX, 2) + math.pow(dy / coreScatterY, 2),
+      ).clamp(0.0, 1.0);
+      final double influence = math.exp(-distNorm * distNorm * 5.0);
+      final double radius    = 0.7 + 1.8 * influence;
+      final double alpha     = 0.30 + 0.50 * influence;
+      dotPaint.color = _gold.withValues(alpha: alpha);
+      final Offset pos = Offset(cx + dx, cy + dy);
+      // Mix of squares and circles for a crisp geometric core texture.
+      if (rngCore.nextDouble() > 0.5) {
+        canvas.drawRect(
+          Rect.fromCenter(center: pos, width: radius * 2, height: radius * 2),
+          dotPaint,
+        );
+      } else {
+        canvas.drawCircle(pos, radius, dotPaint);
+      }
     }
   }
 
@@ -2068,36 +2277,41 @@ class CompositionPainter extends CustomPainter {
   // V shape opening upward, vertex at bottom-center
   void _drawVArrangement(Canvas canvas, Size s) {
     final p = _p;
-    final double vx = s.width * 0.5;
-    final double vy = s.height * 0.75;
-    canvas.drawLine(Offset(vx, vy), Offset(s.width * 0.1, s.height * 0.15), p);
-    canvas.drawLine(Offset(vx, vy), Offset(s.width * 0.9, s.height * 0.15), p);
-    // Inner diagonal lines matching reference
-    canvas.drawLine(
-      Offset(s.width * 0.25, s.height * 0.55),
-      Offset(s.width * 0.9, s.height * 0.85),
-      p,
-    );
+
+    // Vertex at lower-center; arms rise symmetrically to the upper corners
+    // of a contained region — fully visible, no clipping at edges.
+    final double vx = s.width * 0.50;   // horizontal center
+    final double vy = s.height * 0.78;  // vertex near bottom
+
+    // Arm endpoints — symmetric, inset from frame edges.
+    final double topY = s.height * 0.12;
+    final double topLeftX  = s.width * 0.08;
+    final double topRightX = s.width * 0.92;
+
+    // Left arm: vertex → upper-left
+    canvas.drawLine(Offset(vx, vy), Offset(topLeftX, topY), p);
+    // Right arm: vertex → upper-right (mirror)
+    canvas.drawLine(Offset(vx, vy), Offset(topRightX, topY), p);
   }
 
   // ── Diagonal ────────────────────────────────────────────────────────────────
   // Two strong diagonals plus two parallel helpers — like the reference
   void _drawDiagonal(Canvas canvas, Size s) {
     final p = _p;
-    // Main bold diagonal top-left to bottom-right
-    canvas.drawLine(Offset(0, 0), Offset(s.width, s.height), p);
-    // Parallel helper lines
-    final double offset = s.width * 0.15;
-    canvas.drawLine(
-      Offset(offset, 0),
-      Offset(s.width, s.height - offset * (s.height / s.width)),
-      p,
-    );
-    canvas.drawLine(
-      Offset(0, offset * (s.height / s.width)),
-      Offset(s.width - offset, s.height),
-      p,
-    );
+
+    // Both lines share a single origin at the top-right corner.
+    // They fan toward the bottom-left corner, ending ~2 cm apart
+    // (~85 logical px each side of the BL corner — distance ≈ 120 px).
+    final Offset origin = Offset(s.width, 0);
+
+    // Line 1 — ends on the left edge, 85px above the bottom-left corner.
+    final Offset end1 = Offset(0, s.height - 85);
+
+    // Line 2 — ends on the bottom edge, 85px right of the bottom-left corner.
+    final Offset end2 = Offset(85, s.height);
+
+    canvas.drawLine(origin, end1, p);
+    canvas.drawLine(origin, end2, p);
   }
 
   // ── Radial ──────────────────────────────────────────────────────────────────
@@ -2105,46 +2319,40 @@ class CompositionPainter extends CustomPainter {
   void _drawRadial(Canvas canvas, Size s) {
     final p = _p;
     final Offset center = Offset(s.width / 2, s.height / 2);
-    final int count = 8;
+
+    // Fixed arm length: 40% of the shorter screen dimension so all 8 lines
+    // are equal length, stay well clear of the edges, and never overlap.
+    final double armLength = math.min(s.width, s.height) * 0.40;
+
+    // 8 lines = 16 arms evenly spaced at 360°/8 = 45° apart.
+    const int count = 8;
     for (int i = 0; i < count; i++) {
-      final double angle = i * math.pi / count;
+      final double angle = i * 2 * math.pi / count;
       final double cos = math.cos(angle);
       final double sin = math.sin(angle);
-      // Extend to screen edge in both directions
-      final double tMax = _rayLength(s, center, cos, sin);
       canvas.drawLine(
-        Offset(center.dx - cos * tMax, center.dy - sin * tMax),
-        Offset(center.dx + cos * tMax, center.dy + sin * tMax),
+        Offset(center.dx - cos * armLength, center.dy - sin * armLength),
+        Offset(center.dx + cos * armLength, center.dy + sin * armLength),
         p,
       );
     }
   }
 
-  double _rayLength(Size s, Offset o, double cos, double sin) {
-    double t = double.infinity;
-    if (cos.abs() > 1e-6) {
-      t = math.min(t, (cos > 0 ? s.width - o.dx : o.dx) / cos.abs());
-    }
-    if (sin.abs() > 1e-6) {
-      t = math.min(t, (sin > 0 ? s.height - o.dy : o.dy) / sin.abs());
-    }
-    return t;
-  }
-
   // ── L Arrangement ───────────────────────────────────────────────────────────
   void _drawLArrangement(Canvas canvas, Size s) {
     final p = _p;
-    // Vertical bar on the right ~70%
-    final double vx = s.width * 0.68;
+    // Flipped both vertically (y→h−y) and horizontally (x→w−x).
+    // Vertical bar on the LEFT ~32%.
+    final double vx = s.width * 0.32;
     canvas.drawLine(
-      Offset(vx, s.height * 0.18),
-      Offset(vx, s.height * 0.80),
+      Offset(vx, s.height * 0.20),
+      Offset(vx, s.height * 0.82),
       p,
     );
-    // Horizontal bar at the bottom of the vertical
+    // Horizontal bar at the TOP, extending to the RIGHT.
     canvas.drawLine(
-      Offset(vx, s.height * 0.80),
-      Offset(s.width * 0.20, s.height * 0.80),
+      Offset(vx, s.height * 0.20),
+      Offset(s.width * 0.80, s.height * 0.20),
       p,
     );
   }
@@ -2154,24 +2362,36 @@ class CompositionPainter extends CustomPainter {
   void _drawCompoundCurve(Canvas canvas, Size s) {
     final p = _p;
     final path = Path();
-    // Start top-center, S-curve to bottom-center
-    path.moveTo(s.width * 0.5, 0);
+
+    // S-curve flowing top→bottom across the full frame height (portrait).
+    // Start: top edge at horizontal center.
+    // End:   bottom edge at horizontal center.
+    // Two cubic segments share a smooth join at the frame center,
+    // with control points that pull each half in opposite horizontal
+    // directions to form a balanced vertical S.
+    //
+    //  Top half:    bows right (CP1 right-upper, CP2 right-lower of center)
+    //  Bottom half: bows left  (CP1 left-upper,  CP2 left-lower  of center)
+
+    final double cx  = s.width  * 0.50;
+    final double cy  = s.height * 0.50;
+    final double bow = s.width  * 0.28; // horizontal amplitude of each arc
+
+    // Segment 1: top-edge mid → frame center
+    path.moveTo(cx, 0);
     path.cubicTo(
-      s.width * 0.1,
-      s.height * 0.25,
-      s.width * 0.9,
-      s.height * 0.60,
-      s.width * 0.5,
-      s.height * 0.85,
+      cx + bow, s.height * 0.20,  // CP1 — bows right
+      cx + bow, s.height * 0.40,  // CP2 — stays right before center
+      cx,       cy,                // end at frame center
     );
+
+    // Segment 2: frame center → bottom-edge mid (mirrors segment 1)
     path.cubicTo(
-      s.width * 0.3,
-      s.height * 0.95,
-      s.width * 0.5,
-      s.height,
-      s.width * 0.5,
-      s.height,
+      cx - bow, s.height * 0.60,  // CP1 — bows left
+      cx - bow, s.height * 0.80,  // CP2 — stays left before bottom
+      cx,       s.height,          // end at bottom-edge mid
     );
+
     canvas.drawPath(path, p);
   }
 
@@ -2198,5 +2418,6 @@ class CompositionPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(CompositionPainter old) => old.mode != mode;
+  bool shouldRepaint(CompositionPainter old) =>
+      old.mode != mode || old.glowSegs != glowSegs;
 }
