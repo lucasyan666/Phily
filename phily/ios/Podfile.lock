@@ -1,21 +1,15 @@
 PODS:
   - Flutter (1.0.0)
-  - image_gallery_saver (2.0.2):
-    - Flutter
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
-  - image_gallery_saver (from `.symlinks/plugins/image_gallery_saver/ios`)
 
 EXTERNAL SOURCES:
   Flutter:
     :path: Flutter
-  image_gallery_saver:
-    :path: ".symlinks/plugins/image_gallery_saver/ios"
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  image_gallery_saver: 14711d79da40581063e8842a11acf1969d781ed7
 
 PODFILE CHECKSUM: 3c63482e143d1b91d2d2560aee9fb04ecc74ac7e
 

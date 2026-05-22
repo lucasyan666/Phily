@@ -3,11 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'package:gal/gal.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'dart:io';
-import 'dart:ui';
+import 'dart:ui' as ui;
 import 'dart:typed_data';
+import 'package:flutter/rendering.dart';
 
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
@@ -53,6 +54,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double _ultraWideScaleFactor = 2.0;
   CameraDescription? _ultraWideCamera;
   bool _isUsingUltraWide = false;
+  bool _isSwitchingLens = false;
+  bool _usesVirtualCamera = false;
+  // Cached ultra-wide zoom range from the pre-warm probe.
+  // Avoids a second getMinZoomLevel() call at switch time.
+  double? _uwCachedMinZoom;
+  double? _uwCachedMaxZoom;
+  // Zoom levels where iOS transitions between physical lenses.
+  // Received from native getZoomInfo once on init. Used to accent
+  // the tick marks on the zoom meter (like the native Camera app).
+  List<double> _switchoverFactors = const [];
 
   // Animation for bounce effect
   AnimationController? _bounceController;
@@ -222,28 +233,65 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         );
       }
 
-      // Resolve the ultra-wide camera via native AVFoundation API.
-      _ultraWideCamera = await _resolveUltraWideCamera();
-
-      // Pre-warm the ultra-wide hardware while no session is running.
-      // No AVCaptureSession conflict at this point — main camera not yet init'd.
-      // Subsequent 0.5× switches will be instant after this.
-      if (_ultraWideCamera != null) {
-        await _preWarmUltraWide();
+      // Identify the virtual multi-lens device (builtInTripleCamera /
+      // builtInDualWideCamera) using AVCaptureDevice.DiscoverySession via the
+      // native channel. The returned uniqueID matches CameraDescription.name
+      // because camera_avfoundation builds descriptions with device.uniqueID
+      // as the name — and >= 0.9.8 includes virtual devices in its discovery
+      // session, so the ID will appear in availableCameras().
+      //
+      // A single CameraController on a virtual device covers 0.5×–max via one
+      // AVCaptureSession. iOS routes to the correct physical lens internally
+      // using videoZoomFactor + virtualDeviceSwitchOverVideoZoomFactors.
+      // No session teardown — seamless, zero frame drop.
+      String? virtualId;
+      try {
+        virtualId = await _cameraChannel.invokeMethod<String>('getVirtualCameraId');
+      } catch (e) {
+        debugPrint('getVirtualCameraId: $e');
       }
+      final virtualCam = virtualId != null
+          ? _cameras!.where((c) => c.name == virtualId).firstOrNull
+          : null;
+      debugPrint('getVirtualCameraId=$virtualId  matched=${virtualCam?.name}');
 
-      _controller = CameraController(
-        _cameras![0],
-        _resolution,
-        enableAudio: true,
-      );
+      if (virtualCam != null) {
+        debugPrint('Virtual multi-camera found: ${virtualCam.name}');
+        _usesVirtualCamera = true;
+        _ultraWideCamera = null;
+        _controller = CameraController(virtualCam, _resolution, enableAudio: true);
+      } else {
+        debugPrint('No virtual camera — using pre-warmed two-controller approach.');
+        _usesVirtualCamera = false;
+        _ultraWideCamera = await _resolveUltraWideCamera();
+        _controller = CameraController(_cameras![0], _resolution, enableAudio: true);
+        _isUsingUltraWide = false;
+      }
 
       await _controller!.initialize();
       await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
       await _controller!.setFlashMode(_flashMode);
       _minZoom = await _controller!.getMinZoomLevel();
       _maxZoom = (await _controller!.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
-      _currentZoom = _minZoom;
+      _currentZoom = _usesVirtualCamera ? 1.0.clamp(_minZoom, _maxZoom) : _minZoom;
+
+      if (_usesVirtualCamera) {
+        try {
+          final info = await _CameraZoomChannel.instance.getZoomInfo();
+          if (info != null) {
+            _minZoom = (info['min'] as num?)?.toDouble() ?? _minZoom;
+            _maxZoom = (info['max'] as num?)?.toDouble() ?? _maxZoom;
+            _switchoverFactors = ((info['switchoverFactors'] as List?) ?? [])
+                .map((e) => (e as num).toDouble())
+                .toList();
+            debugPrint('Switchover factors: $_switchoverFactors');
+          }
+        } catch (e) {
+          debugPrint('getZoomInfo failed: $e');
+        }
+        _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom);
+        await _CameraZoomChannel.instance.setZoom(_currentZoom);
+      }
       debugPrint(
         'Zoom range: $_minZoom – $_maxZoom | ultra-wide: ${_ultraWideCamera?.name}',
       );
@@ -304,26 +352,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   /// Briefly initialises and immediately disposes the ultra-wide controller
   /// while no other [AVCaptureSession] is active. Pre-warming means the OS
-  /// has already configured the hardware when the user taps 0.5×, removing
-  /// the visible initialisation lag.
-  Future<void> _preWarmUltraWide() async {
-    if (_ultraWideCamera == null) return;
-    debugPrint('Pre-warming ultra-wide...');
-    final probe = CameraController(
-      _ultraWideCamera!,
-      ResolutionPreset.low,
-      enableAudio: false,
-    );
-    try {
-      await probe.initialize();
-      debugPrint('Ultra-wide pre-warm done');
-    } catch (e) {
-      debugPrint('Ultra-wide pre-warm failed: $e');
-    } finally {
-      try { await probe.dispose(); } catch (_) {}
-    }
-  }
-
   Future<void> _loadLatestThumbnail() async {
     try {
       debugPrint('Starting thumbnail load...');
@@ -510,8 +538,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Future<void> _saveMediaInBackground(String filePath) async {
     try {
-      // Save to gallery
-      await ImageGallerySaver.saveFile(filePath);
+      // Save to gallery — gal uses separate methods for images vs videos.
+      final lower = filePath.toLowerCase();
+      final isVideo = lower.endsWith('.mp4') || lower.endsWith('.mov');
+      if (isVideo) {
+        await Gal.putVideo(filePath, album: 'Phily');
+      } else {
+        await Gal.putImage(filePath, album: 'Phily');
+      }
 
       // Refresh thumbnail after save completes
       _loadLatestThumbnail();
@@ -885,7 +919,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             bottom: 0,
             child: ClipRect(
               child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                 child: Container(
                   padding: const EdgeInsets.only(
                     left: 20,
@@ -1257,7 +1291,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     const Color gold = Color(0xFFE5C158);
     return ClipRect(
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Container(
           padding: EdgeInsets.only(
             top: MediaQuery.of(context).padding.top + 10,
@@ -1372,7 +1406,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         ? ClipRRect(
             borderRadius: BorderRadius.circular(18),
             child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+              filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
               child: Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
@@ -1413,90 +1447,133 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Future<void> _switchToUltraWide() async {
-    if (_ultraWideCamera == null || _isUsingUltraWide) return;
+    if (_ultraWideCamera == null || _isUsingUltraWide || _isSwitchingLens) return;
+    _isSwitchingLens = true;
     _stopImageStream();
-    setState(() { _isInitialized = false; });
-    await _controller?.dispose();
-    _controller = CameraController(_ultraWideCamera!, _resolution, enableAudio: true);
-    await _controller!.initialize();
-    await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
-    await _controller!.setFlashMode(_flashMode);
-    _minZoom = await _controller!.getMinZoomLevel();
-    _maxZoom = (await _controller!.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
-    // Ultra-wide physical minZoom (typically 1.0) maps to 0.5× logical.
-    // Store the factor so intermediate values 0.5–1.0 can be dialled in
-    // by calling setZoomLevel on the ultra-wide sensor.
-    _ultraWideScaleFactor = _minZoom / 0.5;
-    _currentZoom = _minZoom;
+    final old = _controller;
+    _controller = null;
+    if (mounted) {
+      setState(() {});
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    await old?.dispose();
+    final nc = CameraController(_ultraWideCamera!, _resolution, enableAudio: true);
+    try {
+      await nc.initialize();
+    } catch (e) {
+      debugPrint('_switchToUltraWide: $e');
+      try { await nc.dispose(); } catch (_) {}
+      _isSwitchingLens = false;
+      return;
+    }
+    await nc.lockCaptureOrientation(DeviceOrientation.portraitUp);
+    await nc.setFlashMode(_flashMode);
+    // Use cached zoom range if available (saved during pre-warm), otherwise query.
+    final double uwPhysMin = _uwCachedMinZoom ?? await nc.getMinZoomLevel();
+    _maxZoom = _uwCachedMaxZoom ?? (await nc.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
+    _ultraWideScaleFactor = uwPhysMin / 0.5;
+    _minZoom = 0.5;
     _isUsingUltraWide = true;
-    if (mounted) setState(() { _isInitialized = true; });
+    _controller = nc;
+    _isSwitchingLens = false;
+    if (mounted) setState(() {});
     await _startImageStream();
   }
 
   Future<void> _switchToMainCamera() async {
-    if (!_isUsingUltraWide) return;
+    if (!_isUsingUltraWide || _isSwitchingLens) return;
+    _isSwitchingLens = true;
     _stopImageStream();
-    setState(() { _isInitialized = false; });
-    await _controller?.dispose();
-    _controller = CameraController(_cameras![0], _resolution, enableAudio: true);
-    await _controller!.initialize();
-    await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
-    await _controller!.setFlashMode(_flashMode);
-    _minZoom = await _controller!.getMinZoomLevel();
-    _maxZoom = (await _controller!.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
-    _currentZoom = _minZoom;
+    final old = _controller;
+    _controller = null;
+    if (mounted) {
+      setState(() {});
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    await old?.dispose();
+    final nc = CameraController(_cameras![0], _resolution, enableAudio: true);
+    try {
+      await nc.initialize();
+    } catch (e) {
+      debugPrint('_switchToMainCamera: $e');
+      try { await nc.dispose(); } catch (_) {}
+      _isSwitchingLens = false;
+      return;
+    }
+    await nc.lockCaptureOrientation(DeviceOrientation.portraitUp);
+    await nc.setFlashMode(_flashMode);
+    _minZoom = await nc.getMinZoomLevel();
+    _maxZoom = (await nc.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
+    _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom);
     _isUsingUltraWide = false;
-    if (mounted) setState(() { _isInitialized = true; });
+    _controller = nc;
+    _isSwitchingLens = false;
+    if (mounted) setState(() {});
     await _startImageStream();
   }
 
-  /// Sets the logical zoom level in [0.5, _zoomMax].
-  ///
-  /// Logical 0.5–1.0× uses the ultra-wide controller. The ultra-wide sensor's
-  /// native focal length = 0.5× logical, so values like 0.6, 0.7, 0.8, 0.9 are
-  /// reached by calling setZoomLevel with a proportionally scaled physical zoom:
-  ///   physicalZoom = logicalZoom × _ultraWideScaleFactor
-  /// Logical ≥1.0× uses the main camera directly.
+
+
   Future<void> _setCameraZoom(double value) async {
     if (_controller == null || !_controller!.value.isInitialized) return;
+
+    if (_usesVirtualCamera) {
+      // ── Native seamless-zoom path ───────────────────────────────────────────
+      // Writes directly to AVCaptureDevice.videoZoomFactor, bypassing the
+      // Flutter plugin's setZoomLevel path. This is the same device the plugin's
+      // AVCaptureSession holds, so the change applies on the very next frame —
+      // zero session teardown, zero black frame, no controller swap ever.
+      final double clamped = value.clamp(_minZoom, _maxZoom);
+      try {
+        await _CameraZoomChannel.instance.setZoom(clamped);
+        if (mounted) setState(() => _currentZoom = clamped);
+      } catch (e) {
+        // Native channel unavailable — fall back to plugin path.
+        debugPrint('_setCameraZoom native failed ($e) — using plugin fallback');
+        try {
+          await _controller!.setZoomLevel(clamped);
+          if (mounted) setState(() => _currentZoom = clamped);
+        } catch (e2) { debugPrint('_setCameraZoom plugin: $e2'); }
+      }
+      return;
+    }
+
+    // ── Two-controller fallback (no virtual device on this hardware) ─────────
+    if (_isSwitchingLens) return;
     final double v = value.clamp(0.5, _zoomMax);
 
     if (v < 1.0) {
-      // Ensure we are on the ultra-wide controller.
       if (!_isUsingUltraWide) {
         if (_ultraWideCamera != null) {
           await _switchToUltraWide();
+          if (_controller == null || !_controller!.value.isInitialized) return;
         } else {
-          // No ultra-wide — clamp to main camera minimum.
           final double clamped = _minZoom;
           try { await _controller!.setZoomLevel(clamped); } catch (_) {}
           if (mounted) setState(() => _currentZoom = clamped);
           return;
         }
       }
-      // Convert logical zoom to the physical zoom on the ultra-wide sensor.
-      // Example: logical 0.7× × factor 2.0 = physical 1.4 on the sensor,
-      // which is equivalent to 0.7× field-of-view relative to the main camera.
-      final double physical = (v * _ultraWideScaleFactor).clamp(_minZoom, _maxZoom);
+      final double physical = (v * _ultraWideScaleFactor)
+          .clamp(_ultraWideScaleFactor * 0.5, _maxZoom);
       try {
         await _controller!.setZoomLevel(physical);
         if (mounted) setState(() => _currentZoom = v);
       } catch (e) {
-        debugPrint('_setCameraZoom ultra-wide physical=$physical: $e');
+        debugPrint('_setCameraZoom ultra-wide: $e');
       }
-      return;
-    }
-
-    // ≥1.0× — use main camera.
-    if (_isUsingUltraWide) {
-      await _switchToMainCamera();
-    }
-    final double clamped = v.clamp(_minZoom, _maxZoom);
-    try {
-      await _controller!.setZoomLevel(clamped);
-      if (mounted) setState(() => _currentZoom = clamped);
-    } catch (e) {
-      debugPrint('_setCameraZoom main $clamped: $e');
+    } else {
+      if (_isUsingUltraWide) {
+        await _switchToMainCamera();
+        if (_controller == null || !_controller!.value.isInitialized) return;
+      }
+      final double clamped = v.clamp(_minZoom, _maxZoom);
+      try {
+        await _controller!.setZoomLevel(clamped);
+        if (mounted) setState(() => _currentZoom = clamped);
+      } catch (e) {
+        debugPrint('_setCameraZoom main: $e');
+      }
     }
   }
 
@@ -1505,17 +1582,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // ────────────────────────────────────────────────────────────────────────────
 
   Widget _buildZoomMeter() {
-    // px per zoom unit — determines how far the user must drag to change 1×.
     const double pxPerUnit = 36.0;
-    // Clamp zoom to [0.5, _zoomMax].
     final double clampedZoom = _currentZoom.clamp(0.5, _zoomMax);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Real-time zoom readout in gold
         Text(
-          '${clampedZoom < 1 ? clampedZoom.toStringAsFixed(1) : clampedZoom.toStringAsFixed(clampedZoom >= 10 ? 1 : 1)}×',
+          '${clampedZoom < 1 ? clampedZoom.toStringAsFixed(1) : clampedZoom.toStringAsFixed(1)}×',
           style: const TextStyle(
             color: Color(0xFFE5C158),
             fontSize: 13,
@@ -1524,7 +1598,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ),
         ),
         const SizedBox(height: 6),
-        // Tick-mark wheel
         GestureDetector(
           onHorizontalDragStart: (d) {
             _meterDragStart = d.localPosition.dx;
@@ -1532,7 +1605,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           },
           onHorizontalDragUpdate: (d) {
             final double delta = d.localPosition.dx - _meterDragStart;
-            // Dragging right = zoom out, left = zoom in (wheel scrolls under finger).
             final double newZoom =
                 (_zoomAtDragStart - delta / pxPerUnit).clamp(0.5, _zoomMax);
             _setCameraZoom(newZoom);
@@ -1546,6 +1618,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 zoom: clampedZoom,
                 maxZoom: _zoomMax,
                 pxPerUnit: pxPerUnit,
+                switchoverFactors: _switchoverFactors,
               ),
             ),
           ),
@@ -1575,7 +1648,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       );
     }
 
-    if (!_isInitialized || _controller == null) {
+    // First-time initialisation — show spinner.
+    if (!_isInitialized) {
       return Container(
         color: const Color(0xFF1a1a1a),
         child: const Center(
@@ -1584,7 +1658,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       );
     }
 
-    // Show live camera preview with slight horizontal stretch
+    // Lens is mid-switch — controller disposed, new one not ready yet.
+    // Return plain black; this frame is very brief (pre-warmed hardware).
+    if (_controller == null) {
+      return Container(color: Colors.black);
+    }
+
     return Transform(
       alignment: Alignment.center,
       transform: Matrix4.diagonal3Values(1.17, 1.0, 1.0),
@@ -1645,15 +1724,51 @@ class _FocusBracketPainter extends CustomPainter {
 // Zoom meter painter — hairline tick wheel
 // ────────────────────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────────────────────
+// Native seamless zoom bridge
+// Communicates with AVCaptureDevice.videoZoomFactor directly via MethodChannel,
+// bypassing Flutter’s own CameraController zoom path. This is what makes
+// lens switching truly seamless — the device’s active session is never torn
+// down; iOS handles physical lens selection internally.
+// ────────────────────────────────────────────────────────────────────────────
+
+class _CameraZoomChannel {
+  static const MethodChannel _ch = MethodChannel('com.phily.camera/zoom');
+  static final instance = _CameraZoomChannel._();
+  _CameraZoomChannel._();
+
+  /// Immediate zoom — for continuous drag input.
+  /// Writes AVCaptureDevice.videoZoomFactor directly; reflects on next frame.
+  Future<void> setZoom(double factor) =>
+      _ch.invokeMethod('setZoom', {'factor': factor});
+
+  /// Hardware-animated zoom ramp — for discrete level taps.
+  /// Uses AVCaptureDevice.ramp(toVideoZoomFactor:withRate:) which is
+  /// frame-accurate and cancels any previous ramp atomically.
+  Future<void> rampZoom(double factor, {double rate = 5.0}) =>
+      _ch.invokeMethod('rampZoom', {'factor': factor, 'rate': rate});
+
+  /// Returns {min, max, current, switchoverFactors} from the native device.
+  /// switchoverFactors contains the exact zoom levels where iOS transitions
+  /// between physical lenses (e.g. [2.0, 6.0] on iPhone 14 Pro).
+  Future<Map<String, dynamic>?> getZoomInfo() async {
+    final raw = await _ch.invokeMethod<Map>('getZoomInfo');
+    if (raw == null) return null;
+    return raw.map((k, v) => MapEntry(k.toString(), v));
+  }
+}
+
 class _ZoomMeterPainter extends CustomPainter {
-  final double zoom;      // current zoom level
-  final double maxZoom;   // software upper bound (25.0)
-  final double pxPerUnit; // logical pixels per 1×
+  final double zoom;                      // current logical zoom level
+  final double maxZoom;                   // software upper bound (25.0)
+  final double pxPerUnit;                 // logical pixels per 1×
+  final List<double> switchoverFactors;   // hardware lens-switch boundaries
 
   const _ZoomMeterPainter({
     required this.zoom,
     required this.maxZoom,
     required this.pxPerUnit,
+    this.switchoverFactors = const [],
   });
 
   static const Color _white = Color(0xFFFFFFFF);
@@ -1701,9 +1816,20 @@ class _ZoomMeterPainter extends CustomPainter {
       final double x = cx + (v - zoom) * pxPerUnit;
       if (x < 0 || x > size.width) { v = (v * 10).round() / 10 + 0.1; continue; }
 
-      final bool isMajor = _major.any((m) => (v - m).abs() < 0.02);
-      final double tickH = isMajor ? 16.0 : 8.0;
-      final Paint p = isMajor ? majorPaint : tickPaint;
+      // A tick is a hardware lens-switchover boundary if it matches one of the
+      // virtualDeviceSwitchOverVideoZoomFactors reported by iOS. These get a
+      // gold accent tick (like the native Camera app's 0.5×/1×/2× indicators).
+      final bool isSwitchover =
+          switchoverFactors.any((s) => (v - s).abs() < 0.08);
+      final bool isMajor =
+          _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
+      final double tickH = isSwitchover ? 20.0 : (isMajor ? 16.0 : 8.0);
+      final Paint p = isSwitchover
+          ? (Paint()
+              ..color = _gold.withValues(alpha: 0.75)
+              ..strokeWidth = 1.2
+              ..strokeCap = StrokeCap.butt)
+          : (isMajor ? majorPaint : tickPaint);
 
       canvas.drawLine(Offset(x, cy - tickH), Offset(x, cy), p);
 
@@ -1714,9 +1840,11 @@ class _ZoomMeterPainter extends CustomPainter {
         tp.text = TextSpan(
           text: label,
           style: TextStyle(
-            color: _white.withValues(alpha: 0.55),
+            color: isSwitchover
+                ? _gold.withValues(alpha: 0.80)
+                : _white.withValues(alpha: 0.55),
             fontSize: 8,
-            fontWeight: FontWeight.w300,
+            fontWeight: isSwitchover ? FontWeight.w400 : FontWeight.w300,
             letterSpacing: 0.5,
           ),
         );
@@ -1733,7 +1861,8 @@ class _ZoomMeterPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_ZoomMeterPainter old) => old.zoom != zoom;
+  bool shouldRepaint(_ZoomMeterPainter old) =>
+      old.zoom != zoom || old.switchoverFactors != switchoverFactors;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2246,21 +2375,21 @@ class CompositionPainter extends CustomPainter {
   // ── Focal Mass ──────────────────────────────────────────────────────────────
   // Scattered dot cluster in the upper-center (like reference image)
   void _drawFocalMass(Canvas canvas, Size s) {
-    // Focal center — upper-center of frame.
-    final double cx = s.width * 0.50;
-    final double cy = s.height * 0.38;
+    // Landscape-oriented focal mass: wide horizontal spread, tight vertical.
+    // Dense cluster of dots left-of-centre that thins and scatters rightward,
+    // matching the reference composition diagram.
+    final double cx = s.width  * 0.42; // cluster sits left of centre
+    final double cy = s.height * 0.50; // vertical centre
 
-    // Vertical spread: tight horizontally, wide vertically.
-    // Dots scatter downward/upward from the core, thinning sharply with distance.
-    const double scatterX = 26.0;   // tight horizontal half-width
-    const double scatterY = 88.0;   // wide vertical half-height
-    const int    count    = 200;    // total dots (increased for denser mass)
+    // Wide horizontal, narrow vertical — the defining trait of this composition.
+    const double scatterX = 120.0;  // broad horizontal half-width
+    const double scatterY = 32.0;   // tight vertical half-height
+    const int    count    = 220;
 
-    final rng = math.Random(7); // deterministic — same pattern every frame
+    final rng = math.Random(7);
     final dotPaint = Paint()..style = PaintingStyle.fill;
 
     for (int i = 0; i < count; i++) {
-      // Box-Muller → standard normal samples.
       final double u1 = rng.nextDouble().clamp(1e-9, 1.0);
       final double u2 = rng.nextDouble();
       final double n1 = math.sqrt(-2.0 * math.log(u1)) * math.cos(2 * math.pi * u2);
@@ -2269,55 +2398,26 @@ class CompositionPainter extends CustomPainter {
       final double dx = n1 * scatterX;
       final double dy = n2 * scatterY;
 
-      // Anisotropic normalised distance (0 = core, 1 = edge of scatter zone).
+      // Anisotropic distance — core = 0, edge of scatter ellipse = 1.
       final double distNorm = math.sqrt(
         math.pow(dx / scatterX, 2) + math.pow(dy / scatterY, 2),
       ).clamp(0.0, 1.0);
 
-      // Steeper Gaussian falloff (k=7) so density drops quickly away from core.
-      final double coreInfluence = math.exp(-distNorm * distNorm * 7.0);
+      // Steeper falloff so density drops sharply away from the core mass.
+      final double coreInfluence = math.exp(-distNorm * distNorm * 5.5);
 
-      // Dot radius: 0.8px at edge → 2.4px at core.
-      final double radius = 0.8 + 1.6 * coreInfluence;
-
-      // Opacity: 0.10 at edge → 0.70 at core.
-      final double alpha = 0.10 + 0.60 * coreInfluence;
-
-      // Core zone: tiny filled squares for a sharp geometric look.
-      final bool isSquare = distNorm < 0.30 && rng.nextDouble() > 0.4;
+      final double radius = 0.8 + 1.4 * coreInfluence;
+      final double alpha  = 0.12 + 0.58 * coreInfluence;
 
       dotPaint.color = _gold.withValues(alpha: alpha);
-      final Offset pos = Offset(cx + dx, cy + dy);
-
-      if (isSquare) {
-        canvas.drawRect(
-          Rect.fromCenter(center: pos, width: radius * 2, height: radius * 2),
-          dotPaint,
-        );
-      } else {
-        canvas.drawCircle(pos, radius, dotPaint);
-      }
-
-      // Micro-halo on scatter-zone markers — offset satellite dot.
-      if (distNorm > 0.25 && distNorm < 0.80 && rng.nextDouble() > 0.55) {
-        final double haloDx = (rng.nextDouble() - 0.5) * 3;
-        final double haloDy = (rng.nextDouble() - 0.5) * 6;
-        dotPaint.color = _gold.withValues(alpha: alpha * 0.30);
-        canvas.drawCircle(
-          Offset(cx + dx + haloDx, cy + dy + haloDy),
-          0.6,
-          dotPaint,
-        );
-      }
+      canvas.drawCircle(Offset(cx + dx, cy + dy), radius, dotPaint);
     }
 
-    // ── Dense core pass — extra 90 tightly packed dots in the core zone only.
-    // Distributed with a much smaller sigma so they cluster visibly at the
-    // focal centre on top of the outer scatter field.
-    const double coreScatterX = 10.0;
-    const double coreScatterY = 14.0;
-    const int    coreCount    = 90;
-    final rngCore = math.Random(31); // separate seed keeps pattern stable
+    // Dense core cluster — extra tight dots at the focal centre.
+    const double coreScatterX = 28.0;
+    const double coreScatterY =  9.0;
+    const int    coreCount    = 110;
+    final rngCore = math.Random(31);
     for (int i = 0; i < coreCount; i++) {
       final double u1 = rngCore.nextDouble().clamp(1e-9, 1.0);
       final double u2 = rngCore.nextDouble();
@@ -2329,19 +2429,10 @@ class CompositionPainter extends CustomPainter {
         math.pow(dx / coreScatterX, 2) + math.pow(dy / coreScatterY, 2),
       ).clamp(0.0, 1.0);
       final double influence = math.exp(-distNorm * distNorm * 5.0);
-      final double radius    = 0.7 + 1.8 * influence;
-      final double alpha     = 0.30 + 0.50 * influence;
+      final double radius    = 0.6 + 2.0 * influence;
+      final double alpha     = 0.32 + 0.48 * influence;
       dotPaint.color = _gold.withValues(alpha: alpha);
-      final Offset pos = Offset(cx + dx, cy + dy);
-      // Mix of squares and circles for a crisp geometric core texture.
-      if (rngCore.nextDouble() > 0.5) {
-        canvas.drawRect(
-          Rect.fromCenter(center: pos, width: radius * 2, height: radius * 2),
-          dotPaint,
-        );
-      } else {
-        canvas.drawCircle(pos, radius, dotPaint);
-      }
+      canvas.drawCircle(Offset(cx + dx, cy + dy), radius, dotPaint);
     }
   }
 
