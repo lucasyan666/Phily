@@ -211,7 +211,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         }
       }
     });
-
   }
 
   Future<void> _initializeCamera() async {
@@ -246,7 +245,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // No session teardown — seamless, zero frame drop.
       String? virtualId;
       try {
-        virtualId = await _cameraChannel.invokeMethod<String>('getVirtualCameraId');
+        virtualId = await _cameraChannel.invokeMethod<String>(
+          'getVirtualCameraId',
+        );
       } catch (e) {
         debugPrint('getVirtualCameraId: $e');
       }
@@ -259,12 +260,22 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         debugPrint('Virtual multi-camera found: ${virtualCam.name}');
         _usesVirtualCamera = true;
         _ultraWideCamera = null;
-        _controller = CameraController(virtualCam, _resolution, enableAudio: true);
+        _controller = CameraController(
+          virtualCam,
+          _resolution,
+          enableAudio: true,
+        );
       } else {
-        debugPrint('No virtual camera — using pre-warmed two-controller approach.');
+        debugPrint(
+          'No virtual camera — using pre-warmed two-controller approach.',
+        );
         _usesVirtualCamera = false;
         _ultraWideCamera = await _resolveUltraWideCamera();
-        _controller = CameraController(_cameras![0], _resolution, enableAudio: true);
+        _controller = CameraController(
+          _cameras![0],
+          _resolution,
+          enableAudio: true,
+        );
         _isUsingUltraWide = false;
       }
 
@@ -272,8 +283,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
       await _controller!.setFlashMode(_flashMode);
       _minZoom = await _controller!.getMinZoomLevel();
-      _maxZoom = (await _controller!.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
-      _currentZoom = _usesVirtualCamera ? 1.0.clamp(_minZoom, _maxZoom) : _minZoom;
+      _maxZoom = (await _controller!.getMaxZoomLevel())
+          .clamp(0, _zoomMax)
+          .toDouble();
+      _currentZoom = _usesVirtualCamera
+          ? 1.0.clamp(_minZoom, _maxZoom)
+          : _minZoom;
 
       if (_usesVirtualCamera) {
         try {
@@ -322,17 +337,22 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     if (_cameras == null) return null;
 
     try {
-      final String? uid =
-          await _cameraChannel.invokeMethod<String>('getUltraWideCameraId');
+      final String? uid = await _cameraChannel.invokeMethod<String>(
+        'getUltraWideCameraId',
+      );
       if (uid != null) {
         final match = _cameras!.where((c) => c.name == uid).firstOrNull;
         if (match != null) {
-          debugPrint('_resolveUltraWide: matched "${match.name}" via native channel');
+          debugPrint(
+            '_resolveUltraWide: matched "${match.name}" via native channel',
+          );
           return match;
         }
         debugPrint('_resolveUltraWide: uid "$uid" not found in camera list');
       } else {
-        debugPrint('_resolveUltraWide: channel returned null (no ultra-wide on device)');
+        debugPrint(
+          '_resolveUltraWide: channel returned null (no ultra-wide on device)',
+        );
       }
     } catch (e) {
       debugPrint('_resolveUltraWide: channel error — $e');
@@ -341,7 +361,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // Fallback: first additional back camera.
     final fallback = _cameras!
         .where(
-          (c) => c.lensDirection == CameraLensDirection.back && c != _cameras![0],
+          (c) =>
+              c.lensDirection == CameraLensDirection.back && c != _cameras![0],
         )
         .firstOrNull;
     if (fallback != null) {
@@ -577,7 +598,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       await _controller!.startVideoRecording();
     } catch (e) {
       debugPrint('Error starting video: $e');
-      setState(() { _isRecording = false; });
+      setState(() {
+        _isRecording = false;
+      });
       _glowController!.stop();
       _glowController!.reset();
       await _startImageStream();
@@ -628,17 +651,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final dstW = 128;
       final dstH = (128 * image.height / image.width).round();
       final bytes = _downsampleY(
-        plane.bytes, image.width, image.height, plane.bytesPerRow, dstW, dstH,
+        plane.bytes,
+        image.width,
+        image.height,
+        plane.bytesPerRow,
+        dstW,
+        dstH,
       );
-      final raw = await _cameraChannel.invokeMethod<dynamic>(
-        'analyzeFrame',
-        {
-          'yPlane': bytes,
-          'width': dstW,
-          'height': dstH,
-          'mode': _compositionMode.name,
-        },
-      );
+      final raw = await _cameraChannel.invokeMethod<dynamic>('analyzeFrame', {
+        'yPlane': bytes,
+        'width': dstW,
+        'height': dstH,
+        'mode': _compositionMode.name,
+      });
       if (!mounted) return;
 
       final List<dynamic> segs = raw is List ? raw : const [];
@@ -652,15 +677,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         final x2 = (seg['x2'] as num).toDouble();
         final y2 = (seg['y2'] as num).toDouble();
         // Key with 3dp precision — stable across frames for the same grid line.
-        final key = '${x1.toStringAsFixed(3)},${y1.toStringAsFixed(3)}'
+        final key =
+            '${x1.toStringAsFixed(3)},${y1.toStringAsFixed(3)}'
             ',${x2.toStringAsFixed(3)},${y2.toStringAsFixed(3)}';
         freshKeys.add(key);
         if (!_glowSegMap.containsKey(key)) {
           _glowSegMap[key] = _GlowSeg(x1, y1, x2, y2, intensity: 0.40);
           newAlignment = true;
         } else {
-          _glowSegMap[key]!.intensity =
-              (_glowSegMap[key]!.intensity + 0.40).clamp(0.0, 1.0);
+          _glowSegMap[key]!.intensity = (_glowSegMap[key]!.intensity + 0.40)
+              .clamp(0.0, 1.0);
         }
       }
 
@@ -687,7 +713,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   /// Nearest-neighbour downsampling of the Y (luminance) plane.
   Uint8List _downsampleY(
-    Uint8List src, int srcW, int srcH, int bytesPerRow, int dstW, int dstH,
+    Uint8List src,
+    int srcW,
+    int srcH,
+    int bytesPerRow,
+    int dstW,
+    int dstH,
   ) {
     final out = Uint8List(dstW * dstH);
     for (int y = 0; y < dstH; y++) {
@@ -917,110 +948,102 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             left: 0,
             right: 0,
             bottom: 0,
-            child: ClipRect(
-              child: BackdropFilter(
-                filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                child: Container(
-                  padding: const EdgeInsets.only(
-                    left: 20,
-                    right: 20,
-                    bottom: 34,
-                    top: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.48),
-                    border: Border(
-                      top: BorderSide(
-                        color: Colors.white.withValues(alpha: 0.07),
-                        width: 0.5,
-                      ),
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Composition guide scrollable belt
-                      SizedBox(
-                        height: 45,
-                        child: PageView.builder(
-                          controller: _compositionPageController,
-                          onPageChanged: (index) {
-                            HapticFeedback.selectionClick();
-                            setState(() {
-                              _currentCompositionIndex = index;
-                              _compositionMode = _compositionModes[index];
-                            });
-                          },
-                          itemCount: _compositionModes.length,
-                          itemBuilder: (context, index) {
-                            final double opacity =
-                                (index - _currentCompositionIndex).abs() <= 1
-                                ? 1.0 -
-                                      (index - _currentCompositionIndex).abs() *
-                                          0.4
-                                : 0.3;
-                            return Center(
-                              child: Opacity(
-                                opacity: opacity.clamp(0.3, 1.0),
-                                child: _buildCompositionButton(
-                                  _compositionModes[index].label,
-                                  isSelected: index == _currentCompositionIndex,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      if (_isInitialized) _buildZoomMeter(),
-                      const SizedBox(height: 8),
-                      // Camera controls row
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          // Gallery button (bottom left)
-                          GestureDetector(
-                            onTap: _isRecording ? null : _selectFromGallery,
-                            child: Container(
-                              width: 48,
-                              height: 48,
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.30),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: Colors.white.withValues(alpha: 0.28),
-                                  width: 1.0,
-                                ),
-                              ),
-                              child: _latestThumbnail != null
-                                  ? ClipRRect(
-                                      borderRadius: BorderRadius.circular(9),
-                                      child: Image.memory(
-                                        _latestThumbnail!,
-                                        fit: BoxFit.cover,
-                                      ),
-                                    )
-                                  : Icon(
-                                      Icons.photo_library_outlined,
-                                      color: Colors.white.withValues(
-                                        alpha: 0.55,
-                                      ),
-                                      size: 22,
-                                    ),
-                            ),
-                          ),
-
-                          // Capture button (center) - tap for photo, hold for video
-                          _buildGlassCaptureButton(),
-
-                          // Empty space for symmetry
-                          const SizedBox(width: 50),
-                        ],
-                      ),
-                    ],
+            child: Container(
+              padding: const EdgeInsets.only(
+                left: 20,
+                right: 20,
+                bottom: 16,
+                top: 4,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.48),
+                border: Border(
+                  top: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.07),
+                    width: 0.5,
                   ),
                 ),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Composition guide scrollable belt
+                  SizedBox(
+                    height: 45,
+                    child: PageView.builder(
+                      controller: _compositionPageController,
+                      onPageChanged: (index) {
+                        HapticFeedback.selectionClick();
+                        setState(() {
+                          _currentCompositionIndex = index;
+                          _compositionMode = _compositionModes[index];
+                        });
+                      },
+                      itemCount: _compositionModes.length,
+                      itemBuilder: (context, index) {
+                        final double opacity =
+                            (index - _currentCompositionIndex).abs() <= 1
+                            ? 1.0 -
+                                  (index - _currentCompositionIndex).abs() * 0.4
+                            : 0.3;
+                        return Center(
+                          child: Opacity(
+                            opacity: opacity.clamp(0.3, 1.0),
+                            child: _buildCompositionButton(
+                              _compositionModes[index].label,
+                              isSelected: index == _currentCompositionIndex,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  if (_isInitialized) _buildZoomMeter(),
+                  const SizedBox(height: 18),
+                  // Camera controls row
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      // Gallery button (bottom left)
+                      GestureDetector(
+                        onTap: _isRecording ? null : _selectFromGallery,
+                        child: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.30),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.28),
+                              width: 1.0,
+                            ),
+                          ),
+                          child: _latestThumbnail != null
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(9),
+                                  child: Image.memory(
+                                    _latestThumbnail!,
+                                    fit: BoxFit.cover,
+                                  ),
+                                )
+                              : Icon(
+                                  Icons.photo_library_outlined,
+                                  color: Colors.white.withValues(alpha: 0.55),
+                                  size: 22,
+                                ),
+                        ),
+                      ),
+
+                      // Capture button (center) - tap for photo, hold for video
+                      _buildGlassCaptureButton(),
+
+                      // Empty space for symmetry
+                      const SizedBox(width: 50),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
@@ -1289,69 +1312,59 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Widget _buildTopSettingsPanel() {
     const Color gold = Color(0xFFE5C158);
-    return ClipRect(
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Container(
-          padding: EdgeInsets.only(
-            top: MediaQuery.of(context).padding.top + 10,
-            bottom: 14,
-            left: 20,
-            right: 20,
-          ),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.48),
-            border: Border(
-              bottom: BorderSide(
-                color: Colors.white.withValues(alpha: 0.07),
-                width: 0.5,
-              ),
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              // Flash control
-              _buildSettingButton(
-                icon: _flashMode == FlashMode.off
-                    ? Icons.flash_off_rounded
-                    : _flashMode == FlashMode.auto
-                    ? Icons.flash_auto_rounded
-                    : Icons.flash_on_rounded,
-                iconColor: _flashMode == FlashMode.off ? Colors.white : gold,
-                onTap: _toggleFlash,
-              ),
-
-              // Divider
-              Container(
-                height: 22,
-                width: 0.5,
-                color: Colors.white.withValues(alpha: 0.15),
-              ),
-
-              // Format control
-              _buildSettingButton(
-                label: _imageFormat,
-                onTap: _toggleImageFormat,
-              ),
-
-              // Divider
-              Container(
-                height: 22,
-                width: 0.5,
-                color: Colors.white.withValues(alpha: 0.15),
-              ),
-
-              // Resolution control
-              _buildSettingButton(
-                label: _resolution == ResolutionPreset.veryHigh
-                    ? '24MP'
-                    : '48MP',
-                onTap: _toggleResolution,
-              ),
-            ],
+    return Container(
+      padding: EdgeInsets.only(
+        top: MediaQuery.of(context).padding.top + 10,
+        bottom: 14,
+        left: 20,
+        right: 20,
+      ),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.48),
+        border: Border(
+          bottom: BorderSide(
+            color: Colors.white.withValues(alpha: 0.07),
+            width: 0.5,
           ),
         ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          // Flash control
+          _buildSettingButton(
+            icon: _flashMode == FlashMode.off
+                ? Icons.flash_off_rounded
+                : _flashMode == FlashMode.auto
+                ? Icons.flash_auto_rounded
+                : Icons.flash_on_rounded,
+            iconColor: _flashMode == FlashMode.off ? Colors.white : gold,
+            onTap: _toggleFlash,
+          ),
+
+          // Divider
+          Container(
+            height: 22,
+            width: 0.5,
+            color: Colors.white.withValues(alpha: 0.15),
+          ),
+
+          // Format control
+          _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
+
+          // Divider
+          Container(
+            height: 22,
+            width: 0.5,
+            color: Colors.white.withValues(alpha: 0.15),
+          ),
+
+          // Resolution control
+          _buildSettingButton(
+            label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
+            onTap: _toggleResolution,
+          ),
+        ],
       ),
     );
   }
@@ -1447,7 +1460,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Future<void> _switchToUltraWide() async {
-    if (_ultraWideCamera == null || _isUsingUltraWide || _isSwitchingLens) return;
+    if (_ultraWideCamera == null || _isUsingUltraWide || _isSwitchingLens)
+      return;
     _isSwitchingLens = true;
     _stopImageStream();
     final old = _controller;
@@ -1457,12 +1471,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       await WidgetsBinding.instance.endOfFrame;
     }
     await old?.dispose();
-    final nc = CameraController(_ultraWideCamera!, _resolution, enableAudio: true);
+    final nc = CameraController(
+      _ultraWideCamera!,
+      _resolution,
+      enableAudio: true,
+    );
     try {
       await nc.initialize();
     } catch (e) {
       debugPrint('_switchToUltraWide: $e');
-      try { await nc.dispose(); } catch (_) {}
+      try {
+        await nc.dispose();
+      } catch (_) {}
       _isSwitchingLens = false;
       return;
     }
@@ -1470,7 +1490,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     await nc.setFlashMode(_flashMode);
     // Use cached zoom range if available (saved during pre-warm), otherwise query.
     final double uwPhysMin = _uwCachedMinZoom ?? await nc.getMinZoomLevel();
-    _maxZoom = _uwCachedMaxZoom ?? (await nc.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
+    _maxZoom =
+        _uwCachedMaxZoom ??
+        (await nc.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
     _ultraWideScaleFactor = uwPhysMin / 0.5;
     _minZoom = 0.5;
     _isUsingUltraWide = true;
@@ -1496,7 +1518,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       await nc.initialize();
     } catch (e) {
       debugPrint('_switchToMainCamera: $e');
-      try { await nc.dispose(); } catch (_) {}
+      try {
+        await nc.dispose();
+      } catch (_) {}
       _isSwitchingLens = false;
       return;
     }
@@ -1511,8 +1535,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     if (mounted) setState(() {});
     await _startImageStream();
   }
-
-
 
   Future<void> _setCameraZoom(double value) async {
     if (_controller == null || !_controller!.value.isInitialized) return;
@@ -1533,7 +1555,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         try {
           await _controller!.setZoomLevel(clamped);
           if (mounted) setState(() => _currentZoom = clamped);
-        } catch (e2) { debugPrint('_setCameraZoom plugin: $e2'); }
+        } catch (e2) {
+          debugPrint('_setCameraZoom plugin: $e2');
+        }
       }
       return;
     }
@@ -1549,13 +1573,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           if (_controller == null || !_controller!.value.isInitialized) return;
         } else {
           final double clamped = _minZoom;
-          try { await _controller!.setZoomLevel(clamped); } catch (_) {}
+          try {
+            await _controller!.setZoomLevel(clamped);
+          } catch (_) {}
           if (mounted) setState(() => _currentZoom = clamped);
           return;
         }
       }
-      final double physical = (v * _ultraWideScaleFactor)
-          .clamp(_ultraWideScaleFactor * 0.5, _maxZoom);
+      final double physical = (v * _ultraWideScaleFactor).clamp(
+        _ultraWideScaleFactor * 0.5,
+        _maxZoom,
+      );
       try {
         await _controller!.setZoomLevel(physical);
         if (mounted) setState(() => _currentZoom = v);
@@ -1597,7 +1625,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             letterSpacing: 1.4,
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 1),
         GestureDetector(
           onHorizontalDragStart: (d) {
             _meterDragStart = d.localPosition.dx;
@@ -1605,8 +1633,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           },
           onHorizontalDragUpdate: (d) {
             final double delta = d.localPosition.dx - _meterDragStart;
-            final double newZoom =
-                (_zoomAtDragStart - delta / pxPerUnit).clamp(0.5, _zoomMax);
+            final double newZoom = (_zoomAtDragStart - delta / pxPerUnit).clamp(
+              0.5,
+              _zoomMax,
+            );
             _setCameraZoom(newZoom);
           },
           onHorizontalDragEnd: (_) {},
@@ -1759,10 +1789,10 @@ class _CameraZoomChannel {
 }
 
 class _ZoomMeterPainter extends CustomPainter {
-  final double zoom;                      // current logical zoom level
-  final double maxZoom;                   // software upper bound (25.0)
-  final double pxPerUnit;                 // logical pixels per 1×
-  final List<double> switchoverFactors;   // hardware lens-switch boundaries
+  final double zoom; // current logical zoom level
+  final double maxZoom; // software upper bound (25.0)
+  final double pxPerUnit; // logical pixels per 1×
+  final List<double> switchoverFactors; // hardware lens-switch boundaries
 
   const _ZoomMeterPainter({
     required this.zoom,
@@ -1772,7 +1802,7 @@ class _ZoomMeterPainter extends CustomPainter {
   });
 
   static const Color _white = Color(0xFFFFFFFF);
-  static const Color _gold  = Color(0xFFE5C158);
+  static const Color _gold = Color(0xFFE5C158);
 
   // Major tick labels shown on the wheel.
   static const List<double> _major = [0.5, 1, 2, 5, 10, 15, 20, 25];
@@ -1785,8 +1815,14 @@ class _ZoomMeterPainter extends CustomPainter {
     // How many zoom units are visible on each side of centre.
     final double visibleUnits = (size.width / 2) / pxPerUnit;
 
-    final double lo = (zoom - visibleUnits - 1).floorToDouble().clamp(0.5, maxZoom);
-    final double hi = (zoom + visibleUnits + 1).ceilToDouble().clamp(0.5, maxZoom);
+    final double lo = (zoom - visibleUnits - 1).floorToDouble().clamp(
+      0.5,
+      maxZoom,
+    );
+    final double hi = (zoom + visibleUnits + 1).ceilToDouble().clamp(
+      0.5,
+      maxZoom,
+    );
 
     // Draw minor ticks every 0.1×, major ticks at the _major values.
     final Paint tickPaint = Paint()
@@ -1814,13 +1850,17 @@ class _ZoomMeterPainter extends CustomPainter {
     double v = (lo * 10).round() / 10;
     while (v <= hi + 0.05) {
       final double x = cx + (v - zoom) * pxPerUnit;
-      if (x < 0 || x > size.width) { v = (v * 10).round() / 10 + 0.1; continue; }
+      if (x < 0 || x > size.width) {
+        v = (v * 10).round() / 10 + 0.1;
+        continue;
+      }
 
       // A tick is a hardware lens-switchover boundary if it matches one of the
       // virtualDeviceSwitchOverVideoZoomFactors reported by iOS. These get a
       // gold accent tick (like the native Camera app's 0.5×/1×/2× indicators).
-      final bool isSwitchover =
-          switchoverFactors.any((s) => (v - s).abs() < 0.08);
+      final bool isSwitchover = switchoverFactors.any(
+        (s) => (v - s).abs() < 0.08,
+      );
       final bool isMajor =
           _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
       final double tickH = isSwitchover ? 20.0 : (isMajor ? 16.0 : 8.0);
@@ -1942,10 +1982,11 @@ class _GlowSeg {
 
 class CompositionPainter extends CustomPainter {
   final CompositionMode mode;
+
   /// Lines from the active grid that are currently edge-aligned.
   final List<_GlowSeg> glowSegs;
   CompositionPainter(this.mode, {List<_GlowSeg>? glowSegs})
-      : glowSegs = glowSegs ?? const [];
+    : glowSegs = glowSegs ?? const [];
 
   static const Color _gold = Color(0xFFFFFFFF);
   static const double _sw = 0.8;
@@ -2024,8 +2065,9 @@ class CompositionPainter extends CustomPainter {
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.5);
       for (final seg in glowSegs) {
         if (seg.intensity <= 0) continue;
-        glowPaint.color = const Color(0xFFE5C158)
-            .withValues(alpha: (0.65 * seg.intensity).clamp(0.0, 1.0));
+        glowPaint.color = const Color(
+          0xFFE5C158,
+        ).withValues(alpha: (0.65 * seg.intensity).clamp(0.0, 1.0));
         canvas.drawLine(
           Offset(seg.x1 * size.width, seg.y1 * size.height),
           Offset(seg.x2 * size.width, seg.y2 * size.height),
@@ -2359,12 +2401,12 @@ class CompositionPainter extends CustomPainter {
     final double cy = s.height * 0.38; // crossbar sits at upper-center
 
     // Vertical arm: short above the crossbar, long below — classic cross ratio.
-    final double armUp    = s.height * 0.10;
-    final double armDown  = s.height * 0.30;
+    final double armUp = s.height * 0.10;
+    final double armDown = s.height * 0.30;
 
     // Horizontal crossbar: symmetric, does not reach screen edges.
-    final double armLeft  = s.width  * 0.18;
-    final double armRight = s.width  * 0.18;
+    final double armLeft = s.width * 0.18;
+    final double armRight = s.width * 0.18;
 
     // Vertical line
     canvas.drawLine(Offset(cx, cy - armUp), Offset(cx, cy + armDown), p);
@@ -2378,13 +2420,13 @@ class CompositionPainter extends CustomPainter {
     // Landscape-oriented focal mass: wide horizontal spread, tight vertical.
     // Dense cluster of dots left-of-centre that thins and scatters rightward,
     // matching the reference composition diagram.
-    final double cx = s.width  * 0.42; // cluster sits left of centre
+    final double cx = s.width * 0.42; // cluster sits left of centre
     final double cy = s.height * 0.50; // vertical centre
 
     // Wide horizontal, narrow vertical — the defining trait of this composition.
-    const double scatterX = 120.0;  // broad horizontal half-width
-    const double scatterY = 32.0;   // tight vertical half-height
-    const int    count    = 220;
+    const double scatterX = 120.0; // broad horizontal half-width
+    const double scatterY = 32.0; // tight vertical half-height
+    const int count = 220;
 
     final rng = math.Random(7);
     final dotPaint = Paint()..style = PaintingStyle.fill;
@@ -2392,22 +2434,24 @@ class CompositionPainter extends CustomPainter {
     for (int i = 0; i < count; i++) {
       final double u1 = rng.nextDouble().clamp(1e-9, 1.0);
       final double u2 = rng.nextDouble();
-      final double n1 = math.sqrt(-2.0 * math.log(u1)) * math.cos(2 * math.pi * u2);
-      final double n2 = math.sqrt(-2.0 * math.log(u1)) * math.sin(2 * math.pi * u2);
+      final double n1 =
+          math.sqrt(-2.0 * math.log(u1)) * math.cos(2 * math.pi * u2);
+      final double n2 =
+          math.sqrt(-2.0 * math.log(u1)) * math.sin(2 * math.pi * u2);
 
       final double dx = n1 * scatterX;
       final double dy = n2 * scatterY;
 
       // Anisotropic distance — core = 0, edge of scatter ellipse = 1.
-      final double distNorm = math.sqrt(
-        math.pow(dx / scatterX, 2) + math.pow(dy / scatterY, 2),
-      ).clamp(0.0, 1.0);
+      final double distNorm = math
+          .sqrt(math.pow(dx / scatterX, 2) + math.pow(dy / scatterY, 2))
+          .clamp(0.0, 1.0);
 
       // Steeper falloff so density drops sharply away from the core mass.
       final double coreInfluence = math.exp(-distNorm * distNorm * 5.5);
 
       final double radius = 0.8 + 1.4 * coreInfluence;
-      final double alpha  = 0.12 + 0.58 * coreInfluence;
+      final double alpha = 0.12 + 0.58 * coreInfluence;
 
       dotPaint.color = _gold.withValues(alpha: alpha);
       canvas.drawCircle(Offset(cx + dx, cy + dy), radius, dotPaint);
@@ -2415,22 +2459,24 @@ class CompositionPainter extends CustomPainter {
 
     // Dense core cluster — extra tight dots at the focal centre.
     const double coreScatterX = 28.0;
-    const double coreScatterY =  9.0;
-    const int    coreCount    = 110;
+    const double coreScatterY = 9.0;
+    const int coreCount = 110;
     final rngCore = math.Random(31);
     for (int i = 0; i < coreCount; i++) {
       final double u1 = rngCore.nextDouble().clamp(1e-9, 1.0);
       final double u2 = rngCore.nextDouble();
-      final double n1 = math.sqrt(-2.0 * math.log(u1)) * math.cos(2 * math.pi * u2);
-      final double n2 = math.sqrt(-2.0 * math.log(u1)) * math.sin(2 * math.pi * u2);
+      final double n1 =
+          math.sqrt(-2.0 * math.log(u1)) * math.cos(2 * math.pi * u2);
+      final double n2 =
+          math.sqrt(-2.0 * math.log(u1)) * math.sin(2 * math.pi * u2);
       final double dx = n1 * coreScatterX;
       final double dy = n2 * coreScatterY;
-      final double distNorm = math.sqrt(
-        math.pow(dx / coreScatterX, 2) + math.pow(dy / coreScatterY, 2),
-      ).clamp(0.0, 1.0);
+      final double distNorm = math
+          .sqrt(math.pow(dx / coreScatterX, 2) + math.pow(dy / coreScatterY, 2))
+          .clamp(0.0, 1.0);
       final double influence = math.exp(-distNorm * distNorm * 5.0);
-      final double radius    = 0.6 + 2.0 * influence;
-      final double alpha     = 0.32 + 0.48 * influence;
+      final double radius = 0.6 + 2.0 * influence;
+      final double alpha = 0.32 + 0.48 * influence;
       dotPaint.color = _gold.withValues(alpha: alpha);
       canvas.drawCircle(Offset(cx + dx, cy + dy), radius, dotPaint);
     }
@@ -2443,12 +2489,12 @@ class CompositionPainter extends CustomPainter {
 
     // Vertex at lower-center; arms rise symmetrically to the upper corners
     // of a contained region — fully visible, no clipping at edges.
-    final double vx = s.width * 0.50;   // horizontal center
-    final double vy = s.height * 0.78;  // vertex near bottom
+    final double vx = s.width * 0.50; // horizontal center
+    final double vy = s.height * 0.78; // vertex near bottom
 
     // Arm endpoints — symmetric, inset from frame edges.
     final double topY = s.height * 0.12;
-    final double topLeftX  = s.width * 0.08;
+    final double topLeftX = s.width * 0.08;
     final double topRightX = s.width * 0.92;
 
     // Left arm: vertex → upper-left
@@ -2536,23 +2582,29 @@ class CompositionPainter extends CustomPainter {
     //  Top half:    bows right (CP1 right-upper, CP2 right-lower of center)
     //  Bottom half: bows left  (CP1 left-upper,  CP2 left-lower  of center)
 
-    final double cx  = s.width  * 0.50;
-    final double cy  = s.height * 0.50;
-    final double bow = s.width  * 0.28; // horizontal amplitude of each arc
+    final double cx = s.width * 0.50;
+    final double cy = s.height * 0.50;
+    final double bow = s.width * 0.28; // horizontal amplitude of each arc
 
     // Segment 1: top-edge mid → frame center
     path.moveTo(cx, 0);
     path.cubicTo(
-      cx + bow, s.height * 0.20,  // CP1 — bows right
-      cx + bow, s.height * 0.40,  // CP2 — stays right before center
-      cx,       cy,                // end at frame center
+      cx + bow,
+      s.height * 0.20, // CP1 — bows right
+      cx + bow,
+      s.height * 0.40, // CP2 — stays right before center
+      cx,
+      cy, // end at frame center
     );
 
     // Segment 2: frame center → bottom-edge mid (mirrors segment 1)
     path.cubicTo(
-      cx - bow, s.height * 0.60,  // CP1 — bows left
-      cx - bow, s.height * 0.80,  // CP2 — stays left before bottom
-      cx,       s.height,          // end at bottom-edge mid
+      cx - bow,
+      s.height * 0.60, // CP1 — bows left
+      cx - bow,
+      s.height * 0.80, // CP2 — stays left before bottom
+      cx,
+      s.height, // end at bottom-edge mid
     );
 
     canvas.drawPath(path, p);
