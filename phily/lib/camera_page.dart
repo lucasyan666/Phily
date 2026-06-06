@@ -1,14 +1,15 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:gal/gal.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
-import 'dart:typed_data';
-import 'package:flutter/rendering.dart';
 
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
@@ -22,6 +23,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
   bool _isRecording = false;
+  final Stopwatch _recordingStopwatch = Stopwatch();
+  Timer? _recordingTimer;
   Uint8List? _latestThumbnail;
   String? _error;
 
@@ -81,19 +84,77 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Composition alignment detection — per-segment glow
   // Key: normalised 'x1,y1,x2,y2'. Value: _GlowSeg with mutable intensity.
   final Map<String, _GlowSeg> _glowSegMap = {};
-  bool _isAnalyzingFrame = false;
-  DateTime _lastFrameAnalysis = DateTime.fromMillisecondsSinceEpoch(0);
+  // Detected objects (faces/animals/contours) returned from native Vision probes.
+  // Each entry: {x,y,w,h,label,confidence,nearIntersect}
+  List<Map<String, dynamic>> _detections = [];
+  bool _isProcessingFrame = false;
+  DateTime _lastFrameTime = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // ML Kit face detector — runs on the CameraImage directly (no method-channel
+  // image round trip), so detection latency is low enough for live tracking.
+  final FaceDetector _faceDetector = FaceDetector(
+    options: FaceDetectorOptions(
+      performanceMode: FaceDetectorMode.fast,
+      enableContours: false,
+      enableLandmarks: false,
+      enableClassification: false,
+      minFaceSize: 0.1,
+    ),
+  );
+
+  // Physical device orientation (the UI is portrait-locked, so we read the
+  // accelerometer directly). Quarter-turns clockwise from portrait: 0/1/2/3.
+  // Drives the ML Kit rotation + box back-mapping so detection works sideways.
+  int _deviceTurns = 0;
+  StreamSubscription<AccelerometerEvent>? _accelSub;
 
   final picker = ImagePicker();
 
-  /// Platform channel used to query AVCaptureDeviceDiscoverySession
-  /// for the built-in ultra-wide camera uniqueID on iOS.
-  static const MethodChannel _cameraChannel = MethodChannel('phily/camera');
+  static const MethodChannel _cameraChannel  = MethodChannel('phily/camera');
+  static const MethodChannel _hapticsChannel = MethodChannel('phily/haptics');
+
+  Future<void> _haptic(String type, {double intensity = 1.0}) async {
+    try {
+      await _hapticsChannel.invokeMethod(type, {'intensity': intensity});
+    } catch (_) {}
+  }
+
+  /// Derives physical device orientation from the accelerometer (the UI is
+  /// portrait-locked, so MediaQuery can't tell us). Updates [_deviceTurns]:
+  /// 0 = portrait, 1 = landscape (rotated CW), 2 = upside-down, 3 = landscape (CCW).
+  void _startOrientationListener() {
+    _accelSub = accelerometerEventStream().listen((e) {
+      // Use only in-plane gravity (x,y); ignore z (tilt toward/away from scene).
+      final ax = e.x.abs(), ay = e.y.abs();
+      // Need a clear dominant in-plane axis (hysteresis) to avoid flip-flopping
+      // near 45°. Require the dominant axis to beat the other by a margin.
+      const margin = 2.0;
+      int? turns;
+      if (ax > ay + margin) {
+        turns = e.x > 0 ? 3 : 1;           // landscape (two directions)
+      } else if (ay > ax + margin) {
+        turns = e.y > 0 ? 0 : 2;           // portrait up / upside-down
+      }
+      if (turns != null && turns != _deviceTurns) {
+        setState(() => _deviceTurns = turns!); // rebuild so UI controls rotate
+      }
+    });
+  }
+
+  /// Wraps a UI control so it rotates (smoothly) to stay upright for how the
+  /// phone is physically held. The camera preview itself stays fixed.
+  Widget _rotated(Widget child) => AnimatedRotation(
+        turns: -_deviceTurns / 4,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+        child: child,
+      );
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
+    _startOrientationListener();
     // Delay thumbnail loading to ensure permissions are ready
     Future.delayed(const Duration(milliseconds: 500), () {
       _loadLatestThumbnail();
@@ -444,6 +505,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _recordingTimer?.cancel();
+    _accelSub?.cancel();
+    _faceDetector.close();
     _stopImageStream();
     _controller?.dispose();
     _bounceController?.dispose();
@@ -582,6 +646,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       return;
 
     // Trigger animations immediately for instant feedback
+    _recordingStopwatch
+      ..reset()
+      ..start();
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
     setState(() {
       _isRecording = true;
     });
@@ -598,6 +668,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       await _controller!.startVideoRecording();
     } catch (e) {
       debugPrint('Error starting video: $e');
+      _recordingTimer?.cancel();
+      _recordingStopwatch.stop();
       setState(() {
         _isRecording = false;
       });
@@ -609,6 +681,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Future<void> _stopVideoRecording() async {
     if (_controller == null || !_isRecording) return;
+
+    _recordingTimer?.cancel();
+    _recordingStopwatch.stop();
 
     // Update UI state immediately for instant feedback
     setState(() {
@@ -636,100 +711,320 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
-  /// Called for every frame from the camera image stream.
-  /// Throttled to ~8 fps. Passes a downsampled Y-plane to native Vision
-  /// for edge-grid alignment analysis and drives the glow animation.
   Future<void> _onCameraFrame(CameraImage image) async {
-    if (_compositionMode == CompositionMode.none) return;
+    // Always run detection so overlays can show even when composition mode
+    // is `none` (useful for experimentation). Heavy composition-only logic
+    // remains gated on the selected mode.
     final now = DateTime.now();
-    if (now.difference(_lastFrameAnalysis).inMilliseconds < 125) return;
-    if (_isAnalyzingFrame) return;
-    _isAnalyzingFrame = true;
-    _lastFrameAnalysis = now;
+    // ~16 fps. Lower = more responsive tracking, but more CPU. With the cached
+    // single-orientation detection this stays cheap enough for smooth tracking.
+    if (now.difference(_lastFrameTime).inMilliseconds < 60) return;
+    if (_isProcessingFrame) return;
+    _isProcessingFrame = true;
+    _lastFrameTime = now;
     try {
-      final plane = image.planes[0];
-      final dstW = 128;
-      final dstH = (128 * image.height / image.width).round();
-      final bytes = _downsampleY(
-        plane.bytes,
-        image.width,
-        image.height,
-        plane.bytesPerRow,
-        dstW,
-        dstH,
-      );
-      final raw = await _cameraChannel.invokeMethod<dynamic>('analyzeFrame', {
-        'yPlane': bytes,
-        'width': dstW,
-        'height': dstH,
-        'mode': _compositionMode.name,
-      });
-      if (!mounted) return;
-
-      final List<dynamic> segs = raw is List ? raw : const [];
-      final Set<String> freshKeys = {};
-      bool newAlignment = false;
-
-      for (final seg in segs) {
-        if (seg is! Map) continue;
-        final x1 = (seg['x1'] as num).toDouble();
-        final y1 = (seg['y1'] as num).toDouble();
-        final x2 = (seg['x2'] as num).toDouble();
-        final y2 = (seg['y2'] as num).toDouble();
-        // Key with 3dp precision — stable across frames for the same grid line.
-        final key =
-            '${x1.toStringAsFixed(3)},${y1.toStringAsFixed(3)}'
-            ',${x2.toStringAsFixed(3)},${y2.toStringAsFixed(3)}';
-        freshKeys.add(key);
-        if (!_glowSegMap.containsKey(key)) {
-          _glowSegMap[key] = _GlowSeg(x1, y1, x2, y2, intensity: 0.40);
-          newAlignment = true;
-        } else {
-          _glowSegMap[key]!.intensity = (_glowSegMap[key]!.intensity + 0.40)
-              .clamp(0.0, 1.0);
-        }
+      switch (_compositionMode) {
+        case CompositionMode.ruleOfThirds:
+          await _analyzeRuleOfThirds(image);
+          break;
+        case CompositionMode.none:
+          await _analyzeDetections(image);
+          break;
+        default:
+          break;
       }
-
-      // Fade out lines that were not detected this frame.
-      final toRemove = <String>[];
-      for (final entry in _glowSegMap.entries) {
-        if (!freshKeys.contains(entry.key)) {
-          entry.value.intensity -= 0.18;
-          if (entry.value.intensity <= 0) toRemove.add(entry.key);
-        }
-      }
-      for (final k in toRemove) _glowSegMap.remove(k);
-
-      // Haptic only when a brand-new line first aligns.
-      if (newAlignment) HapticFeedback.heavyImpact();
-
-      setState(() {});
     } catch (e) {
       debugPrint('_onCameraFrame: $e');
     } finally {
-      _isAnalyzingFrame = false;
+      _isProcessingFrame = false;
     }
   }
 
-  /// Nearest-neighbour downsampling of the Y (luminance) plane.
-  Uint8List _downsampleY(
-    Uint8List src,
-    int srcW,
-    int srcH,
-    int bytesPerRow,
-    int dstW,
-    int dstH,
+  /// Real-time face detection via ML Kit, run directly on the CameraImage.
+  /// The camera preview is fixed to portrait, so the buffer is always upright
+  /// (rotation 0) — boxes map straight into portrait buffer space.
+  Future<void> _analyzeDetections(CameraImage image) async {
+    final format = InputImageFormatValue.fromRawValue(image.format.raw);
+    if (format == null) return;
+
+    final faces =
+        await _faceDetector.processImage(_toInputImage(image, 0, format));
+    if (!mounted) return;
+
+    final double uw = image.width.toDouble();   // 1080
+    final double uh = image.height.toDouble();  // 1920
+
+    final dets = <Map<String, dynamic>>[];
+    for (final f in faces) {
+      final r = f.boundingBox;
+      final bx = r.left / uw, by = r.top / uh;
+      final bw = r.width / uw, bh = r.height / uh;
+      // Centre-anchored horizontal stretch to match the preview.
+      final cx = (bx + bw / 2 - 0.5) * _previewStretchX + 0.5;
+      final sw = bw * _previewStretchX;
+      dets.add({
+        'x': cx - sw / 2,
+        'y': by,
+        'w': sw,
+        'h': bh,
+        'label': 'face',
+        'confidence': 1.0,
+      });
+    }
+
+    _detections = _smoothDetections(dets);
+    if (mounted) setState(() {});
+  }
+
+  // Must match the horizontal stretch applied to the preview in _buildPreview
+  // (Matrix4.diagonal3Values(1.17, 1.0, 1.0)) so detection boxes line up with
+  // faces across the full width, not just the centre.
+  static const double _previewStretchX = 1.17;
+
+  /// Convert a [CameraImage] into an ML Kit [InputImage] with a given rotation.
+  /// iOS delivers a single BGRA8888 plane; ML Kit consumes it directly.
+  InputImage _toInputImage(
+    CameraImage image, int rotationDegrees, InputImageFormat format,
+  ) {
+    final rotation = InputImageRotationValue.fromRawValue(rotationDegrees) ??
+        InputImageRotation.rotation0deg;
+    final plane = image.planes.first;
+    return InputImage.fromBytes(
+      bytes: plane.bytes,
+      metadata: InputImageMetadata(
+        size: Size(image.width.toDouble(), image.height.toDouble()),
+        rotation: rotation,
+        format: format,
+        bytesPerRow: plane.bytesPerRow,
+      ),
+    );
+  }
+
+
+  // Per-face tracking state for velocity-based lag compensation.
+  final List<_Track> _tracks = [];
+
+  // How many frame-deltas to extrapolate forward to cancel detection latency.
+  // ML Kit is fast (low latency), so this is modest. Higher = boxes lead more
+  // (counters trailing on fast pans but can overshoot). Tune via hot reload.
+  static const double _predictFrames = 1.0;
+  // Velocity smoothing — reduces noise in the extrapolation.
+  static const double _velEma = 0.45;
+  // Cap on predicted shift (fraction of screen) so it never wildly overshoots.
+  static const double _maxPredict = 0.18;
+
+  /// Matches each detection to a tracked face, estimates its screen velocity,
+  /// and extrapolates the box forward to compensate for pipeline latency — so
+  /// the box stays locked to the face while the camera pans instead of trailing.
+  List<Map<String, dynamic>> _smoothDetections(List<Map<String, dynamic>> fresh) {
+    const double matchRadius = 0.20;
+    final used = List<bool>.filled(_tracks.length, false);
+    final out = <Map<String, dynamic>>[];
+    final survivors = <_Track>[];
+
+    for (final d in fresh) {
+      final w = d['w'] as double, h = d['h'] as double;
+      final cx = (d['x'] as double) + w / 2;
+      final cy = (d['y'] as double) + h / 2;
+
+      int best = -1;
+      double bestDist = matchRadius;
+      for (var i = 0; i < _tracks.length; i++) {
+        if (used[i]) continue;
+        final t = _tracks[i];
+        final dist = math.sqrt((cx - t.cx) * (cx - t.cx) + (cy - t.cy) * (cy - t.cy));
+        if (dist < bestDist) { bestDist = dist; best = i; }
+      }
+
+      late _Track t;
+      if (best >= 0) {
+        used[best] = true;
+        t = _tracks[best];
+        // Instantaneous per-frame velocity, EMA-smoothed to reduce noise.
+        t.vx = t.vx * (1 - _velEma) + (cx - t.cx) * _velEma;
+        t.vy = t.vy * (1 - _velEma) + (cy - t.cy) * _velEma;
+        t.cx = cx; t.cy = cy;
+      } else {
+        t = _Track(cx, cy); // new face — no velocity yet
+      }
+      survivors.add(t);
+
+      // Extrapolate forward to where the face should be *now* (cancels lag).
+      final px = (t.vx * _predictFrames).clamp(-_maxPredict, _maxPredict);
+      final py = (t.vy * _predictFrames).clamp(-_maxPredict, _maxPredict);
+      final pcx = cx + px, pcy = cy + py;
+
+      out.add({
+        'x': (pcx - w / 2).clamp(0.0, 1.0),
+        'y': (pcy - h / 2).clamp(0.0, 1.0),
+        'w': w,
+        'h': h,
+        'label': d['label'],
+        'confidence': d['confidence'],
+      });
+    }
+
+    _tracks
+      ..clear()
+      ..addAll(survivors);
+    return out;
+  }
+
+  // Printed once so we can verify frame orientation & format without spam.
+  bool _frameDiagPrinted = false;
+
+  Future<void> _analyzeRuleOfThirds(CameraImage image) async {
+    final plane = image.planes[0];
+    final bpp   = plane.bytesPerPixel ?? 1;
+
+    if (!_frameDiagPrinted) {
+      _frameDiagPrinted = true;
+      debugPrint('[RoT] frame: ${image.width}x${image.height}  bpp=$bpp  '
+          'bytesPerRow=${plane.bytesPerRow}  '
+          'isLandscape=${image.width > image.height}');
+    }
+
+    // iOS streams BGRA8888 (bpp=4). Android streams YUV420 Y-plane (bpp=1).
+    const dstW = 256;
+    final dstH = (dstW * image.height ~/ image.width).clamp(1, 512);
+    final bytes = bpp == 4
+        ? _bgraToGrayscale(plane.bytes, image.width, image.height, plane.bytesPerRow, dstW, dstH)
+        : _downsampleY(plane.bytes, image.width, image.height, plane.bytesPerRow, dstW, dstH);
+
+    final raw = await _cameraChannel.invokeMethod<Map>(
+      'analyzeRuleOfThirds',
+      {'yPlane': bytes, 'width': dstW, 'height': dstH},
+    );
+    if (!mounted || raw == null) return;
+
+    final aligned = raw['aligned'] as bool? ?? false;
+    final haptic  = raw['haptic']  as bool? ?? false;
+    final score   = (raw['score']  as num?)?.toDouble() ?? 0.0;
+    final segs    = raw['edgeSegments'] as List? ?? const [];
+    // Coords arrive already in upright/portrait space — Vision rotates internally
+    // via the orientation hint passed to VNImageRequestHandler. No rotation here.
+
+    // Update glow using stable index-based keys ('rot_0', 'rot_1', …) so entries
+    // are mutated in place rather than deleted and re-created each frame.
+    // This eliminates the per-frame clear → re-add flicker.
+    final segCount = segs.length;
+    for (var i = 0; i < segCount; i++) {
+      final seg = segs[i];
+      if (seg is! Map) continue;
+      final x1 = (seg['x1'] as num).toDouble();
+      final y1 = (seg['y1'] as num).toDouble();
+      final x2 = (seg['x2'] as num).toDouble();
+      final y2 = (seg['y2'] as num).toDouble();
+      final key = 'rot_$i';
+      final entry = _glowSegMap[key];
+      if (entry != null) {
+        entry.x1 = x1; entry.y1 = y1; entry.x2 = x2; entry.y2 = y2;
+        entry.intensity = math.min(1.0, entry.intensity + 0.3);
+      } else {
+        _glowSegMap[key] = _GlowSeg(x1, y1, x2, y2, score.clamp(0.15, 1.0));
+      }
+    }
+
+    // Fade out indices beyond what was returned this frame, and all when not aligned.
+    final maxKey = aligned ? segCount : 0;
+    _glowSegMap.removeWhere((k, v) {
+      if (!k.startsWith('rot_')) return false;
+      final idx = int.tryParse(k.substring(4)) ?? -1;
+      if (idx >= maxKey) {
+        v.intensity -= 0.2;
+        return v.intensity <= 0;
+      }
+      return false;
+    });
+
+    if (haptic) await _haptic('alignmentPing', intensity: score);
+    // Parse object detections (if the native analyzer returned any).
+    final List<Map<String, dynamic>> dets = [];
+    final rawDets = raw['detections'] as List? ?? raw['faces'] as List? ?? raw['animalBoxes'] as List?;
+    if (rawDets != null) {
+      for (final d in rawDets) {
+        if (d is! Map) continue;
+        final double x = (d['x'] as num?)?.toDouble() ?? (d['left'] as num?)?.toDouble() ?? 0.0;
+        final double y = (d['y'] as num?)?.toDouble() ?? (d['top'] as num?)?.toDouble() ?? 0.0;
+        final double w = (d['w'] as num?)?.toDouble() ?? (d['width'] as num?)?.toDouble() ?? 0.0;
+        final double h = (d['h'] as num?)?.toDouble() ?? (d['height'] as num?)?.toDouble() ?? 0.0;
+        final String label = (d['label'] ?? d['type'] ?? 'obj').toString();
+        final double conf = (d['confidence'] as num?)?.toDouble() ?? 1.0;
+        dets.add({'x': x, 'y': y, 'w': w, 'h': h, 'label': label, 'confidence': conf});
+      }
+    }
+
+    // Mark detections near rule-of-thirds intersections when active.
+    if (_compositionMode == CompositionMode.ruleOfThirds && dets.isNotEmpty) {
+      final List<List<double>> ints = [
+        [1.0 / 3.0, 1.0 / 3.0],
+        [2.0 / 3.0, 1.0 / 3.0],
+        [1.0 / 3.0, 2.0 / 3.0],
+        [2.0 / 3.0, 2.0 / 3.0],
+      ];
+      for (final m in dets) {
+        final cx = (m['x'] as double) + (m['w'] as double) / 2.0;
+        final cy = (m['y'] as double) + (m['h'] as double) / 2.0;
+        double best = double.infinity;
+        for (final ip in ints) {
+          final dx = cx - ip[0];
+          final dy = cy - ip[1];
+          final dist = math.sqrt(dx * dx + dy * dy);
+          if (dist < best) best = dist;
+        }
+        // Threshold tuned for 256→screen scale; ~0.12 is a reasonable proximity.
+        final bool near = best < 0.12;
+        m['near'] = near;
+        if (near && (m['confidence'] as double) > 0.4) {
+          // optional haptic for prominent object near intersection
+          try {
+            _haptic('objectPing', intensity: (m['confidence'] as double).clamp(0.3, 1.0));
+          } catch (_) {}
+        }
+      }
+    }
+
+    // Update detections used by the overlay painter.
+    _detections = dets;
+
+    if (mounted) setState(() {});
+  }
+
+  /// Convert a BGRA8888 camera frame to a downsampled grayscale Uint8List.
+  /// On iOS, CameraImage planes[0] is BGRA (4 bytes/pixel): B, G, R, A.
+  Uint8List _bgraToGrayscale(
+    Uint8List src, int srcW, int srcH, int bytesPerRow, int dstW, int dstH,
   ) {
     final out = Uint8List(dstW * dstH);
-    for (int y = 0; y < dstH; y++) {
-      final srcY = (y * srcH / dstH).round().clamp(0, srcH - 1);
-      for (int x = 0; x < dstW; x++) {
-        final srcX = (x * srcW / dstW).round().clamp(0, srcW - 1);
-        out[y * dstW + x] = src[srcY * bytesPerRow + srcX];
+    for (var y = 0; y < dstH; y++) {
+      final srcY = (y * srcH ~/ dstH).clamp(0, srcH - 1);
+      final rowOff = srcY * bytesPerRow;
+      for (var x = 0; x < dstW; x++) {
+        final srcX = (x * srcW ~/ dstW).clamp(0, srcW - 1);
+        final off = rowOff + srcX * 4;
+        final b = src[off], g = src[off + 1], r = src[off + 2];
+        // BT.601 luminance: Y = 0.299R + 0.587G + 0.114B (integer-approximate)
+        out[y * dstW + x] = ((77 * r + 150 * g + 29 * b) >> 8).clamp(0, 255);
       }
     }
     return out;
   }
+
+  /// Downsample a single-channel (Y-plane) buffer — used for Android YUV420.
+  Uint8List _downsampleY(
+    Uint8List src, int srcW, int srcH, int stride, int dstW, int dstH,
+  ) {
+    final out = Uint8List(dstW * dstH);
+    for (var y = 0; y < dstH; y++) {
+      final srcY = (y * srcH ~/ dstH).clamp(0, srcH - 1);
+      for (var x = 0; x < dstW; x++) {
+        final srcX = (x * srcW ~/ dstW).clamp(0, srcW - 1);
+        out[y * dstW + x] = src[srcY * stride + srcX];
+      }
+    }
+    return out;
+  }
+
 
   Future<void> _selectFromGallery() async {
     try {
@@ -880,22 +1175,21 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               },
             ),
 
-          // Composition guide overlay — per-segment glow on aligned lines.
-          if (_compositionMode != CompositionMode.none)
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 60,
-              bottom: 186,
-              left: 0,
-              right: 0,
-              child: IgnorePointer(
-                child: CustomPaint(
-                  painter: CompositionPainter(
-                    _compositionMode,
-                    glowSegs: _glowSegMap.values.toList(),
-                  ),
+          // Composition guide overlay — grid lines + detection boxes.
+          // In None mode we still draw detection boxes for testing, so this is
+          // always present. Detection bbox coords are full-frame normalised [0,1],
+          // so the overlay must fill the whole screen (no insets).
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: CompositionPainter(
+                  _compositionMode,
+                  glowSegs: _glowSegMap.values.toList(),
+                  detections: _detections,
                 ),
               ),
             ),
+          ),
 
           // Top settings panel
           Positioned(
@@ -998,9 +1292,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                       },
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  if (_isInitialized) _buildZoomMeter(),
-                  const SizedBox(height: 18),
+                  if (MediaQuery.of(context).orientation == Orientation.portrait) ...[
+                    const SizedBox(height: 6),
+                    if (_isInitialized) _buildZoomMeter(),
+                    const SizedBox(height: 18),
+                  ] else
+                    const SizedBox(height: 10),
                   // Camera controls row
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1028,11 +1325,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                     fit: BoxFit.cover,
                                   ),
                                 )
-                              : Icon(
+                              : _rotated(Icon(
                                   Icons.photo_library_outlined,
                                   color: Colors.white.withValues(alpha: 0.55),
                                   size: 22,
-                                ),
+                                )),
                         ),
                       ),
 
@@ -1048,35 +1345,68 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             ),
           ),
 
-          // Recording indicator — minimal red dot + monospace label
+          // Recording timer — pill badge, matches UI design language
           if (_isRecording)
             Positioned(
-              top: MediaQuery.of(context).padding.top + 70,
+              top: MediaQuery.of(context).padding.top + 60,
               left: 0,
               right: 0,
               child: Center(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFFF3B30),
-                        shape: BoxShape.circle,
+                child: AnimatedBuilder(
+                  animation: _glowAnimation!,
+                  builder: (_, _) {
+                    final pulse = _glowAnimation?.value ?? 1.0;
+                    final e = _recordingStopwatch.elapsed;
+                    final m = e.inMinutes.remainder(60).toString().padLeft(2, '0');
+                    final s = e.inSeconds.remainder(60).toString().padLeft(2, '0');
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 7,
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      'REC',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w300,
-                        letterSpacing: 3.0,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.10),
+                          width: 0.5,
+                        ),
                       ),
-                    ),
-                  ],
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          // Pulsing red dot — uses the existing glow animation
+                          Container(
+                            width: 5,
+                            height: 5,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFF3B30),
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: const Color(0xFFFF3B30).withValues(
+                                    alpha: 0.65 * pulse,
+                                  ),
+                                  blurRadius: 7,
+                                  spreadRadius: 1,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            '$m:$s',
+                            style: const TextStyle(
+                              color: Color(0xFFE5C158),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w300,
+                              letterSpacing: 3.0,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
@@ -1144,6 +1474,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                   ),
                 );
               },
+            ),
+
+          // Vertical zoom meter — landscape only, right edge
+          if (_isInitialized &&
+              MediaQuery.of(context).orientation == Orientation.landscape)
+            Positioned(
+              right: 0,
+              top: 0,
+              bottom: 0,
+              child: Center(child: _buildVerticalZoomMeter()),
             ),
 
           // Shutter flash effect (on top of everything)
@@ -1381,34 +1721,36 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-        child: icon != null
-            ? Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(icon, color: iconColor ?? Colors.white, size: 18),
-                  const SizedBox(height: 3),
-                  Text(
-                    'FLASH',
-                    style: TextStyle(
-                      color: isIconActive
-                          ? const Color(0xFFE5C158)
-                          : Colors.white.withValues(alpha: 0.42),
-                      fontSize: 7.5,
-                      fontWeight: FontWeight.w300,
-                      letterSpacing: 1.6,
+        child: _rotated(
+          icon != null
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, color: iconColor ?? Colors.white, size: 18),
+                    const SizedBox(height: 3),
+                    Text(
+                      'FLASH',
+                      style: TextStyle(
+                        color: isIconActive
+                            ? const Color(0xFFE5C158)
+                            : Colors.white.withValues(alpha: 0.42),
+                        fontSize: 7.5,
+                        fontWeight: FontWeight.w300,
+                        letterSpacing: 1.6,
+                      ),
                     ),
+                  ],
+                )
+              : Text(
+                  label!.toUpperCase(),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w300,
+                    letterSpacing: 1.8,
                   ),
-                ],
-              )
-            : Text(
-                label!.toUpperCase(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w300,
-                  letterSpacing: 1.8,
                 ),
-              ),
+        ),
       ),
     );
   }
@@ -1433,29 +1775,32 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     width: 1.0,
                   ),
                 ),
-                child: Text(
+                alignment: Alignment.center,
+                child: _rotated(Text(
                   type.toUpperCase(),
+                  textAlign: TextAlign.center,
                   style: const TextStyle(
                     color: Color(0xFFE5C158),
-                    fontSize: 10,
+                    fontSize: 9,
                     fontWeight: FontWeight.w300,
                     letterSpacing: 1.2,
                   ),
-                ),
+                )),
               ),
             ),
           )
         : Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: Text(
+            child: _rotated(Text(
               type.toUpperCase(),
+              textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.white.withValues(alpha: 0.32),
-                fontSize: 10,
+                fontSize: 9,
                 fontWeight: FontWeight.w300,
                 letterSpacing: 1.2,
               ),
-            ),
+            )),
           );
   }
 
@@ -1654,6 +1999,48 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ),
         ),
       ],
+    );
+  }
+
+  // ── Landscape vertical zoom meter ──────────────────────────────────────────
+  // A semicircle that pops out from the right edge of the screen.
+  // Drag up to zoom in, drag down to zoom out.
+
+  Widget _buildVerticalZoomMeter() {
+    const double pxPerUnit = 32.0;
+    const double h = 220.0;
+    const double w = 68.0;   // radius of the semicircle = protrusion from screen edge
+    final double clampedZoom = _currentZoom.clamp(0.5, _zoomMax);
+
+    return ClipPath(
+      clipper: _SemicircleFromRightClipper(),
+      child: Container(
+        width: w,
+        height: h,
+        color: Colors.black.withValues(alpha: 0.50),
+        child: GestureDetector(
+          onVerticalDragStart: (d) {
+            _meterDragStart = d.localPosition.dy;
+            _zoomAtDragStart = clampedZoom;
+          },
+          onVerticalDragUpdate: (d) {
+            final delta = d.localPosition.dy - _meterDragStart;
+            // Up (negative delta) → zoom in; down → zoom out.
+            final newZoom =
+                (_zoomAtDragStart - delta / pxPerUnit).clamp(0.5, _zoomMax);
+            _setCameraZoom(newZoom);
+          },
+          onVerticalDragEnd: (_) {},
+          child: CustomPaint(
+            painter: _VerticalZoomMeterPainter(
+              zoom: clampedZoom,
+              maxZoom: _zoomMax,
+              pxPerUnit: pxPerUnit,
+              switchoverFactors: _switchoverFactors,
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1906,6 +2293,153 @@ class _ZoomMeterPainter extends CustomPainter {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Semicircle clipper — clips a rectangle to the left half of a circle whose
+// centre sits at the right edge. Creates the "popping out from the right" shape.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _SemicircleFromRightClipper extends CustomClipper<Path> {
+  @override
+  Path getClip(Size size) {
+    final path = Path();
+    // Arc centre is at the right edge, vertically centred.
+    // Sweeping 180° counterclockwise from top traces the left semicircle.
+    path.addArc(
+      Rect.fromCenter(
+        center: Offset(size.width, size.height / 2),
+        width: size.height,   // diameter = height → radius = height/2
+        height: size.height,
+      ),
+      -math.pi / 2,   // start at top  (12 o'clock)
+      -math.pi,       // sweep 180° CCW → through 9 o'clock to 6 o'clock
+    );
+    path.close();    // straight line back along the right edge
+    return path;
+  }
+
+  @override
+  bool shouldReclip(_SemicircleFromRightClipper _) => false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vertical zoom meter painter — like _ZoomMeterPainter but rotated 90°.
+// Ticks are horizontal lines emanating from the right edge.
+// Drag up = zoom in, drag down = zoom out.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _VerticalZoomMeterPainter extends CustomPainter {
+  final double zoom;
+  final double maxZoom;
+  final double pxPerUnit;
+  final List<double> switchoverFactors;
+
+  const _VerticalZoomMeterPainter({
+    required this.zoom,
+    required this.maxZoom,
+    required this.pxPerUnit,
+    this.switchoverFactors = const [],
+  });
+
+  static const Color _white = Color(0xFFFFFFFF);
+  static const Color _gold  = Color(0xFFE5C158);
+  static const List<double> _major = [0.5, 1, 2, 5, 10, 15, 20, 25];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double cy = size.height / 2;
+    final double rx = size.width;   // right edge — tick origin
+
+    final double visibleUnits = (size.height / 2) / pxPerUnit;
+    final double lo = (zoom - visibleUnits - 1).floorToDouble().clamp(0.5, maxZoom);
+    final double hi = (zoom + visibleUnits + 1).ceilToDouble().clamp(0.5, maxZoom);
+
+    final Paint tickPaint = Paint()
+      ..color = _white.withValues(alpha: 0.28)
+      ..strokeWidth = 0.8;
+    final Paint majorPaint = Paint()
+      ..color = _white.withValues(alpha: 0.55)
+      ..strokeWidth = 1.0;
+    final Paint centrePaint = Paint()
+      ..color = _gold
+      ..strokeWidth = 1.5;
+
+    final TextPainter tp = TextPainter(
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.right,
+    );
+
+    double v = (lo * 10).round() / 10;
+    while (v <= hi + 0.05) {
+      final double y = cy + (v - zoom) * pxPerUnit;
+      if (y < 0 || y > size.height) {
+        v = double.parse(((v * 10).round() / 10 + 0.1).toStringAsFixed(1));
+        continue;
+      }
+
+      final bool isSwitchover = switchoverFactors.any((s) => (v - s).abs() < 0.08);
+      final bool isMajor = _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
+      final double tickLen = isSwitchover ? 22.0 : (isMajor ? 16.0 : 7.0);
+
+      final Paint p = isSwitchover
+          ? (Paint()
+              ..color = _gold.withValues(alpha: 0.75)
+              ..strokeWidth = 1.2)
+          : (isMajor ? majorPaint : tickPaint);
+
+      // Horizontal tick from right edge going left
+      canvas.drawLine(Offset(rx - tickLen, y), Offset(rx, y), p);
+
+      if (isMajor) {
+        final String label = v < 1 ? v.toStringAsFixed(1) : v.toInt().toString();
+        tp.text = TextSpan(
+          text: label,
+          style: TextStyle(
+            color: isSwitchover
+                ? _gold.withValues(alpha: 0.85)
+                : _white.withValues(alpha: 0.55),
+            fontSize: 8,
+            fontWeight: isSwitchover ? FontWeight.w400 : FontWeight.w300,
+            letterSpacing: 0.4,
+          ),
+        );
+        tp.layout();
+        // Label sits just to the left of the tick, vertically centred on it
+        tp.paint(canvas, Offset(rx - tickLen - tp.width - 3, y - tp.height / 2));
+      }
+
+      v = double.parse(((v * 10).round() / 10 + 0.1).toStringAsFixed(1));
+    }
+
+    // Centre indicator — gold horizontal line at current zoom position
+    canvas.drawLine(Offset(rx - 26, cy), Offset(rx, cy), centrePaint);
+
+    // Current zoom label centred on the indicator
+    final String zLabel =
+        '${zoom < 1 ? zoom.toStringAsFixed(1) : zoom.toStringAsFixed(1)}×';
+    tp.text = TextSpan(
+      text: zLabel,
+      style: const TextStyle(
+        color: _gold,
+        fontSize: 11,
+        fontWeight: FontWeight.w300,
+        letterSpacing: 1.0,
+      ),
+    );
+    tp.layout();
+    tp.paint(canvas, Offset(rx - tickLen(zoom) - tp.width - 6, cy - tp.height / 2));
+  }
+
+  double tickLen(double v) {
+    final isSwitchover = switchoverFactors.any((s) => (v - s).abs() < 0.08);
+    final isMajor = _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
+    return isSwitchover ? 22.0 : (isMajor ? 16.0 : 7.0);
+  }
+
+  @override
+  bool shouldRepaint(_VerticalZoomMeterPainter old) =>
+      old.zoom != zoom || old.switchoverFactors != switchoverFactors;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Composition mode enum
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1975,9 +2509,17 @@ enum CompositionMode {
 
 // Coordinates are normalised to [0,1]. Intensity fades in/out each analysis frame.
 class _GlowSeg {
-  final double x1, y1, x2, y2;
+  double x1, y1, x2, y2;
   double intensity;
-  _GlowSeg(this.x1, this.y1, this.x2, this.y2, {this.intensity = 0.0});
+  _GlowSeg(this.x1, this.y1, this.x2, this.y2, this.intensity);
+}
+
+/// Tracks a single detected face across frames: last centre + smoothed
+/// screen-space velocity, used for latency-compensating position prediction.
+class _Track {
+  double cx, cy;
+  double vx = 0, vy = 0;
+  _Track(this.cx, this.cy);
 }
 
 class CompositionPainter extends CustomPainter {
@@ -1985,8 +2527,10 @@ class CompositionPainter extends CustomPainter {
 
   /// Lines from the active grid that are currently edge-aligned.
   final List<_GlowSeg> glowSegs;
-  CompositionPainter(this.mode, {List<_GlowSeg>? glowSegs})
-    : glowSegs = glowSegs ?? const [];
+  final List<Map<String, dynamic>> detections;
+  CompositionPainter(this.mode, {List<_GlowSeg>? glowSegs, List<Map<String, dynamic>>? detections})
+    : glowSegs = glowSegs ?? const [],
+      detections = detections ?? const [];
 
   static const Color _gold = Color(0xFFFFFFFF);
   static const double _sw = 0.8;
@@ -2054,6 +2598,44 @@ class CompositionPainter extends CustomPainter {
         break;
     }
 
+    // ── Detection bounding boxes ────────────────────────────────────────────────
+    // Draw bounding boxes around detected faces/animals for testing purposes.
+    if (detections.isNotEmpty) {
+      final bboxPaint = Paint()
+        ..color = const Color(0xFFE5C158).withValues(alpha: 0.70)
+        ..strokeWidth = 1.8
+        ..style = PaintingStyle.stroke;
+
+      for (final det in detections) {
+        final x = (det['x'] as num?)?.toDouble() ?? 0.0;
+        final y = (det['y'] as num?)?.toDouble() ?? 0.0;
+        final w = (det['w'] as num?)?.toDouble() ?? 0.0;
+        final h = (det['h'] as num?)?.toDouble() ?? 0.0;
+        final label = (det['label'] ?? 'obj').toString();
+        final conf = (det['confidence'] as num?)?.toDouble() ?? 1.0;
+
+        // Draw bbox rectangle
+        final rect = Rect.fromLTWH(x * size.width, y * size.height, w * size.width, h * size.height);
+        canvas.drawRect(rect, bboxPaint);
+
+        // Draw label with confidence
+        final labelText = '$label (${(conf * 100).toStringAsFixed(0)}%)';
+        final tp = TextPainter(
+          text: TextSpan(
+            text: labelText,
+            style: const TextStyle(
+              color: Color(0xFFE5C158),
+              fontSize: 10,
+              fontWeight: FontWeight.w300,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        tp.layout();
+        tp.paint(canvas, Offset(rect.left + 4, rect.top - 14));
+      }
+    }
+
     // Selective glow pass — redraw only the lines that have edge support,
     // using a gold blur paint so they illuminate without affecting other lines.
     if (glowSegs.isNotEmpty) {
@@ -2073,6 +2655,41 @@ class CompositionPainter extends CustomPainter {
           Offset(seg.x2 * size.width, seg.y2 * size.height),
           glowPaint,
         );
+      }
+    }
+
+    // Draw detected objects (faces/animals) as highlighted rounded rects.
+    if (detections.isNotEmpty) {
+      for (final d in detections) {
+        try {
+          final double x = (d['x'] as num).toDouble();
+          final double y = (d['y'] as num).toDouble();
+          final double w = (d['w'] as num).toDouble();
+          final double h = (d['h'] as num).toDouble();
+          final bool near = (d['near'] as bool?) ?? false;
+          final double conf = (d['confidence'] as num?)?.toDouble() ?? 1.0;
+
+          final Rect rect = Rect.fromLTWH(x * size.width, y * size.height, w * size.width, h * size.height);
+          final rrect = RRect.fromRectAndRadius(rect.inflate(2.0), const Radius.circular(8));
+
+          final Paint outline = Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = near ? 3.0 : 1.4
+            ..color = const Color(0xFFE5C158).withValues(alpha: near ? 0.95 : 0.55)
+            ..isAntiAlias = true;
+
+          canvas.drawRRect(rrect, outline);
+
+          if (near) {
+            final Paint glow = Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 8.0
+              ..color = const Color(0xFFE5C158).withValues(alpha: (0.55 * conf).clamp(0.0,1.0))
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8.0)
+              ..isAntiAlias = true;
+            canvas.drawRRect(rrect, glow);
+          }
+        } catch (_) {}
       }
     }
   }
@@ -2634,5 +3251,5 @@ class CompositionPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(CompositionPainter old) =>
-      old.mode != mode || old.glowSegs != glowSegs;
+      old.mode != mode || old.glowSegs != glowSegs || old.detections != detections;
 }
