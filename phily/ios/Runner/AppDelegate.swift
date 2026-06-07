@@ -38,6 +38,7 @@ private extension Comparable {
       case "getUltraWideCameraId":    self?.handleGetUltraWideCameraId(result: result)
       case "getVirtualCameraId":      self?.handleGetVirtualCameraId(result: result)
       case "analyzeRuleOfThirds":     self?.handleAnalyzeRuleOfThirds(call: call, result: result)
+      case "detectAnimals":           self?.handleDetectAnimals(call: call, result: result)
       default: result(FlutterMethodNotImplemented)
       }
     }
@@ -211,6 +212,29 @@ private extension Comparable {
         )
       }
       DispatchQueue.main.async { result(analysis) }
+    }
+  }
+
+  // MARK: - detectAnimals (cats/dogs via Vision)
+
+  private func handleDetectAnimals(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard
+      let args   = call.arguments as? [String: Any],
+      let typed  = args["bgra"] as? FlutterStandardTypedData,
+      let width  = args["width"]  as? Int,
+      let height = args["height"] as? Int
+    else {
+      result(FlutterError(code: "INVALID_ARGS", message: "bgra, width, height required", details: nil))
+      return
+    }
+
+    let data = typed.data
+    DispatchQueue.global(qos: .userInitiated).async {
+      var animals: [[String: Any]] = []
+      if #available(iOS 13.0, *) {
+        animals = AnimalDetector.detect(bgra: data, width: width, height: height)
+      }
+      DispatchQueue.main.async { result(animals) }
     }
   }
 

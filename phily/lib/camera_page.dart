@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -84,9 +85,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Composition alignment detection — per-segment glow
   // Key: normalised 'x1,y1,x2,y2'. Value: _GlowSeg with mutable intensity.
   final Map<String, _GlowSeg> _glowSegMap = {};
-  // Detected objects (faces/animals/contours) returned from native Vision probes.
-  // Each entry: {x,y,w,h,label,confidence,nearIntersect}
-  List<Map<String, dynamic>> _detections = [];
   bool _isProcessingFrame = false;
   DateTime _lastFrameTime = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -101,6 +99,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       minFaceSize: 0.1,
     ),
   );
+
+  // Downsample factor applied to camera frames before face detection. 2 = run
+  // detection at half resolution — far cheaper for ML Kit and the rotation pass,
+  // with face proportions preserved. Raise for more FPS, set 1 if faces are missed.
+  static const int _detScale = 2;
+
+  // Also detect cats/dogs (Apple Vision). Adds one native call per frame.
+  static const bool _animalsEnabled = true;
 
   // Physical device orientation (the UI is portrait-locked, so we read the
   // accelerometer directly). Quarter-turns clockwise from portrait: 0/1/2/3.
@@ -164,10 +170,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       initialPage: 0,
       viewportFraction: 0.28,
     );
-    // Pre-warm the camera after short delay
-    Future.delayed(const Duration(seconds: 1), () {
-      _warmUpCamera();
-    });
 
     // Focus ring animation: quick scale-in pulse then fade out
     _focusRingController = AnimationController(
@@ -272,6 +274,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         }
       }
     });
+
+    // Drives the 60fps easing/fade of face-detection boxes. The duration is
+    // arbitrary (it just repeats as a frame clock); _tickFaceBoxes uses real dt.
+    _faceAnim = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    )..addListener(_tickFaceBoxes);
   }
 
   Future<void> _initializeCamera() async {
@@ -507,6 +516,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   void dispose() {
     _recordingTimer?.cancel();
     _accelSub?.cancel();
+    _faceAnim?.dispose();
     _faceDetector.close();
     _stopImageStream();
     _controller?.dispose();
@@ -609,17 +619,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _warmUpCamera() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-
-    try {
-      // Pre-warm camera by accessing its properties
-      _controller!.value;
-      debugPrint('Camera warmed up');
-    } catch (e) {
-      debugPrint('Error warming up camera: $e');
-    }
-  }
 
   Future<void> _saveMediaInBackground(String filePath) async {
     try {
@@ -723,11 +722,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _isProcessingFrame = true;
     _lastFrameTime = now;
     try {
+      // Face/animal detection runs for None (boxes only) and Rule of Thirds
+      // (boxes + power-point alignment glow + haptic).
       switch (_compositionMode) {
-        case CompositionMode.ruleOfThirds:
-          await _analyzeRuleOfThirds(image);
-          break;
         case CompositionMode.none:
+        case CompositionMode.ruleOfThirds:
           await _analyzeDetections(image);
           break;
         default:
@@ -753,104 +752,125 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final int w = image.width, h = image.height;
     final turns = _deviceTurns;
 
-    // Fast path: use the cached rotation for this orientation (one detection).
+    // Build the downsampled+rotated buffer ONCE per evaluated rotation and reuse
+    // it for both ML Kit (faces) and Vision (animals) — avoids a second costly
+    // pixel loop on the UI isolate each frame.
     List<Face> faces = const [];
     int qt = _qtCache[turns] ?? 0;
+    Uint8List? winBytes;
+    int winOw = 0, winOh = 0;
+
+    // Fast path: cached rotation, one rotation + one detection.
     if (_qtCache.containsKey(turns)) {
-      faces = await _faceDetector.processImage(
-          _bgraInputImage(plane.bytes, w, h, plane.bytesPerRow, qt));
+      final (b, ow, oh) = _rotatedBytes(plane.bytes, w, h, plane.bytesPerRow, qt);
+      faces = await _faceDetector.processImage(_inputFromBytes(b, ow, oh));
       if (!mounted) return;
+      winBytes = b; winOw = ow; winOh = oh;
     }
 
-    // Re-probe when uncached, or when the cached rotation stops finding faces
-    // (handles a transient wrong rotation getting cached during a turn). Pick
-    // the rotation with the MOST faces so a single false positive can't win.
+    // Re-probe when uncached, or when the cached rotation stops finding faces.
+    // Pick the rotation with the MOST faces so a false positive can't win.
     if (faces.isEmpty) {
       for (final cand in const [0, 1, 3, 2]) {
-        final found = await _faceDetector.processImage(
-            _bgraInputImage(plane.bytes, w, h, plane.bytesPerRow, cand));
+        final (b, ow, oh) =
+            _rotatedBytes(plane.bytes, w, h, plane.bytesPerRow, cand);
+        final found = await _faceDetector.processImage(_inputFromBytes(b, ow, oh));
         if (!mounted) return;
         if (found.length > faces.length) {
-          faces = found;
-          qt = cand;
+          faces = found; qt = cand; winBytes = b; winOw = ow; winOh = oh;
         }
       }
       if (faces.isNotEmpty) _qtCache[turns] = qt; // cache only a real winner
     }
 
-    // Map ML Kit boxes (in the rotated-upright image space) back to the original
-    // portrait buffer space via the inverse of the physical rotation we applied.
-    final double bw = w.toDouble();
-    final double bh = h.toDouble();
+    final double ow = winOw.toDouble(), oh = winOh.toDouble();
+
+    // Map ML Kit boxes (normalised in the upright image) back to portrait buffer
+    // space via the inverse rotation, then apply the preview's horizontal stretch.
     final dets = <Map<String, dynamic>>[];
     for (final f in faces) {
       final r = f.boundingBox;
-      final c1 = _invRot(r.left, r.top, qt * 90, bw, bh);
-      final c2 = _invRot(r.right, r.bottom, qt * 90, bw, bh);
-      final nx = math.min(c1.$1, c2.$1) / bw;
-      final ny = math.min(c1.$2, c2.$2) / bh;
-      final nw = (c1.$1 - c2.$1).abs() / bw;
-      final nh = (c1.$2 - c2.$2).abs() / bh;
+      final c1 = _invRotNorm(r.left / ow, r.top / oh, qt);
+      final c2 = _invRotNorm(r.right / ow, r.bottom / oh, qt);
+      final nx = math.min(c1.$1, c2.$1);
+      final ny = math.min(c1.$2, c2.$2);
+      final nw = (c1.$1 - c2.$1).abs();
+      final nh = (c1.$2 - c2.$2).abs();
       final cx = (nx + nw / 2 - 0.5) * _previewStretchX + 0.5;
-      final sw = nw * _previewStretchX;
+      final stretchedW = nw * _previewStretchX;
       dets.add({
-        'x': cx - sw / 2, 'y': ny, 'w': sw, 'h': nh,
+        'x': cx - stretchedW / 2, 'y': ny, 'w': stretchedW, 'h': nh,
         'label': 'face', 'confidence': 1.0,
       });
     }
 
-    _detections = _smoothDetections(dets);
-    if (mounted) setState(() {});
+    // ── Animals (cats/dogs) via Apple Vision, reusing the same upright buffer ───
+    if (_animalsEnabled && winBytes != null) {
+      try {
+        final araw = await _cameraChannel.invokeMethod<List>(
+          'detectAnimals',
+          {'bgra': winBytes, 'width': winOw, 'height': winOh},
+        );
+        if (mounted && araw != null) {
+          for (final a in araw) {
+            if (a is! Map) continue;
+            // Vision returns normalised [0,1] top-left coords in the upright image.
+            final ax = (a['x'] as num).toDouble();
+            final ay = (a['y'] as num).toDouble();
+            final aw = (a['w'] as num).toDouble();
+            final ah = (a['h'] as num).toDouble();
+            final c1 = _invRotNorm(ax, ay, qt);
+            final c2 = _invRotNorm(ax + aw, ay + ah, qt);
+            final nx = math.min(c1.$1, c2.$1);
+            final ny = math.min(c1.$2, c2.$2);
+            final nw = (c1.$1 - c2.$1).abs();
+            final nh = (c1.$2 - c2.$2).abs();
+            final cx = (nx + nw / 2 - 0.5) * _previewStretchX + 0.5;
+            final stretchedW = nw * _previewStretchX;
+            dets.add({
+              'x': cx - stretchedW / 2, 'y': ny, 'w': stretchedW, 'h': nh,
+              'label': (a['label'] ?? 'animal').toString(),
+              'confidence': (a['confidence'] as num?)?.toDouble() ?? 1.0,
+            });
+          }
+        }
+      } catch (_) {}
+    }
+
+    _updateFaceTargets(dets); // ticker animates the displayed boxes
   }
 
-  /// Build an ML Kit InputImage from a BGRA buffer, physically rotated by [qt]
-  /// quarter-turns clockwise (0/1/2/3) so faces are upright. Output is tightly
-  /// packed (bytesPerRow = width*4) with rotation metadata 0.
-  InputImage _bgraInputImage(
+  /// Downsample (by [_detScale]) + physically rotate ([qt] quarter-turns CW) a
+  /// BGRA buffer so faces/animals are upright. Returns tightly-packed bytes plus
+  /// the output dimensions. Shared by ML Kit (faces) and Vision (animals).
+  (Uint8List, int, int) _rotatedBytes(
     Uint8List src, int w, int h, int srcBpr, int qt,
   ) {
-    if (qt == 0) {
-      // No rotation — pass the buffer straight through (portrait fast path).
-      return InputImage.fromBytes(
-        bytes: src,
-        metadata: InputImageMetadata(
-          size: Size(w.toDouble(), h.toDouble()),
-          rotation: InputImageRotation.rotation0deg,
-          format: InputImageFormat.bgra8888,
-          bytesPerRow: srcBpr,
-        ),
-      );
+    final int s = _detScale;
+    final int sw = w ~/ s, sh = h ~/ s;
+    final int outW = (qt == 1 || qt == 3) ? sh : sw;
+    final int outH = (qt == 1 || qt == 3) ? sw : sh;
+    final bytes = Uint8List(outW * outH * 4);
+    for (var dy = 0; dy < outH; dy++) {
+      for (var dx = 0; dx < outW; dx++) {
+        final int sx, sy;
+        switch (qt) {
+          case 1:  sx = dy * s;         sy = h - 1 - dx * s; break;
+          case 3:  sx = w - 1 - dy * s; sy = dx * s;         break;
+          case 2:  sx = w - 1 - dx * s; sy = h - 1 - dy * s; break;
+          default: sx = dx * s;         sy = dy * s;
+        }
+        final si = sy * srcBpr + sx * 4;
+        final di = (dy * outW + dx) * 4;
+        bytes[di] = src[si]; bytes[di + 1] = src[si + 1];
+        bytes[di + 2] = src[si + 2]; bytes[di + 3] = src[si + 3];
+      }
     }
+    return (bytes, outW, outH);
+  }
 
-    Uint8List bytes;
-    int outW, outH;
-    if (qt == 2) {
-      outW = w; outH = h;
-      bytes = Uint8List(w * h * 4);
-      for (var dy = 0; dy < h; dy++) {
-        for (var dx = 0; dx < w; dx++) {
-          final si = (h - 1 - dy) * srcBpr + (w - 1 - dx) * 4;
-          final di = (dy * w + dx) * 4;
-          bytes[di] = src[si]; bytes[di+1] = src[si+1];
-          bytes[di+2] = src[si+2]; bytes[di+3] = src[si+3];
-        }
-      }
-    } else {
-      // qt == 1 (90° CW) or qt == 3 (270° CW): dimensions swap.
-      outW = h; outH = w;
-      bytes = Uint8List(w * h * 4);
-      for (var dy = 0; dy < outH; dy++) {
-        for (var dx = 0; dx < outW; dx++) {
-          final int sx, sy;
-          if (qt == 1) { sx = dy; sy = h - 1 - dx; }
-          else         { sx = w - 1 - dy; sy = dx; } // qt == 3
-          final si = sy * srcBpr + sx * 4;
-          final di = (dy * outW + dx) * 4;
-          bytes[di] = src[si]; bytes[di+1] = src[si+1];
-          bytes[di+2] = src[si+2]; bytes[di+3] = src[si+3];
-        }
-      }
-    }
+  /// Wrap an already-rotated, tightly-packed BGRA buffer as an ML Kit InputImage.
+  InputImage _inputFromBytes(Uint8List bytes, int outW, int outH) {
     return InputImage.fromBytes(
       bytes: bytes,
       metadata: InputImageMetadata(
@@ -862,14 +882,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
-  /// Map a point from the rotated-upright image space back to original portrait
-  /// buffer space, for physical rotation [rot] degrees and buffer dims [bw]×[bh].
-  (double, double) _invRot(double px, double py, int rot, double bw, double bh) {
-    switch (rot) {
-      case 90:  return (py, bh - px);
-      case 180: return (bw - px, bh - py);
-      case 270: return (bw - py, px);
-      default:  return (px, py); // 0
+  /// Inverse-rotate a normalised point (upright image space → portrait buffer
+  /// space) for a physical rotation of [qt] quarter-turns clockwise.
+  (double, double) _invRotNorm(double ux, double uy, int qt) {
+    switch (qt) {
+      case 1:  return (uy, 1 - ux);
+      case 2:  return (1 - ux, 1 - uy);
+      case 3:  return (1 - uy, ux);
+      default: return (ux, uy); // 0
     }
   }
 
@@ -879,26 +899,35 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   static const double _previewStretchX = 1.17;
 
 
-  // Per-face tracking state for velocity-based lag compensation.
-  final List<_Track> _tracks = [];
+  // ── Animated face indicators ────────────────────────────────────────────────
+  // Detection updates the *targets*; a 60fps ticker eases the displayed boxes
+  // toward those targets and fades them in/out, so the overlay is smooth and
+  // stable regardless of the slower, slightly jittery detection rate.
+  final List<_FaceBox> _faceBoxes = [];
+  AnimationController? _faceAnim;
+  int _lastTickMs = 0;
 
-  // How many frame-deltas to extrapolate forward to cancel detection latency.
-  // ML Kit is fast (low latency), so this is modest. Higher = boxes lead more
-  // (counters trailing on fast pans but can overshoot). Tune via hot reload.
-  static const double _predictFrames = 1.0;
-  // Velocity smoothing — reduces noise in the extrapolation.
-  static const double _velEma = 0.45;
-  // Cap on predicted shift (fraction of screen) so it never wildly overshoots.
-  static const double _maxPredict = 0.18;
+  // Rule-of-Thirds power points (normalised) + per-point animated glow.
+  static const List<List<double>> _powerPoints = [
+    [1 / 3, 1 / 3], [2 / 3, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 2 / 3],
+  ];
+  // How close a detection centre must be to a power point to count as aligned.
+  static const double _alignRadius = 0.10;
+  final List<double> _powerGlow = [0, 0, 0, 0];
 
-  /// Matches each detection to a tracked face, estimates its screen velocity,
-  /// and extrapolates the box forward to compensate for pipeline latency — so
-  /// the box stays locked to the face while the camera pans instead of trailing.
-  List<Map<String, dynamic>> _smoothDetections(List<Map<String, dynamic>> fresh) {
-    const double matchRadius = 0.20;
-    final used = List<bool>.filled(_tracks.length, false);
-    final out = <Map<String, dynamic>>[];
-    final survivors = <_Track>[];
+  /// Feed a fresh set of detections in as targets. Matches each detection to the
+  /// nearest existing box (so identity is stable) and flags unmatched boxes to
+  /// fade out. Does not touch displayed positions — the ticker animates those.
+  void _updateFaceTargets(List<Map<String, dynamic>> fresh) {
+    const double matchRadius = 0.22;
+    // Only the boxes that exist *now* are match candidates; newly-added boxes
+    // (created below) must not be matched against in the same pass. Capture the
+    // count up-front so growing _faceBoxes can't push an index past `used`.
+    final existing = _faceBoxes.length;
+    final used = List<bool>.filled(existing, false);
+    for (final b in _faceBoxes) {
+      b.matched = false;
+    }
 
     for (final d in fresh) {
       final w = d['w'] as double, h = d['h'] as double;
@@ -907,202 +936,86 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
       int best = -1;
       double bestDist = matchRadius;
-      for (var i = 0; i < _tracks.length; i++) {
+      for (var i = 0; i < existing; i++) {
         if (used[i]) continue;
-        final t = _tracks[i];
-        final dist = math.sqrt((cx - t.cx) * (cx - t.cx) + (cy - t.cy) * (cy - t.cy));
+        final b = _faceBoxes[i];
+        final dist = math.sqrt((cx - b.cx) * (cx - b.cx) + (cy - b.cy) * (cy - b.cy));
         if (dist < bestDist) { bestDist = dist; best = i; }
       }
 
-      late _Track t;
       if (best >= 0) {
         used[best] = true;
-        t = _tracks[best];
-        // Instantaneous per-frame velocity, EMA-smoothed to reduce noise.
-        t.vx = t.vx * (1 - _velEma) + (cx - t.cx) * _velEma;
-        t.vy = t.vy * (1 - _velEma) + (cy - t.cy) * _velEma;
-        t.cx = cx; t.cy = cy;
+        final b = _faceBoxes[best];
+        b.tcx = cx; b.tcy = cy; b.tw = w; b.th = h;
+        b.matched = true;
       } else {
-        t = _Track(cx, cy); // new face — no velocity yet
-      }
-      survivors.add(t);
-
-      // Extrapolate forward to where the face should be *now* (cancels lag).
-      final px = (t.vx * _predictFrames).clamp(-_maxPredict, _maxPredict);
-      final py = (t.vy * _predictFrames).clamp(-_maxPredict, _maxPredict);
-      final pcx = cx + px, pcy = cy + py;
-
-      out.add({
-        'x': (pcx - w / 2).clamp(0.0, 1.0),
-        'y': (pcy - h / 2).clamp(0.0, 1.0),
-        'w': w,
-        'h': h,
-        'label': d['label'],
-        'confidence': d['confidence'],
-      });
-    }
-
-    _tracks
-      ..clear()
-      ..addAll(survivors);
-    return out;
-  }
-
-  // Printed once so we can verify frame orientation & format without spam.
-  bool _frameDiagPrinted = false;
-
-  Future<void> _analyzeRuleOfThirds(CameraImage image) async {
-    final plane = image.planes[0];
-    final bpp   = plane.bytesPerPixel ?? 1;
-
-    if (!_frameDiagPrinted) {
-      _frameDiagPrinted = true;
-      debugPrint('[RoT] frame: ${image.width}x${image.height}  bpp=$bpp  '
-          'bytesPerRow=${plane.bytesPerRow}  '
-          'isLandscape=${image.width > image.height}');
-    }
-
-    // iOS streams BGRA8888 (bpp=4). Android streams YUV420 Y-plane (bpp=1).
-    const dstW = 256;
-    final dstH = (dstW * image.height ~/ image.width).clamp(1, 512);
-    final bytes = bpp == 4
-        ? _bgraToGrayscale(plane.bytes, image.width, image.height, plane.bytesPerRow, dstW, dstH)
-        : _downsampleY(plane.bytes, image.width, image.height, plane.bytesPerRow, dstW, dstH);
-
-    final raw = await _cameraChannel.invokeMethod<Map>(
-      'analyzeRuleOfThirds',
-      {'yPlane': bytes, 'width': dstW, 'height': dstH},
-    );
-    if (!mounted || raw == null) return;
-
-    final aligned = raw['aligned'] as bool? ?? false;
-    final haptic  = raw['haptic']  as bool? ?? false;
-    final score   = (raw['score']  as num?)?.toDouble() ?? 0.0;
-    final segs    = raw['edgeSegments'] as List? ?? const [];
-    // Coords arrive already in upright/portrait space — Vision rotates internally
-    // via the orientation hint passed to VNImageRequestHandler. No rotation here.
-
-    // Update glow using stable index-based keys ('rot_0', 'rot_1', …) so entries
-    // are mutated in place rather than deleted and re-created each frame.
-    // This eliminates the per-frame clear → re-add flicker.
-    final segCount = segs.length;
-    for (var i = 0; i < segCount; i++) {
-      final seg = segs[i];
-      if (seg is! Map) continue;
-      final x1 = (seg['x1'] as num).toDouble();
-      final y1 = (seg['y1'] as num).toDouble();
-      final x2 = (seg['x2'] as num).toDouble();
-      final y2 = (seg['y2'] as num).toDouble();
-      final key = 'rot_$i';
-      final entry = _glowSegMap[key];
-      if (entry != null) {
-        entry.x1 = x1; entry.y1 = y1; entry.x2 = x2; entry.y2 = y2;
-        entry.intensity = math.min(1.0, entry.intensity + 0.3);
-      } else {
-        _glowSegMap[key] = _GlowSeg(x1, y1, x2, y2, score.clamp(0.15, 1.0));
+        _faceBoxes.add(_FaceBox(cx, cy, w, h)); // new — fades/scales in
       }
     }
 
-    // Fade out indices beyond what was returned this frame, and all when not aligned.
-    final maxKey = aligned ? segCount : 0;
-    _glowSegMap.removeWhere((k, v) {
-      if (!k.startsWith('rot_')) return false;
-      final idx = int.tryParse(k.substring(4)) ?? -1;
-      if (idx >= maxKey) {
-        v.intensity -= 0.2;
-        return v.intensity <= 0;
-      }
-      return false;
-    });
-
-    if (haptic) await _haptic('alignmentPing', intensity: score);
-    // Parse object detections (if the native analyzer returned any).
-    final List<Map<String, dynamic>> dets = [];
-    final rawDets = raw['detections'] as List? ?? raw['faces'] as List? ?? raw['animalBoxes'] as List?;
-    if (rawDets != null) {
-      for (final d in rawDets) {
-        if (d is! Map) continue;
-        final double x = (d['x'] as num?)?.toDouble() ?? (d['left'] as num?)?.toDouble() ?? 0.0;
-        final double y = (d['y'] as num?)?.toDouble() ?? (d['top'] as num?)?.toDouble() ?? 0.0;
-        final double w = (d['w'] as num?)?.toDouble() ?? (d['width'] as num?)?.toDouble() ?? 0.0;
-        final double h = (d['h'] as num?)?.toDouble() ?? (d['height'] as num?)?.toDouble() ?? 0.0;
-        final String label = (d['label'] ?? d['type'] ?? 'obj').toString();
-        final double conf = (d['confidence'] as num?)?.toDouble() ?? 1.0;
-        dets.add({'x': x, 'y': y, 'w': w, 'h': h, 'label': label, 'confidence': conf});
-      }
-    }
-
-    // Mark detections near rule-of-thirds intersections when active.
-    if (_compositionMode == CompositionMode.ruleOfThirds && dets.isNotEmpty) {
-      final List<List<double>> ints = [
-        [1.0 / 3.0, 1.0 / 3.0],
-        [2.0 / 3.0, 1.0 / 3.0],
-        [1.0 / 3.0, 2.0 / 3.0],
-        [2.0 / 3.0, 2.0 / 3.0],
-      ];
-      for (final m in dets) {
-        final cx = (m['x'] as double) + (m['w'] as double) / 2.0;
-        final cy = (m['y'] as double) + (m['h'] as double) / 2.0;
-        double best = double.infinity;
-        for (final ip in ints) {
-          final dx = cx - ip[0];
-          final dy = cy - ip[1];
-          final dist = math.sqrt(dx * dx + dy * dy);
-          if (dist < best) best = dist;
-        }
-        // Threshold tuned for 256→screen scale; ~0.12 is a reasonable proximity.
-        final bool near = best < 0.12;
-        m['near'] = near;
-        if (near && (m['confidence'] as double) > 0.4) {
-          // optional haptic for prominent object near intersection
-          try {
-            _haptic('objectPing', intensity: (m['confidence'] as double).clamp(0.3, 1.0));
-          } catch (_) {}
+    // ── Rule-of-Thirds alignment ────────────────────────────────────────────
+    // Only when that mode is active: flag each box with the power point it sits
+    // on (if any), and fire a haptic the moment a box becomes newly aligned.
+    final align = _compositionMode == CompositionMode.ruleOfThirds;
+    bool newlyAligned = false;
+    for (final b in _faceBoxes) {
+      int near = -1;
+      if (align && b.matched) {
+        double bestD = _alignRadius;
+        for (var i = 0; i < 4; i++) {
+          final dx = b.tcx - _powerPoints[i][0];
+          final dy = b.tcy - _powerPoints[i][1];
+          final d = math.sqrt(dx * dx + dy * dy);
+          if (d < bestD) { bestD = d; near = i; }
         }
       }
+      if (near >= 0 && b.intersection < 0) newlyAligned = true;
+      b.intersection = near;
     }
+    if (newlyAligned) _haptic('alignmentPing', intensity: 1.0);
 
-    // Update detections used by the overlay painter.
-    _detections = dets;
-
-    if (mounted) setState(() {});
+    if (_faceBoxes.isNotEmpty && !(_faceAnim?.isAnimating ?? false)) {
+      _lastTickMs = DateTime.now().millisecondsSinceEpoch;
+      _faceAnim?.repeat();
+    }
   }
 
-  /// Convert a BGRA8888 camera frame to a downsampled grayscale Uint8List.
-  /// On iOS, CameraImage planes[0] is BGRA (4 bytes/pixel): B, G, R, A.
-  Uint8List _bgraToGrayscale(
-    Uint8List src, int srcW, int srcH, int bytesPerRow, int dstW, int dstH,
-  ) {
-    final out = Uint8List(dstW * dstH);
-    for (var y = 0; y < dstH; y++) {
-      final srcY = (y * srcH ~/ dstH).clamp(0, srcH - 1);
-      final rowOff = srcY * bytesPerRow;
-      for (var x = 0; x < dstW; x++) {
-        final srcX = (x * srcW ~/ dstW).clamp(0, srcW - 1);
-        final off = rowOff + srcX * 4;
-        final b = src[off], g = src[off + 1], r = src[off + 2];
-        // BT.601 luminance: Y = 0.299R + 0.587G + 0.114B (integer-approximate)
-        out[y * dstW + x] = ((77 * r + 150 * g + 29 * b) >> 8).clamp(0, 255);
+  /// Per-frame easing of displayed boxes toward targets + opacity fades.
+  void _tickFaceBoxes() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final dt = ((now - _lastTickMs).clamp(1, 100)) / 1000.0;
+    _lastTickMs = now;
+
+    // Time-constant easing (frame-rate independent). Smaller tau = snappier.
+    final posK = 1 - math.exp(-dt / 0.06);   // position glide
+    final opK  = 1 - math.exp(-dt / 0.08);   // opacity/appear fade
+
+    _faceBoxes.removeWhere((b) => !b.matched && b.opacity < 0.02);
+    final pTarget = [0.0, 0.0, 0.0, 0.0];
+    for (final b in _faceBoxes) {
+      b.cx += (b.tcx - b.cx) * posK;
+      b.cy += (b.tcy - b.cy) * posK;
+      b.w  += (b.tw  - b.w)  * posK;
+      b.h  += (b.th  - b.h)  * posK;
+      final targetOpacity = b.matched ? 1.0 : 0.0;
+      b.opacity += (targetOpacity - b.opacity) * opK;
+      b.appear += (1.0 - b.appear) * opK;
+      // Alignment glow on the box, and mark its power point as active.
+      final alignTarget = (b.intersection >= 0) ? 1.0 : 0.0;
+      b.alignGlow += (alignTarget - b.alignGlow) * opK;
+      if (b.intersection >= 0 && b.opacity > 0.3) {
+        pTarget[b.intersection] = math.max(pTarget[b.intersection], b.opacity);
       }
     }
-    return out;
-  }
-
-  /// Downsample a single-channel (Y-plane) buffer — used for Android YUV420.
-  Uint8List _downsampleY(
-    Uint8List src, int srcW, int srcH, int stride, int dstW, int dstH,
-  ) {
-    final out = Uint8List(dstW * dstH);
-    for (var y = 0; y < dstH; y++) {
-      final srcY = (y * srcH ~/ dstH).clamp(0, srcH - 1);
-      for (var x = 0; x < dstW; x++) {
-        final srcX = (x * srcW ~/ dstW).clamp(0, srcW - 1);
-        out[y * dstW + x] = src[srcY * stride + srcX];
-      }
+    // Ease each power point's glow toward whether a box is on it.
+    for (var i = 0; i < 4; i++) {
+      _powerGlow[i] += (pTarget[i] - _powerGlow[i]) * opK;
     }
-    return out;
-  }
 
+    // Keep ticking while anything is visible or any glow is still fading.
+    final glowActive = _powerGlow.any((g) => g > 0.02);
+    if (_faceBoxes.isEmpty && !glowActive) _faceAnim?.stop();
+  }
 
   Future<void> _selectFromGallery() async {
     try {
@@ -1263,7 +1176,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 painter: CompositionPainter(
                   _compositionMode,
                   glowSegs: _glowSegMap.values.toList(),
-                  detections: _detections,
+                  faceBoxes: _faceBoxes,
+                  powerGlow: _powerGlow,
+                  repaint: _faceAnim,
                 ),
               ),
             ),
@@ -1567,6 +1482,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           // Shutter flash effect (on top of everything)
           if (_showShutterFlash)
             Positioned.fill(child: Container(color: Colors.white)),
+
+          // FPS counter (testing) — top right.
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 60,
+            right: 12,
+            child: const IgnorePointer(child: _FpsOverlay()),
+          ),
         ],
       ),
     );
@@ -2592,12 +2514,86 @@ class _GlowSeg {
   _GlowSeg(this.x1, this.y1, this.x2, this.y2, this.intensity);
 }
 
-/// Tracks a single detected face across frames: last centre + smoothed
-/// screen-space velocity, used for latency-compensating position prediction.
-class _Track {
-  double cx, cy;
-  double vx = 0, vy = 0;
-  _Track(this.cx, this.cy);
+/// An animated face indicator. Holds the current (eased) box and the latest
+/// detection target, plus opacity/appearance so it can fade and ease smoothly
+/// at display framerate, decoupled from the slower detection rate.
+class _FaceBox {
+  // Current animated values (normalised screen space, centre + size).
+  double cx, cy, w, h;
+  // Latest detection target.
+  double tcx, tcy, tw, th;
+  double opacity;   // 0..1, fades in on appear / out on loss
+  double appear;    // 0..1, drives a subtle scale-in
+  bool matched;     // matched in the most recent detection cycle
+  int intersection; // index 0..3 of the rule-of-thirds power point it's on, -1 none
+  double alignGlow; // 0..1 animated alignment-glow strength
+  _FaceBox(this.cx, this.cy, this.w, this.h)
+      : tcx = cx, tcy = cy, tw = w, th = h,
+        opacity = 0, appear = 0, matched = true,
+        intersection = -1, alignGlow = 0;
+}
+
+/// Lightweight on-screen FPS meter (testing). Counts vsync ticks via a Ticker
+/// and reports the actual rendered frame rate, updating ~twice a second.
+class _FpsOverlay extends StatefulWidget {
+  const _FpsOverlay();
+  @override
+  State<_FpsOverlay> createState() => _FpsOverlayState();
+}
+
+class _FpsOverlayState extends State<_FpsOverlay>
+    with SingleTickerProviderStateMixin {
+  late final Ticker _ticker;
+  int _frames = 0;
+  int _lastMs = DateTime.now().millisecondsSinceEpoch;
+  double _fps = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = createTicker((_) {
+      _frames++;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final dt = now - _lastMs;
+      if (dt >= 500) {
+        setState(() => _fps = _frames * 1000 / dt);
+        _frames = 0;
+        _lastMs = now;
+      }
+    })..start();
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Color color = _fps >= 55
+        ? const Color(0xFF4CD964) // green
+        : _fps >= 30
+            ? const Color(0xFFE5C158) // gold
+            : const Color(0xFFFF3B30); // red
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        '${_fps.toStringAsFixed(0)} FPS',
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.w500,
+          fontFeatures: const [FontFeature.tabularFigures()],
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
 }
 
 class CompositionPainter extends CustomPainter {
@@ -2605,10 +2601,20 @@ class CompositionPainter extends CustomPainter {
 
   /// Lines from the active grid that are currently edge-aligned.
   final List<_GlowSeg> glowSegs;
-  final List<Map<String, dynamic>> detections;
-  CompositionPainter(this.mode, {List<_GlowSeg>? glowSegs, List<Map<String, dynamic>>? detections})
-    : glowSegs = glowSegs ?? const [],
-      detections = detections ?? const [];
+  /// Animated face indicators (drawn as corner brackets).
+  final List<_FaceBox> faceBoxes;
+  /// Per-power-point glow strength (0..1) for Rule-of-Thirds alignment.
+  final List<double> powerGlow;
+  CompositionPainter(
+    this.mode, {
+    List<_GlowSeg>? glowSegs,
+    List<_FaceBox>? faceBoxes,
+    List<double>? powerGlow,
+    Listenable? repaint,
+  })  : glowSegs = glowSegs ?? const [],
+        faceBoxes = faceBoxes ?? const [],
+        powerGlow = powerGlow ?? const [0, 0, 0, 0],
+        super(repaint: repaint);
 
   static const Color _gold = Color(0xFFFFFFFF);
   static const double _sw = 0.8;
@@ -2623,6 +2629,20 @@ class CompositionPainter extends CustomPainter {
     ..isAntiAlias = true;
 
   Paint get _p => _gp(cap: StrokeCap.round);
+
+  /// Draws one rounded L-shaped corner bracket. [sx]/[sy] are ±1 indicating the
+  /// direction the arms extend from the corner [c]; [arm] is arm length, [r] the
+  /// rounding radius at the corner.
+  void _corner(
+    Canvas canvas, Offset c, int sx, int sy, double arm, double r, Paint p,
+  ) {
+    final path = Path()
+      ..moveTo(c.dx + sx * arm, c.dy)
+      ..lineTo(c.dx + sx * r, c.dy)
+      ..quadraticBezierTo(c.dx, c.dy, c.dx, c.dy + sy * r)
+      ..lineTo(c.dx, c.dy + sy * arm);
+    canvas.drawPath(path, p);
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2676,41 +2696,77 @@ class CompositionPainter extends CustomPainter {
         break;
     }
 
-    // ── Detection bounding boxes ────────────────────────────────────────────────
-    // Draw bounding boxes around detected faces/animals for testing purposes.
-    if (detections.isNotEmpty) {
-      final bboxPaint = Paint()
-        ..color = const Color(0xFFE5C158).withValues(alpha: 0.70)
-        ..strokeWidth = 1.8
-        ..style = PaintingStyle.stroke;
-
-      for (final det in detections) {
-        final x = (det['x'] as num?)?.toDouble() ?? 0.0;
-        final y = (det['y'] as num?)?.toDouble() ?? 0.0;
-        final w = (det['w'] as num?)?.toDouble() ?? 0.0;
-        final h = (det['h'] as num?)?.toDouble() ?? 0.0;
-        final label = (det['label'] ?? 'obj').toString();
-        final conf = (det['confidence'] as num?)?.toDouble() ?? 1.0;
-
-        // Draw bbox rectangle
-        final rect = Rect.fromLTWH(x * size.width, y * size.height, w * size.width, h * size.height);
-        canvas.drawRect(rect, bboxPaint);
-
-        // Draw label with confidence
-        final labelText = '$label (${(conf * 100).toStringAsFixed(0)}%)';
-        final tp = TextPainter(
-          text: TextSpan(
-            text: labelText,
-            style: const TextStyle(
-              color: Color(0xFFE5C158),
-              fontSize: 10,
-              fontWeight: FontWeight.w300,
-            ),
-          ),
-          textDirection: TextDirection.ltr,
+    // ── Rule-of-Thirds power points (glow when a subject lands on them) ─────────
+    if (mode == CompositionMode.ruleOfThirds) {
+      const gold = Color(0xFFE5C158);
+      const pts = [
+        [1 / 3, 1 / 3], [2 / 3, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 2 / 3],
+      ];
+      for (var i = 0; i < 4; i++) {
+        final c = Offset(pts[i][0] * size.width, pts[i][1] * size.height);
+        final g = (i < powerGlow.length ? powerGlow[i] : 0.0).clamp(0.0, 1.0);
+        // Faint dot always; blooms into a soft glowing ring when aligned.
+        canvas.drawCircle(
+          c, 2.0,
+          Paint()..color = gold.withValues(alpha: 0.25 + 0.55 * g),
         );
-        tp.layout();
-        tp.paint(canvas, Offset(rect.left + 4, rect.top - 14));
+        if (g > 0.01) {
+          canvas.drawCircle(
+            c, 6.0 + 10.0 * g,
+            Paint()
+              ..color = gold.withValues(alpha: 0.45 * g)
+              ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4.0 + 6.0 * g),
+          );
+          canvas.drawCircle(
+            c, 5.0 + 4.0 * g,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.5
+              ..color = gold.withValues(alpha: 0.8 * g),
+          );
+        }
+      }
+    }
+
+    // ── Face / animal indicators — soft corner brackets (camera AF style) ───────
+    for (final b in faceBoxes) {
+      if (b.opacity <= 0.01) continue;
+      // Subtle scale-in: start 8% smaller and settle to full size on appear.
+      final scale = 0.92 + 0.08 * b.appear;
+      final w = b.w * size.width * scale;
+      final h = b.h * size.height * scale;
+      final cx = b.cx * size.width;
+      final cy = b.cy * size.height;
+      final rect = Rect.fromCenter(center: Offset(cx, cy), width: w, height: h);
+
+      final a = b.opacity.clamp(0.0, 1.0);
+      final align = b.alignGlow.clamp(0.0, 1.0);
+      const gold = Color(0xFFE5C158);
+      // Corner arm length scales with box size but is capped for tidiness.
+      final arm = (math.min(rect.width, rect.height) * 0.26).clamp(8.0, 26.0);
+      final r = math.min(8.0, arm * 0.6); // corner rounding radius
+
+      // Aligned boxes get brighter, slightly thicker brackets + a stronger glow.
+      final stroke = Paint()
+        ..color = gold.withValues(alpha: (0.85 + 0.15 * align) * a)
+        ..strokeWidth = 2.2 + 1.0 * align
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..isAntiAlias = true;
+      final glow = Paint()
+        ..color = gold.withValues(alpha: (0.25 + 0.45 * align) * a)
+        ..strokeWidth = 4.5 + 3.0 * align
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 3.0 + 3.0 * align);
+
+      for (final p in [glow, stroke]) {
+        _corner(canvas, rect.topLeft,     1, 1, arm, r, p);
+        _corner(canvas, rect.topRight,   -1, 1, arm, r, p);
+        _corner(canvas, rect.bottomRight,-1,-1, arm, r, p);
+        _corner(canvas, rect.bottomLeft,  1,-1, arm, r, p);
       }
     }
 
@@ -2736,40 +2792,6 @@ class CompositionPainter extends CustomPainter {
       }
     }
 
-    // Draw detected objects (faces/animals) as highlighted rounded rects.
-    if (detections.isNotEmpty) {
-      for (final d in detections) {
-        try {
-          final double x = (d['x'] as num).toDouble();
-          final double y = (d['y'] as num).toDouble();
-          final double w = (d['w'] as num).toDouble();
-          final double h = (d['h'] as num).toDouble();
-          final bool near = (d['near'] as bool?) ?? false;
-          final double conf = (d['confidence'] as num?)?.toDouble() ?? 1.0;
-
-          final Rect rect = Rect.fromLTWH(x * size.width, y * size.height, w * size.width, h * size.height);
-          final rrect = RRect.fromRectAndRadius(rect.inflate(2.0), const Radius.circular(8));
-
-          final Paint outline = Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = near ? 3.0 : 1.4
-            ..color = const Color(0xFFE5C158).withValues(alpha: near ? 0.95 : 0.55)
-            ..isAntiAlias = true;
-
-          canvas.drawRRect(rrect, outline);
-
-          if (near) {
-            final Paint glow = Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 8.0
-              ..color = const Color(0xFFE5C158).withValues(alpha: (0.55 * conf).clamp(0.0,1.0))
-              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8.0)
-              ..isAntiAlias = true;
-            canvas.drawRRect(rrect, glow);
-          }
-        } catch (_) {}
-      }
-    }
   }
 
   // ── Rule of Thirds ──────────────────────────────────────────────────────────
@@ -3329,5 +3351,5 @@ class CompositionPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(CompositionPainter old) =>
-      old.mode != mode || old.glowSegs != glowSegs || old.detections != detections;
+      old.mode != mode || old.glowSegs != glowSegs || old.faceBoxes != faceBoxes;
 }
