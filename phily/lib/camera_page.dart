@@ -740,35 +740,62 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
-  /// Real-time face detection via ML Kit, run directly on the CameraImage.
-  /// The camera preview is fixed to portrait, so the buffer is always upright
-  /// (rotation 0) — boxes map straight into portrait buffer space.
+  // Caches the physical quarter-turn rotation that finds faces per device-turns.
+  final Map<int, int> _qtCache = {};
+
+  /// Real-time face detection via ML Kit. ML Kit on iOS ignores InputImage
+  /// rotation metadata, so to detect faces when the phone is held sideways we
+  /// must PHYSICALLY rotate the pixel buffer to upright, detect, then map the
+  /// boxes back into the original (portrait) buffer space the fixed preview shows.
   Future<void> _analyzeDetections(CameraImage image) async {
-    final format = InputImageFormatValue.fromRawValue(image.format.raw);
-    if (format == null) return;
+    if (image.format.group != ImageFormatGroup.bgra8888) return;
+    final plane = image.planes.first;
+    final int w = image.width, h = image.height;
+    final turns = _deviceTurns;
 
-    final faces =
-        await _faceDetector.processImage(_toInputImage(image, 0, format));
-    if (!mounted) return;
+    // Fast path: use the cached rotation for this orientation (one detection).
+    List<Face> faces = const [];
+    int qt = _qtCache[turns] ?? 0;
+    if (_qtCache.containsKey(turns)) {
+      faces = await _faceDetector.processImage(
+          _bgraInputImage(plane.bytes, w, h, plane.bytesPerRow, qt));
+      if (!mounted) return;
+    }
 
-    final double uw = image.width.toDouble();   // 1080
-    final double uh = image.height.toDouble();  // 1920
+    // Re-probe when uncached, or when the cached rotation stops finding faces
+    // (handles a transient wrong rotation getting cached during a turn). Pick
+    // the rotation with the MOST faces so a single false positive can't win.
+    if (faces.isEmpty) {
+      for (final cand in const [0, 1, 3, 2]) {
+        final found = await _faceDetector.processImage(
+            _bgraInputImage(plane.bytes, w, h, plane.bytesPerRow, cand));
+        if (!mounted) return;
+        if (found.length > faces.length) {
+          faces = found;
+          qt = cand;
+        }
+      }
+      if (faces.isNotEmpty) _qtCache[turns] = qt; // cache only a real winner
+    }
 
+    // Map ML Kit boxes (in the rotated-upright image space) back to the original
+    // portrait buffer space via the inverse of the physical rotation we applied.
+    final double bw = w.toDouble();
+    final double bh = h.toDouble();
     final dets = <Map<String, dynamic>>[];
     for (final f in faces) {
       final r = f.boundingBox;
-      final bx = r.left / uw, by = r.top / uh;
-      final bw = r.width / uw, bh = r.height / uh;
-      // Centre-anchored horizontal stretch to match the preview.
-      final cx = (bx + bw / 2 - 0.5) * _previewStretchX + 0.5;
-      final sw = bw * _previewStretchX;
+      final c1 = _invRot(r.left, r.top, qt * 90, bw, bh);
+      final c2 = _invRot(r.right, r.bottom, qt * 90, bw, bh);
+      final nx = math.min(c1.$1, c2.$1) / bw;
+      final ny = math.min(c1.$2, c2.$2) / bh;
+      final nw = (c1.$1 - c2.$1).abs() / bw;
+      final nh = (c1.$2 - c2.$2).abs() / bh;
+      final cx = (nx + nw / 2 - 0.5) * _previewStretchX + 0.5;
+      final sw = nw * _previewStretchX;
       dets.add({
-        'x': cx - sw / 2,
-        'y': by,
-        'w': sw,
-        'h': bh,
-        'label': 'face',
-        'confidence': 1.0,
+        'x': cx - sw / 2, 'y': ny, 'w': sw, 'h': nh,
+        'label': 'face', 'confidence': 1.0,
       });
     }
 
@@ -776,29 +803,80 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     if (mounted) setState(() {});
   }
 
+  /// Build an ML Kit InputImage from a BGRA buffer, physically rotated by [qt]
+  /// quarter-turns clockwise (0/1/2/3) so faces are upright. Output is tightly
+  /// packed (bytesPerRow = width*4) with rotation metadata 0.
+  InputImage _bgraInputImage(
+    Uint8List src, int w, int h, int srcBpr, int qt,
+  ) {
+    if (qt == 0) {
+      // No rotation — pass the buffer straight through (portrait fast path).
+      return InputImage.fromBytes(
+        bytes: src,
+        metadata: InputImageMetadata(
+          size: Size(w.toDouble(), h.toDouble()),
+          rotation: InputImageRotation.rotation0deg,
+          format: InputImageFormat.bgra8888,
+          bytesPerRow: srcBpr,
+        ),
+      );
+    }
+
+    Uint8List bytes;
+    int outW, outH;
+    if (qt == 2) {
+      outW = w; outH = h;
+      bytes = Uint8List(w * h * 4);
+      for (var dy = 0; dy < h; dy++) {
+        for (var dx = 0; dx < w; dx++) {
+          final si = (h - 1 - dy) * srcBpr + (w - 1 - dx) * 4;
+          final di = (dy * w + dx) * 4;
+          bytes[di] = src[si]; bytes[di+1] = src[si+1];
+          bytes[di+2] = src[si+2]; bytes[di+3] = src[si+3];
+        }
+      }
+    } else {
+      // qt == 1 (90° CW) or qt == 3 (270° CW): dimensions swap.
+      outW = h; outH = w;
+      bytes = Uint8List(w * h * 4);
+      for (var dy = 0; dy < outH; dy++) {
+        for (var dx = 0; dx < outW; dx++) {
+          final int sx, sy;
+          if (qt == 1) { sx = dy; sy = h - 1 - dx; }
+          else         { sx = w - 1 - dy; sy = dx; } // qt == 3
+          final si = sy * srcBpr + sx * 4;
+          final di = (dy * outW + dx) * 4;
+          bytes[di] = src[si]; bytes[di+1] = src[si+1];
+          bytes[di+2] = src[si+2]; bytes[di+3] = src[si+3];
+        }
+      }
+    }
+    return InputImage.fromBytes(
+      bytes: bytes,
+      metadata: InputImageMetadata(
+        size: Size(outW.toDouble(), outH.toDouble()),
+        rotation: InputImageRotation.rotation0deg,
+        format: InputImageFormat.bgra8888,
+        bytesPerRow: outW * 4,
+      ),
+    );
+  }
+
+  /// Map a point from the rotated-upright image space back to original portrait
+  /// buffer space, for physical rotation [rot] degrees and buffer dims [bw]×[bh].
+  (double, double) _invRot(double px, double py, int rot, double bw, double bh) {
+    switch (rot) {
+      case 90:  return (py, bh - px);
+      case 180: return (bw - px, bh - py);
+      case 270: return (bw - py, px);
+      default:  return (px, py); // 0
+    }
+  }
+
   // Must match the horizontal stretch applied to the preview in _buildPreview
   // (Matrix4.diagonal3Values(1.17, 1.0, 1.0)) so detection boxes line up with
   // faces across the full width, not just the centre.
   static const double _previewStretchX = 1.17;
-
-  /// Convert a [CameraImage] into an ML Kit [InputImage] with a given rotation.
-  /// iOS delivers a single BGRA8888 plane; ML Kit consumes it directly.
-  InputImage _toInputImage(
-    CameraImage image, int rotationDegrees, InputImageFormat format,
-  ) {
-    final rotation = InputImageRotationValue.fromRawValue(rotationDegrees) ??
-        InputImageRotation.rotation0deg;
-    final plane = image.planes.first;
-    return InputImage.fromBytes(
-      bytes: plane.bytes,
-      metadata: InputImageMetadata(
-        size: Size(image.width.toDouble(), image.height.toDouble()),
-        rotation: rotation,
-        format: format,
-        bytesPerRow: plane.bytesPerRow,
-      ),
-    );
-  }
 
 
   // Per-face tracking state for velocity-based lag compensation.
