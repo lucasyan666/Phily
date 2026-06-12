@@ -9,6 +9,7 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:gal/gal.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:phily/screens/branded_loader.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -34,9 +35,39 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   ResolutionPreset _resolution = ResolutionPreset.veryHigh; // 24MP
   String _imageFormat = 'HEIF'; // HEIF or RAW
   CompositionMode _compositionMode = CompositionMode.none;
+  // Fibonacci-spiral orientation: number of 90° clockwise turns (0..3). Lets the
+  // user point the spiral's eye at any corner. Persists across mode switches.
+  int _spiralTurns = 0;
+  // Aspect Ratio mode: selected crop ratio. Cycled by a button in that mode.
+  static const List<({String label, double ratio})> _aspectRatios = [
+    (label: '1:1', ratio: 1.0),
+    (label: '4:5', ratio: 4 / 5),
+    (label: '16:9', ratio: 16 / 9),
+  ];
+  int _aspectIndex = 1; // default 4:5 (most useful for social portraits)
+  // "Best for" tip bubble shown briefly when the composition mode changes.
+  bool _showTip = false;
+  Timer? _tipTimer;
   static const List<CompositionMode> _compositionModes = CompositionMode.values;
   late PageController _compositionPageController;
   int _currentCompositionIndex = 0;
+  // Rule-of-Thirds hint level: 0 none, 1 "Almost" (subject's box on a point),
+  // 2 "Perfect" (point near the box centre). A ValueNotifier so only the hint
+  // rebuilds — never the whole Stack — even if it flip-flops near a threshold.
+  final ValueNotifier<int> _alignLevel = ValueNotifier(0);
+
+  // Composition grids are confined to the camera-visible area *between* the
+  // top/bottom UI panels so the guide lines never bleed under the chrome. The
+  // panel heights are measured from their laid-out render boxes after each
+  // frame; they only change on orientation/safe-area shifts, so this settles
+  // once and stays put.
+  final GlobalKey _topPanelKey = GlobalKey();
+  final GlobalKey _bottomPanelKey = GlobalKey();
+  double _topInset = 0, _bottomInset = 0;
+  // Same insets as a fraction of full screen height. Used to remap the Rule-of-
+  // Thirds power points (which now live in the band) into the full-screen-
+  // normalised space the detected face boxes are expressed in.
+  double _topInsetFrac = 0, _bottomInsetFrac = 0;
 
   // Tap-to-focus
   Offset? _focusPoint;
@@ -49,6 +80,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double _baseZoom = 1.0;
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
+
+  // Swipe-to-switch-composition tracking (single-finger horizontal swipe on the
+  // preview). Kept separate from pinch-zoom via the max-pointer-count check.
+  double _swipeStartX = 0, _swipeStartY = 0, _swipeLastX = 0, _swipeLastY = 0;
+  int _swipeMaxPointers = 0;
   // Zoom meter drag state
   static const double _zoomMax = 25.0;
   double _meterDragStart = 0.0;
@@ -87,6 +123,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   final Map<String, _GlowSeg> _glowSegMap = {};
   bool _isProcessingFrame = false;
   DateTime _lastFrameTime = DateTime.fromMillisecondsSinceEpoch(0);
+  // Throttle the (expensive) multi-rotation face-detection re-probe so a scene
+  // with no face (landscape/street) doesn't pay 4 synchronous rotations/frame.
+  int _lastProbeMs = 0;
 
   // ML Kit face detector — runs on the CameraImage directly (no method-channel
   // image round trip), so detection latency is low enough for live tracking.
@@ -515,8 +554,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   @override
   void dispose() {
     _recordingTimer?.cancel();
+    _tipTimer?.cancel();
     _accelSub?.cancel();
     _faceAnim?.dispose();
+    _alignLevel.dispose();
     _faceDetector.close();
     _stopImageStream();
     _controller?.dispose();
@@ -544,16 +585,109 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _focusRingController!.forward(from: 0);
   }
 
-  void _onScaleStart(ScaleStartDetails _) {
+  void _onScaleStart(ScaleStartDetails details) {
     _baseZoom = _currentZoom;
+    _swipeStartX = _swipeLastX = details.focalPoint.dx;
+    _swipeStartY = _swipeLastY = details.focalPoint.dy;
+    _swipeMaxPointers = details.pointerCount;
   }
 
   Future<void> _onScaleUpdate(ScaleUpdateDetails details) async {
+    _swipeMaxPointers = math.max(_swipeMaxPointers, details.pointerCount);
+    _swipeLastX = details.focalPoint.dx;
+    _swipeLastY = details.focalPoint.dy;
     if (_controller == null || !_controller!.value.isInitialized) return;
     // Allow pinching down to 0.5× — _setCameraZoom handles the lens boundary.
     final double newZoom = (_baseZoom * details.scale).clamp(0.5, _maxZoom);
     if ((newZoom - _currentZoom).abs() < 0.01) return;
     await _setCameraZoom(newZoom);
+  }
+
+  void _onScaleEnd(ScaleEndDetails _) {
+    // Only a single-finger gesture counts as a composition swipe (never a pinch).
+    if (_swipeMaxPointers > 1) return;
+    final double dx = _swipeLastX - _swipeStartX;
+    final double dy = _swipeLastY - _swipeStartY;
+    // Require a clearly horizontal swipe past a threshold.
+    if (dx.abs() > 60 && dx.abs() > dy.abs() * 1.5) {
+      _changeCompositionBy(dx < 0 ? 1 : -1); // swipe left → next, right → prev
+    }
+  }
+
+  /// Switches the composition mode by [delta] steps, animating the belt so its
+  /// onPageChanged keeps the index, mode and UI in sync.
+  void _changeCompositionBy(int delta) {
+    final int next =
+        (_currentCompositionIndex + delta).clamp(0, _compositionModes.length - 1);
+    if (next == _currentCompositionIndex) return;
+    _compositionPageController.animateToPage(
+      next,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+    );
+  }
+
+  /// Compact "best for" blurb for the current mode, or null when there's
+  /// nothing worth saying (None).
+  String? get _compositionTip {
+    switch (_compositionMode) {
+      case CompositionMode.none:
+        return null;
+      case CompositionMode.ruleOfThirds:
+        return 'Everyday shots — people, landscapes, street. Put your subject on a dot.';
+      case CompositionMode.goldenSection:
+        return 'Portraits & fine-art landscapes — subject a touch more central.';
+      case CompositionMode.goldenTriangles:
+        return 'Scenes with strong diagonals — roads, stairs, reclining poses.';
+      case CompositionMode.spiralSection:
+        return 'A single hero subject — nest it toward the spiral.';
+      case CompositionMode.fibonacciSpiral:
+        return 'Flowing scenes — rivers, paths, shells. Lead the eye to the centre.';
+      case CompositionMode.harmoniousTriangles:
+        return 'Balancing complex scenes & architecture.';
+      case CompositionMode.cross:
+        return 'Symmetrical, centred subjects — reflections, formal architecture.';
+      case CompositionMode.focalMass:
+        return 'One dominant subject against negative space — minimalism.';
+      case CompositionMode.vArrangement:
+        return 'Group portraits, valleys, converging lines.';
+      case CompositionMode.diagonal:
+        return 'Energy & motion — street, action, leading lines.';
+      case CompositionMode.radial:
+        return 'Flowers, wheels, sunbursts, radial food plating.';
+      case CompositionMode.lArrangement:
+        return 'Product & still life — frame a subject in a corner.';
+      case CompositionMode.compoundCurve:
+        return 'Winding rivers & roads, the S-curve of the figure.';
+      case CompositionMode.pyramid:
+        return 'Groups of people, mountains, stable still life.';
+      case CompositionMode.circular:
+        return 'Round plates of food, groups in a circle, round subjects.';
+      case CompositionMode.symmetry:
+        return 'Reflections, faces, doorways — centre on the line.';
+      case CompositionMode.aspectRatio:
+        return 'Frame for social or print — tap to cycle 1:1 · 4:5 · 16:9.';
+    }
+  }
+
+  /// Show the "best for" bubble for ~3s. Re-arms the timer on each call so a
+  /// quick scrub through modes keeps the latest bubble visible.
+  void _showCompositionTip() {
+    if (_compositionTip == null) {
+      _dismissTip();
+      return;
+    }
+    _tipTimer?.cancel();
+    setState(() => _showTip = true);
+    _tipTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _showTip = false);
+    });
+  }
+
+  /// Hide the bubble immediately (swipe-up, or moving to a tip-less mode).
+  void _dismissTip() {
+    _tipTimer?.cancel();
+    if (_showTip && mounted) setState(() => _showTip = false);
   }
 
   void _triggerBounceAnimation(File capturedFile) {
@@ -722,11 +856,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _isProcessingFrame = true;
     _lastFrameTime = now;
     try {
-      // Face/animal detection runs for None (boxes only) and Rule of Thirds
-      // (boxes + power-point alignment glow + haptic).
+      // Detection runs for None (boxes only) and the alignment modes — Rule of
+      // Thirds, Phi Grid (intersection alignment) and Fibonacci Spiral (eye
+      // alignment) — for boxes + glow + haptic.
       switch (_compositionMode) {
         case CompositionMode.none:
         case CompositionMode.ruleOfThirds:
+        case CompositionMode.goldenSection:
           await _analyzeDetections(image);
           break;
         default:
@@ -752,26 +888,24 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final int w = image.width, h = image.height;
     final turns = _deviceTurns;
 
-    // Build the downsampled+rotated buffer ONCE per evaluated rotation and reuse
-    // it for both ML Kit (faces) and Vision (animals) — avoids a second costly
-    // pixel loop on the UI isolate each frame.
-    List<Face> faces = const [];
+    // Build the downsampled+rotated buffer ONCE at the best-known rotation and
+    // reuse it for both ML Kit (faces) and Vision (subjects) — one synchronous
+    // pixel loop on the UI isolate per frame.
     int qt = _qtCache[turns] ?? 0;
-    Uint8List? winBytes;
-    int winOw = 0, winOh = 0;
+    var (winBytes, winOw, winOh) =
+        _rotatedBytes(plane.bytes, w, h, plane.bytesPerRow, qt);
+    List<Face> faces =
+        await _faceDetector.processImage(_inputFromBytes(winBytes, winOw, winOh));
+    if (!mounted) return;
 
-    // Fast path: cached rotation, one rotation + one detection.
-    if (_qtCache.containsKey(turns)) {
-      final (b, ow, oh) = _rotatedBytes(plane.bytes, w, h, plane.bytesPerRow, qt);
-      faces = await _faceDetector.processImage(_inputFromBytes(b, ow, oh));
-      if (!mounted) return;
-      winBytes = b; winOw = ow; winOh = oh;
-    }
-
-    // Re-probe when uncached, or when the cached rotation stops finding faces.
-    // Pick the rotation with the MOST faces so a false positive can't win.
-    if (faces.isEmpty) {
-      for (final cand in const [0, 1, 3, 2]) {
+    // If nothing was found, the rotation may be wrong — re-probe the other three
+    // orientations to (re)discover it. Throttled to ~1/sec so a genuinely
+    // face-less scene (landscape/street) doesn't pay 4 rotations every frame.
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (faces.isEmpty && nowMs - _lastProbeMs > 800) {
+      _lastProbeMs = nowMs;
+      for (final cand in const [1, 3, 2]) {
+        if (cand == qt) continue; // already tried above
         final (b, ow, oh) =
             _rotatedBytes(plane.bytes, w, h, plane.bytesPerRow, cand);
         final found = await _faceDetector.processImage(_inputFromBytes(b, ow, oh));
@@ -805,39 +939,46 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
 
     // ── Animals (cats/dogs) via Apple Vision, reusing the same upright buffer ───
-    if (_animalsEnabled && winBytes != null) {
+    if (_animalsEnabled) {
       try {
-        final araw = await _cameraChannel.invokeMethod<List>(
+        final raw = await _cameraChannel.invokeMethod<List>(
           'detectAnimals',
           {'bgra': winBytes, 'width': winOw, 'height': winOh},
         );
-        if (mounted && araw != null) {
-          for (final a in araw) {
-            if (a is! Map) continue;
-            // Vision returns normalised [0,1] top-left coords in the upright image.
-            final ax = (a['x'] as num).toDouble();
-            final ay = (a['y'] as num).toDouble();
-            final aw = (a['w'] as num).toDouble();
-            final ah = (a['h'] as num).toDouble();
-            final c1 = _invRotNorm(ax, ay, qt);
-            final c2 = _invRotNorm(ax + aw, ay + ah, qt);
-            final nx = math.min(c1.$1, c2.$1);
-            final ny = math.min(c1.$2, c2.$2);
-            final nw = (c1.$1 - c2.$1).abs();
-            final nh = (c1.$2 - c2.$2).abs();
-            final cx = (nx + nw / 2 - 0.5) * _previewStretchX + 0.5;
-            final stretchedW = nw * _previewStretchX;
-            dets.add({
-              'x': cx - stretchedW / 2, 'y': ny, 'w': stretchedW, 'h': nh,
-              'label': (a['label'] ?? 'animal').toString(),
-              'confidence': (a['confidence'] as num?)?.toDouble() ?? 1.0,
-            });
-          }
-        }
+        if (!mounted) return;
+        _addVisionDets(raw, dets, qt, 'animal');
       } catch (_) {}
     }
 
     _updateFaceTargets(dets); // ticker animates the displayed boxes
+  }
+
+  /// Map a native Vision result list (normalised [0,1] top-left boxes in the
+  /// upright image) back into portrait preview space and append to [dets].
+  void _addVisionDets(
+    List? raw, List<Map<String, dynamic>> dets, int qt, String fallbackLabel,
+  ) {
+    if (raw == null) return;
+    for (final a in raw) {
+      if (a is! Map) continue;
+      final ax = (a['x'] as num).toDouble();
+      final ay = (a['y'] as num).toDouble();
+      final aw = (a['w'] as num).toDouble();
+      final ah = (a['h'] as num).toDouble();
+      final c1 = _invRotNorm(ax, ay, qt);
+      final c2 = _invRotNorm(ax + aw, ay + ah, qt);
+      final nx = math.min(c1.$1, c2.$1);
+      final ny = math.min(c1.$2, c2.$2);
+      final nw = (c1.$1 - c2.$1).abs();
+      final nh = (c1.$2 - c2.$2).abs();
+      final cx = (nx + nw / 2 - 0.5) * _previewStretchX + 0.5;
+      final stretchedW = nw * _previewStretchX;
+      dets.add({
+        'x': cx - stretchedW / 2, 'y': ny, 'w': stretchedW, 'h': nh,
+        'label': (a['label'] ?? fallbackLabel).toString(),
+        'confidence': (a['confidence'] as num?)?.toDouble() ?? 1.0,
+      });
+    }
   }
 
   /// Downsample (by [_detScale]) + physically rotate ([qt] quarter-turns CW) a
@@ -907,13 +1048,52 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   AnimationController? _faceAnim;
   int _lastTickMs = 0;
 
-  // Rule-of-Thirds power points (normalised) + per-point animated glow.
+  // Rule-of-Thirds power points (normalised) — intersections of the 1/3 lines.
   static const List<List<double>> _powerPoints = [
     [1 / 3, 1 / 3], [2 / 3, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 2 / 3],
   ];
-  // How close a detection centre must be to a power point to count as aligned.
-  static const double _alignRadius = 0.10;
+  // Phi-Grid power points — intersections of the golden-section lines at
+  // 1/φ² ≈ 0.382 and 1/φ ≈ 0.618.
+  static const double _phiLo = 0.3819660113;
+  static const double _phiHi = 0.6180339887;
+  static const List<List<double>> _phiPoints = [
+    [_phiLo, _phiLo], [_phiHi, _phiLo], [_phiLo, _phiHi], [_phiHi, _phiHi],
+  ];
+  // Forgiveness margin when testing whether a power point falls inside a box
+  // (fraction of the box half-size). 0.15 = box bounds + 15%. → "Almost".
+  static const double _alignMargin = 0.15;
+  // How near the box centre the point must be (radially, as a fraction of the
+  // box half-size) to count as "Perfect". 0.4 = within 40% of centre.
+  static const double _perfectFrac = 0.40;
   final List<double> _powerGlow = [0, 0, 0, 0];
+
+  /// Alignment target points (intersections) for the active mode, as fractions
+  /// of the band, or null when the mode has no alignment. Only Rule of Thirds and
+  /// Phi Grid have alignment for now — other models are being (re)built one by
+  /// one.
+  List<List<double>>? get _modePowerPoints {
+    switch (_compositionMode) {
+      case CompositionMode.ruleOfThirds:
+        return _powerPoints;
+      case CompositionMode.goldenSection:
+        return _phiPoints;
+      default:
+        return null;
+    }
+  }
+
+  /// The active power points expressed in the same full-screen-normalised space
+  /// as the detected face boxes. x is unchanged (full width); y is remapped into
+  /// the camera-visible band so alignment is tested against the dots the user
+  /// sees, not their old full-screen position.
+  List<List<double>> _bandPowerPoints() {
+    final pts = _modePowerPoints ?? _powerPoints;
+    final double bandF = 1 - _topInsetFrac - _bottomInsetFrac;
+    if (bandF <= 0.01) return pts; // insets not measured yet
+    return [
+      for (final p in pts) [p[0], _topInsetFrac + p[1] * bandF],
+    ];
+  }
 
   /// Feed a fresh set of detections in as targets. Matches each detection to the
   /// nearest existing box (so identity is stable) and flags unmatched boxes to
@@ -953,26 +1133,57 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       }
     }
 
-    // ── Rule-of-Thirds alignment ────────────────────────────────────────────
-    // Only when that mode is active: flag each box with the power point it sits
-    // on (if any), and fire a haptic the moment a box becomes newly aligned.
-    final align = _compositionMode == CompositionMode.ruleOfThirds;
-    bool newlyAligned = false;
+    // ── Alignment (Rule of Thirds / Phi Grid intersections, Spiral eye) ─────
+    // Only in an alignment mode: flag each box with the target point it sits on
+    // (if any), and fire a haptic the moment a box becomes newly aligned.
+    final align = _modePowerPoints != null;
+    // Target points remapped into the band the painter draws them in, so the
+    // alignment test matches the dots on screen. May be 4 (grids) or 1 (spiral).
+    final pp = _bandPowerPoints();
+    bool newlyPerfect = false;
     for (final b in _faceBoxes) {
       int near = -1;
+      bool perfect = false;
       if (align && b.matched) {
-        double bestD = _alignRadius;
-        for (var i = 0; i < 4; i++) {
-          final dx = b.tcx - _powerPoints[i][0];
-          final dy = b.tcy - _powerPoints[i][1];
-          final d = math.sqrt(dx * dx + dy * dy);
-          if (d < bestD) { bestD = d; near = i; }
+        final double halfW = b.tw / 2, halfH = b.th / 2;
+        final double mx = halfW * (1 + _alignMargin);
+        final double my = halfH * (1 + _alignMargin);
+        double bestD = double.infinity;
+        for (var i = 0; i < pp.length; i++) {
+          final dx = pp[i][0] - b.tcx;
+          final dy = pp[i][1] - b.tcy;
+          // Inside the box (+margin) → counts as "almost".
+          if (dx.abs() <= mx && dy.abs() <= my) {
+            final d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; near = i; }
+          }
+        }
+        // "Perfect" = the chosen point sits near the box centre (within
+        // _perfectFrac of the box half-size, radially).
+        if (near >= 0) {
+          final nx = (pp[near][0] - b.tcx) / (halfW <= 0 ? 1 : halfW);
+          final ny = (pp[near][1] - b.tcy) / (halfH <= 0 ? 1 : halfH);
+          perfect = (nx * nx + ny * ny) <= _perfectFrac * _perfectFrac;
         }
       }
-      if (near >= 0 && b.intersection < 0) newlyAligned = true;
+      // Haptic only on the transition into a fresh "perfect".
+      if (perfect && !b.perfect) newlyPerfect = true;
       b.intersection = near;
+      b.perfect = perfect;
     }
-    if (newlyAligned) _haptic('alignmentPing', intensity: 1.0);
+    if (newlyPerfect) _haptic('alignmentPing', intensity: 1.0);
+
+    // Drive the hint via a notifier — 0 none, 1 almost (in box), 2 perfect
+    // (near centre). Only the hint rebuilds, so flip-flops can't hurt FPS.
+    int level = 0;
+    if (align) {
+      for (final b in _faceBoxes) {
+        if (!b.matched || b.intersection < 0) continue;
+        level = b.perfect ? 2 : math.max(level, 1);
+        if (level == 2) break;
+      }
+    }
+    _alignLevel.value = level;
 
     if (_faceBoxes.isNotEmpty && !(_faceAnim?.isAnimating ?? false)) {
       _lastTickMs = DateTime.now().millisecondsSinceEpoch;
@@ -1000,11 +1211,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final targetOpacity = b.matched ? 1.0 : 0.0;
       b.opacity += (targetOpacity - b.opacity) * opK;
       b.appear += (1.0 - b.appear) * opK;
-      // Alignment glow on the box, and mark its power point as active.
-      final alignTarget = (b.intersection >= 0) ? 1.0 : 0.0;
+      // Alignment glow: full for "perfect", softer for "almost" (in box only).
+      final alignTarget = b.perfect ? 1.0 : (b.intersection >= 0 ? 0.45 : 0.0);
       b.alignGlow += (alignTarget - b.alignGlow) * opK;
       if (b.intersection >= 0 && b.opacity > 0.3) {
-        pTarget[b.intersection] = math.max(pTarget[b.intersection], b.opacity);
+        pTarget[b.intersection] =
+            math.max(pTarget[b.intersection], b.opacity * (b.perfect ? 1.0 : 0.5));
       }
     }
     // Ease each power point's glow toward whether a box is on it.
@@ -1094,8 +1306,30 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     });
   }
 
+  /// Reads the laid-out panel heights into [_topInset]/[_bottomInset] so the
+  /// composition grid can be clipped to the camera-visible area. Guarded by an
+  /// epsilon so it rebuilds at most once after the panels settle.
+  void _measurePanels() {
+    if (!mounted) return;
+    final topBox = _topPanelKey.currentContext?.findRenderObject() as RenderBox?;
+    final botBox =
+        _bottomPanelKey.currentContext?.findRenderObject() as RenderBox?;
+    final double top = topBox?.size.height ?? 0;
+    final double bot = botBox?.size.height ?? 0;
+    if ((top - _topInset).abs() > 0.5 || (bot - _bottomInset).abs() > 0.5) {
+      final double screenH = MediaQuery.of(context).size.height;
+      setState(() {
+        _topInset = top;
+        _bottomInset = bot;
+        _topInsetFrac = screenH > 0 ? top / screenH : 0;
+        _bottomInsetFrac = screenH > 0 ? bot / screenH : 0;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) => _measurePanels());
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -1107,6 +1341,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 onTapUp: (d) => _onTapToFocus(d, constraints),
                 onScaleStart: _onScaleStart,
                 onScaleUpdate: _onScaleUpdate,
+                onScaleEnd: _onScaleEnd,
                 child: _buildPreview(),
               ),
             ),
@@ -1166,19 +1401,24 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               },
             ),
 
-          // Composition guide overlay — grid lines + detection boxes.
-          // In None mode we still draw detection boxes for testing, so this is
-          // always present. Detection bbox coords are full-frame normalised [0,1],
-          // so the overlay must fill the whole screen (no insets).
+          // Composition guide overlay — grid + power points + detection boxes.
+          // RepaintBoundary isolates its 60fps ticker repaints from the camera
+          // preview and panels, so only this layer re-rasterises each frame.
           Positioned.fill(
             child: IgnorePointer(
-              child: CustomPaint(
-                painter: CompositionPainter(
-                  _compositionMode,
-                  glowSegs: _glowSegMap.values.toList(),
-                  faceBoxes: _faceBoxes,
-                  powerGlow: _powerGlow,
-                  repaint: _faceAnim,
+              child: RepaintBoundary(
+                child: CustomPaint(
+                  painter: CompositionPainter(
+                    _compositionMode,
+                    glowSegs: _glowSegMap.values.toList(),
+                    faceBoxes: _faceBoxes,
+                    powerGlow: _powerGlow,
+                    topInset: _topInset,
+                    bottomInset: _bottomInset,
+                    spiralTurns: _spiralTurns,
+                    aspect: _aspectRatios[_aspectIndex].ratio,
+                    repaint: _faceAnim,
+                  ),
                 ),
               ),
             ),
@@ -1236,6 +1476,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             right: 0,
             bottom: 0,
             child: Container(
+              key: _bottomPanelKey,
               padding: const EdgeInsets.only(
                 left: 20,
                 right: 20,
@@ -1265,6 +1506,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           _currentCompositionIndex = index;
                           _compositionMode = _compositionModes[index];
                         });
+                        _showCompositionTip(); // "best for" bubble (~3s)
                       },
                       itemCount: _compositionModes.length,
                       itemBuilder: (context, index) {
@@ -1286,22 +1528,22 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     ),
                   ),
                   if (MediaQuery.of(context).orientation == Orientation.portrait) ...[
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 2),
                     if (_isInitialized) _buildZoomMeter(),
-                    const SizedBox(height: 18),
-                  ] else
                     const SizedBox(height: 10),
+                  ] else
+                    const SizedBox(height: 8),
                   // Camera controls row
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.end,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      // Gallery button (bottom left)
+                      // Gallery button (left, centred with capture button)
                       GestureDetector(
                         onTap: _isRecording ? null : _selectFromGallery,
                         child: Container(
-                          width: 48,
-                          height: 48,
+                          width: 52,
+                          height: 52,
                           decoration: BoxDecoration(
                             color: Colors.black.withValues(alpha: 0.30),
                             borderRadius: BorderRadius.circular(10),
@@ -1321,7 +1563,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                               : _rotated(Icon(
                                   Icons.photo_library_outlined,
                                   color: Colors.white.withValues(alpha: 0.55),
-                                  size: 22,
+                                  size: 24,
                                 )),
                         ),
                       ),
@@ -1329,8 +1571,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                       // Capture button (center) - tap for photo, hold for video
                       _buildGlassCaptureButton(),
 
-                      // Empty space for symmetry
-                      const SizedBox(width: 50),
+                      // Right slot: a mode-specific control (spiral rotate /
+                      // aspect-ratio cycle), otherwise empty space for symmetry.
+                      _buildRightSlotControl(),
                     ],
                   ),
                 ],
@@ -1479,6 +1722,48 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               child: Center(child: _buildVerticalZoomMeter()),
             ),
 
+          // Alignment instruction / "Perfect" hint — top centre, below panel.
+          // Shown for the alignment modes; suppressed while the tip bubble shows
+          // (they share the same spot).
+          if (_modePowerPoints != null && !_isRecording && !_showTip)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 92,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(
+                child: Center(
+                  child: RepaintBoundary(
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _alignLevel,
+                      builder: (_, level, __) => _buildCompositionHint(level),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // "Best for" tip bubble — drops down from behind the top panel on mode
+          // change and retracts back up under it (iMessage-style). Anchored at
+          // the panel's bottom edge and clipped there so it tucks cleanly under
+          // the chrome on both auto-dismiss and swipe-up.
+          Positioned(
+            top: _topInset > 0
+                ? _topInset
+                : MediaQuery.of(context).padding.top + 56,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: ClipRect(
+              child: Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: _buildTipBubble(),
+                ),
+              ),
+            ),
+          ),
+
           // Shutter flash effect (on top of everything)
           if (_showShutterFlash)
             Positioned.fill(child: Container(color: Colors.white)),
@@ -1489,7 +1774,346 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             right: 12,
             child: const IgnorePointer(child: _FpsOverlay()),
           ),
+
+          // Branded loading state — full-screen, shown only while the camera is
+          // starting up and gated on real readiness (_isInitialized), not a
+          // timer. Crossfades out the instant the preview is live; absorbs taps
+          // while loading so the shutter can't fire early.
+          Positioned.fill(
+            child: AbsorbPointer(
+              absorbing: !_isInitialized && _error == null,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 450),
+                child: (!_isInitialized && _error == null)
+                    ? const BrandedLoader(key: ValueKey('loader'))
+                    : const SizedBox.shrink(key: ValueKey('ready')),
+              ),
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  /// "Best for" bubble — a compact blurb shown on mode change. Auto-hides after
+  /// 3s (timer in [_showCompositionTip]); swipe up to dismiss immediately. Both
+  /// the drop-in and the dismiss glide vertically (it's clipped at the panel
+  /// edge by the caller, so it reads as sliding out from / back behind the
+  /// panel, iMessage-style).
+  Widget _buildTipBubble() {
+    final tip = _compositionTip;
+    final bool visible = _showTip && tip != null && !_isRecording;
+    const gold = Color(0xFFE5C158);
+    return IgnorePointer(
+      ignoring: !visible,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 420),
+        // Drops in gently (settle), retracts upward with a touch of acceleration.
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        // Slide + scale only (no opacity layer) so the frosted backdrop blur
+        // stays live throughout; the panel-edge clip handles disappearance.
+        transitionBuilder: (child, anim) => SlideTransition(
+          position: Tween<Offset>(
+            // Travels > full height so it fully clears the panel edge.
+            begin: const Offset(0, -1.4), end: Offset.zero,
+          ).animate(anim),
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
+            alignment: Alignment.topCenter,
+            child: child,
+          ),
+        ),
+        child: !visible
+            ? const SizedBox.shrink(key: ValueKey('noTip'))
+            : GestureDetector(
+                key: ValueKey(_compositionMode),
+                behavior: HitTestBehavior.opaque,
+                onVerticalDragEnd: (d) {
+                  if ((d.primaryVelocity ?? 0) < 0) _dismissTip(); // swipe up
+                },
+                onTap: _dismissTip,
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 32),
+                  // Soft drop shadow for lift off the preview.
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.28),
+                        blurRadius: 20,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    // Frost the camera behind the pill.
+                    child: BackdropFilter(
+                      filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 15, vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(20),
+                          // Top sheen → dark base: glassy, and keeps white text
+                          // legible over any camera scene.
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.white.withValues(alpha: 0.14),
+                              Colors.black.withValues(alpha: 0.34),
+                            ],
+                          ),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.30),
+                            width: 0.8,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.auto_awesome_rounded,
+                                color: gold, size: 14),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Text(
+                                tip,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.92),
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w400,
+                                  letterSpacing: 0.2,
+                                  height: 1.25,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+      ),
+    );
+  }
+
+  /// Top hint for Rule of Thirds. Smoothly morphs between three states:
+  ///   0 — translucent instruction pill
+  ///   1 — "Almost" (subject's box is on a point, but off-centre)
+  ///   2 — "Perfect" (point near the box centre), ambient breathing gold glow.
+  Widget _buildCompositionHint(int level) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 340),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, anim) => FadeTransition(
+        opacity: anim,
+        child: ScaleTransition(
+          scale: Tween(begin: 0.94, end: 1.0).animate(anim),
+          child: child,
+        ),
+      ),
+      child: switch (level) {
+        2 => _perfectBadge(),
+        1 => _almostBadge(),
+        _ => _instructionPill(),
+      },
+    );
+  }
+
+  /// "Perfect" — ambient, gently breathing golden glow.
+  Widget _perfectBadge() {
+    const gold = Color(0xFFE5C158);
+    return AnimatedBuilder(
+      key: const ValueKey('perfect'),
+      animation: _faceAnim!,
+      builder: (context, _) {
+        // Slow breathe. Only ALPHA animates — blur radius is constant so the
+        // glow isn't re-rasterised every frame (cheap).
+        final t = DateTime.now().millisecondsSinceEpoch / 900.0;
+        final breathe = 0.5 + 0.5 * math.sin(t);
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 7),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.28),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: gold.withValues(alpha: 0.45 + 0.40 * breathe),
+              width: 1.0,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: gold.withValues(alpha: 0.12 + 0.22 * breathe),
+                blurRadius: 12,
+                spreadRadius: 0.5,
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.check_circle_rounded,
+                  color: gold.withValues(alpha: 0.75 + 0.25 * breathe), size: 14),
+              const SizedBox(width: 6),
+              const Text(
+                'Perfect',
+                style: TextStyle(
+                  color: gold,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 1.0,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// "Almost" — calm, static amber pill (no breathing) to read as lower energy.
+  Widget _almostBadge() {
+    const amber = Color(0xFFE5C158);
+    return Container(
+      key: const ValueKey('almost'),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.30),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: amber.withValues(alpha: 0.40), width: 0.8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.adjust_rounded, color: amber.withValues(alpha: 0.70), size: 14),
+          const SizedBox(width: 6),
+          Text(
+            'Almost — centre it',
+            style: TextStyle(
+              color: amber.withValues(alpha: 0.92),
+              fontSize: 12,
+              fontWeight: FontWeight.w400,
+              letterSpacing: 0.6,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Default instruction pill (translucent). Wording adapts to the mode's
+  /// target: grid intersections, the spiral's eye, or a single centre marker.
+  Widget _instructionPill() {
+    const gold = Color(0xFFE5C158);
+    return Container(
+      key: const ValueKey('hint'),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.30),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08), width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.grid_3x3_rounded,
+            color: gold.withValues(alpha: 0.75),
+            size: 14,
+          ),
+          const SizedBox(width: 7),
+          Text(
+            'Place your target on the intersection points!',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.78),
+              fontSize: 11.5,
+              fontWeight: FontWeight.w300,
+              letterSpacing: 0.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The right-hand control slot in the camera row: a mode-specific button when
+  /// one applies (spiral rotate / aspect-ratio cycle), else empty space sized to
+  /// match the gallery button so the capture button stays centred.
+  Widget _buildRightSlotControl() {
+    switch (_compositionMode) {
+      case CompositionMode.fibonacciSpiral:
+        return _buildSpiralRotateButton();
+      case CompositionMode.aspectRatio:
+        return _buildAspectRatioButton();
+      default:
+        return const SizedBox(width: 52);
+    }
+  }
+
+  /// Aspect-ratio cycle control (Aspect Ratio mode). Each tap advances the crop
+  /// ratio (1:1 → 4:5 → 16:9); the current label is shown on the button.
+  Widget _buildAspectRatioButton() {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() => _aspectIndex = (_aspectIndex + 1) % _aspectRatios.length);
+      },
+      child: Container(
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.30),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.28),
+            width: 1.0,
+          ),
+        ),
+        child: Center(
+          child: _rotated(Text(
+            _aspectRatios[_aspectIndex].label,
+            style: const TextStyle(
+              color: Color(0xFFE5C158),
+              fontSize: 13,
+              fontWeight: FontWeight.w400,
+              letterSpacing: 0.4,
+            ),
+          )),
+        ),
+      ),
+    );
+  }
+
+  /// Rotate control shown in the controls row while Fibonacci Spiral is active.
+  /// Each tap turns the spiral 90° clockwise, cycling its eye through the four
+  /// corners. Styled to mirror the gallery button on the opposite side.
+  Widget _buildSpiralRotateButton() {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() => _spiralTurns = (_spiralTurns + 1) & 3);
+      },
+      child: Container(
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.30),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.28),
+            width: 1.0,
+          ),
+        ),
+        child: _rotated(const Icon(
+          Icons.rotate_90_degrees_cw_rounded,
+          color: Color(0xFFE5C158),
+          size: 24,
+        )),
       ),
     );
   }
@@ -1514,8 +2138,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 ? (_) => _stopVideoRecording()
                 : null,
             child: Container(
-              width: 85,
-              height: 85,
+              width: 70,
+              height: 70,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 // Outer glow shadow - animated during recording
@@ -1559,8 +2183,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                   Center(
                     child: ClipOval(
                       child: SizedBox(
-                        width: 70,
-                        height: 70,
+                        width: 58,
+                        height: 58,
                         child: _isInitialized && _controller != null
                             ? OverflowBox(
                                 alignment: Alignment.center,
@@ -1570,7 +2194,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                 maxHeight: double.infinity,
                                 child: SizedBox(
                                   // Render the preview at full-screen size so the
-                                  // OverflowBox centres the frame and the 70×70 clip
+                                  // OverflowBox centres the frame and the 58×58 clip
                                   // reveals only the very centre of the camera feed.
                                   width: MediaQuery.of(context).size.width,
                                   height: MediaQuery.of(context).size.height,
@@ -1653,6 +2277,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Widget _buildTopSettingsPanel() {
     const Color gold = Color(0xFFE5C158);
     return Container(
+      key: _topPanelKey,
       padding: EdgeInsets.only(
         top: MediaQuery.of(context).padding.top + 10,
         bottom: 14,
@@ -2065,14 +2690,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       );
     }
 
-    // First-time initialisation — show spinner.
+    // First-time initialisation — plain black; the branded loader overlay (top
+    // of the Stack) is the visible loading state and covers this.
     if (!_isInitialized) {
-      return Container(
-        color: const Color(0xFF1a1a1a),
-        child: const Center(
-          child: CircularProgressIndicator(color: Colors.white),
-        ),
-      );
+      return Container(color: Colors.black);
     }
 
     // Lens is mid-switch — controller disposed, new one not ready yet.
@@ -2459,7 +3080,9 @@ enum CompositionMode {
   lArrangement,
   compoundCurve,
   pyramid,
-  circular;
+  circular,
+  symmetry,
+  aspectRatio;
 
   String get label {
     switch (this) {
@@ -2468,7 +3091,7 @@ enum CompositionMode {
       case CompositionMode.ruleOfThirds:
         return 'Rule of Thirds';
       case CompositionMode.goldenSection:
-        return 'Golden Section';
+        return 'Phi Grid';
       case CompositionMode.goldenTriangles:
         return 'Golden Triangles';
       case CompositionMode.spiralSection:
@@ -2495,6 +3118,10 @@ enum CompositionMode {
         return 'Pyramid';
       case CompositionMode.circular:
         return 'Circular';
+      case CompositionMode.symmetry:
+        return 'Symmetry';
+      case CompositionMode.aspectRatio:
+        return 'Aspect Ratio';
     }
   }
 }
@@ -2526,11 +3153,12 @@ class _FaceBox {
   double appear;    // 0..1, drives a subtle scale-in
   bool matched;     // matched in the most recent detection cycle
   int intersection; // index 0..3 of the rule-of-thirds power point it's on, -1 none
+  bool perfect;     // true when that point sits near the box centre
   double alignGlow; // 0..1 animated alignment-glow strength
   _FaceBox(this.cx, this.cy, this.w, this.h)
       : tcx = cx, tcy = cy, tw = w, th = h,
         opacity = 0, appear = 0, matched = true,
-        intersection = -1, alignGlow = 0;
+        intersection = -1, perfect = false, alignGlow = 0;
 }
 
 /// Lightweight on-screen FPS meter (testing). Counts vsync ticks via a Ticker
@@ -2605,11 +3233,24 @@ class CompositionPainter extends CustomPainter {
   final List<_FaceBox> faceBoxes;
   /// Per-power-point glow strength (0..1) for Rule-of-Thirds alignment.
   final List<double> powerGlow;
+  /// Heights (px) of the top/bottom UI panels. The composition grid is drawn
+  /// only within the camera-visible band `[topInset, height − bottomInset]`,
+  /// so guide lines stop at the panel edges instead of sliding under them.
+  final double topInset;
+  final double bottomInset;
+  /// Fibonacci-spiral orientation in 90° clockwise turns (0..3).
+  final int spiralTurns;
+  /// Selected crop ratio (W/H) for the Aspect Ratio mode.
+  final double aspect;
   CompositionPainter(
     this.mode, {
     List<_GlowSeg>? glowSegs,
     List<_FaceBox>? faceBoxes,
     List<double>? powerGlow,
+    this.topInset = 0,
+    this.bottomInset = 0,
+    this.spiralTurns = 0,
+    this.aspect = 1.0,
     Listenable? repaint,
   })  : glowSegs = glowSegs ?? const [],
         faceBoxes = faceBoxes ?? const [],
@@ -2618,6 +3259,9 @@ class CompositionPainter extends CustomPainter {
 
   static const Color _gold = Color(0xFFFFFFFF);
   static const double _sw = 0.8;
+  /// Fraction of the frame the golden-spiral rectangle fills (1.0 = edge-to-
+  /// edge like the reference; lower for more breathing room).
+  static const double _goldenSpiralFill = 1.0;
 
   /// Normal white hairline paint used by all draw methods.
   Paint _gp({StrokeCap cap = StrokeCap.butt}) => Paint()
@@ -2646,64 +3290,95 @@ class CompositionPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Composition grids are confined to the camera-visible band *between* the
+    // top/bottom UI panels: translate to the band top, clip to its height, and
+    // hand every draw method a band-sized canvas. Guide lines (and the Rule-of-
+    // Thirds power points) therefore stop at the panel edges instead of sliding
+    // underneath them. Face brackets (drawn afterwards) stay full-screen so they
+    // keep tracking subjects anywhere on the preview, even over the panels.
+    final double bandH = size.height - topInset - bottomInset;
+    final bool banded = bandH > 1;
+    final Size grid = banded ? Size(size.width, bandH) : size;
+
+    canvas.save();
+    if (banded) {
+      canvas.translate(0, topInset);
+      canvas.clipRect(Rect.fromLTWH(0, 0, grid.width, grid.height));
+    }
     switch (mode) {
       case CompositionMode.none:
         break;
       case CompositionMode.ruleOfThirds:
-        _drawRuleOfThirds(canvas, size);
+        _drawRuleOfThirds(canvas, grid);
         break;
       case CompositionMode.goldenSection:
-        _drawGoldenSection(canvas, size);
+        _drawGoldenSection(canvas, grid);
         break;
       case CompositionMode.goldenTriangles:
-        _drawGoldenTriangles(canvas, size);
+        _drawGoldenTriangles(canvas, grid);
         break;
       case CompositionMode.spiralSection:
-        _drawSpiralSection(canvas, size);
+        _drawSpiralSection(canvas, grid);
         break;
       case CompositionMode.fibonacciSpiral:
-        _drawGoldenSpiral(canvas, size);
+        _drawGoldenSpiral(canvas, grid);
         break;
       case CompositionMode.harmoniousTriangles:
-        _drawHarmoniousTriangles(canvas, size);
+        _drawHarmoniousTriangles(canvas, grid);
         break;
       case CompositionMode.cross:
-        _drawCross(canvas, size);
+        _drawCross(canvas, grid);
         break;
       case CompositionMode.focalMass:
-        _drawFocalMass(canvas, size);
+        _drawFocalMass(canvas, grid);
         break;
       case CompositionMode.vArrangement:
-        _drawVArrangement(canvas, size);
+        _drawVArrangement(canvas, grid);
         break;
       case CompositionMode.diagonal:
-        _drawDiagonal(canvas, size);
+        _drawDiagonal(canvas, grid);
         break;
       case CompositionMode.radial:
-        _drawRadial(canvas, size);
+        _drawRadial(canvas, grid);
         break;
       case CompositionMode.lArrangement:
-        _drawLArrangement(canvas, size);
+        _drawLArrangement(canvas, grid);
         break;
       case CompositionMode.compoundCurve:
-        _drawCompoundCurve(canvas, size);
+        _drawCompoundCurve(canvas, grid);
         break;
       case CompositionMode.pyramid:
-        _drawPyramid(canvas, size);
+        _drawPyramid(canvas, grid);
         break;
       case CompositionMode.circular:
-        _drawCircular(canvas, size);
+        _drawCircular(canvas, grid);
+        break;
+      case CompositionMode.symmetry:
+        _drawSymmetry(canvas, grid);
+        break;
+      case CompositionMode.aspectRatio:
+        _drawAspectRatio(canvas, grid);
         break;
     }
 
-    // ── Rule-of-Thirds power points (glow when a subject lands on them) ─────────
-    if (mode == CompositionMode.ruleOfThirds) {
+    // ── Target points (glow when a subject lands on them) ──────────────────────
+    // Rule of Thirds uses the 1/3 intersections; Phi Grid uses the golden-
+    // section intersections at 1/φ² ≈ 0.382 and 1/φ ≈ 0.618. Other modes have no
+    // alignment markers yet.
+    final List<List<double>>? pts = switch (mode) {
+      CompositionMode.ruleOfThirds => const [
+          [1 / 3, 1 / 3], [2 / 3, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 2 / 3],
+        ],
+      CompositionMode.goldenSection => const [
+          [0.3819660113, 0.3819660113], [0.6180339887, 0.3819660113],
+          [0.3819660113, 0.6180339887], [0.6180339887, 0.6180339887],
+        ],
+      _ => null,
+    };
+    if (pts != null) {
       const gold = Color(0xFFE5C158);
-      const pts = [
-        [1 / 3, 1 / 3], [2 / 3, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 2 / 3],
-      ];
-      for (var i = 0; i < 4; i++) {
-        final c = Offset(pts[i][0] * size.width, pts[i][1] * size.height);
+      for (var i = 0; i < pts.length; i++) {
+        final c = Offset(pts[i][0] * grid.width, pts[i][1] * grid.height);
         final g = (i < powerGlow.length ? powerGlow[i] : 0.0).clamp(0.0, 1.0);
         // Faint dot always; blooms into a soft glowing ring when aligned.
         canvas.drawCircle(
@@ -2727,48 +3402,9 @@ class CompositionPainter extends CustomPainter {
         }
       }
     }
+    canvas.restore();
 
-    // ── Face / animal indicators — soft corner brackets (camera AF style) ───────
-    for (final b in faceBoxes) {
-      if (b.opacity <= 0.01) continue;
-      // Subtle scale-in: start 8% smaller and settle to full size on appear.
-      final scale = 0.92 + 0.08 * b.appear;
-      final w = b.w * size.width * scale;
-      final h = b.h * size.height * scale;
-      final cx = b.cx * size.width;
-      final cy = b.cy * size.height;
-      final rect = Rect.fromCenter(center: Offset(cx, cy), width: w, height: h);
-
-      final a = b.opacity.clamp(0.0, 1.0);
-      final align = b.alignGlow.clamp(0.0, 1.0);
-      const gold = Color(0xFFE5C158);
-      // Corner arm length scales with box size but is capped for tidiness.
-      final arm = (math.min(rect.width, rect.height) * 0.26).clamp(8.0, 26.0);
-      final r = math.min(8.0, arm * 0.6); // corner rounding radius
-
-      // Aligned boxes get brighter, slightly thicker brackets + a stronger glow.
-      final stroke = Paint()
-        ..color = gold.withValues(alpha: (0.85 + 0.15 * align) * a)
-        ..strokeWidth = 2.2 + 1.0 * align
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..isAntiAlias = true;
-      final glow = Paint()
-        ..color = gold.withValues(alpha: (0.25 + 0.45 * align) * a)
-        ..strokeWidth = 4.5 + 3.0 * align
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 3.0 + 3.0 * align);
-
-      for (final p in [glow, stroke]) {
-        _corner(canvas, rect.topLeft,     1, 1, arm, r, p);
-        _corner(canvas, rect.topRight,   -1, 1, arm, r, p);
-        _corner(canvas, rect.bottomRight,-1,-1, arm, r, p);
-        _corner(canvas, rect.bottomLeft,  1,-1, arm, r, p);
-      }
-    }
+    _paintFaceBoxes(canvas, size);
 
     // Selective glow pass — redraw only the lines that have edge support,
     // using a gold blur paint so they illuminate without affecting other lines.
@@ -2791,7 +3427,63 @@ class CompositionPainter extends CustomPainter {
         );
       }
     }
+  }
 
+  /// Full-screen face/animal corner brackets (camera AF style). Drawn on its own
+  /// full-screen layer so boxes track faces anywhere, even over the UI panels.
+  void _paintFaceBoxes(Canvas canvas, Size size) {
+    for (final b in faceBoxes) {
+      if (b.opacity <= 0.01) continue;
+      // Subtle scale-in: start 8% smaller and settle to full size on appear.
+      final scale = 0.92 + 0.08 * b.appear;
+      final w = b.w * size.width * scale;
+      final h = b.h * size.height * scale;
+      final cx = b.cx * size.width;
+      final cy = b.cy * size.height;
+      final rect = Rect.fromCenter(center: Offset(cx, cy), width: w, height: h);
+
+      final a = b.opacity.clamp(0.0, 1.0);
+      final align = b.alignGlow.clamp(0.0, 1.0);
+      const gold = Color(0xFFE5C158);       // composition-text gold (aligned)
+      const grid = Color(0xFFFFFFFF);       // grid-line white (not aligned)
+      final arm = (math.min(rect.width, rect.height) * 0.26).clamp(8.0, 26.0);
+      final r = math.min(8.0, arm * 0.6);
+
+      // colorT: 0 = grid white (no alignment), 1 = full gold (point inside box).
+      // align ramps 0 → 0.45 ("Almost") → 1.0 ("Perfect"), so reaching ~0.45
+      // already gives full gold; the glow keeps intensifying toward Perfect.
+      final colorT = (align / 0.45).clamp(0.0, 1.0);
+      final Color lineColor = Color.lerp(grid, gold, colorT)!;
+
+      // Blurred glow is the expensive part — only for boxes on a point (align>0),
+      // light for "Almost", heavy for "Perfect". Other faces are cheap strokes.
+      if (align > 0.02) {
+        final glow = Paint()
+          ..color = gold.withValues(alpha: (0.18 + 0.5 * align) * a)
+          ..strokeWidth = 4.0 + 4.0 * align
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 2.5 + 4.0 * align);
+        _corner(canvas, rect.topLeft, 1, 1, arm, r, glow);
+        _corner(canvas, rect.topRight, -1, 1, arm, r, glow);
+        _corner(canvas, rect.bottomRight, -1, -1, arm, r, glow);
+        _corner(canvas, rect.bottomLeft, 1, -1, arm, r, glow);
+      }
+
+      // Thin grid-white when not aligned; thicker gold when on a point.
+      final stroke = Paint()
+        ..color = lineColor.withValues(alpha: (0.42 + 0.5 * colorT) * a)
+        ..strokeWidth = 1.2 + 1.8 * align
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..isAntiAlias = true;
+      _corner(canvas, rect.topLeft, 1, 1, arm, r, stroke);
+      _corner(canvas, rect.topRight, -1, 1, arm, r, stroke);
+      _corner(canvas, rect.bottomRight, -1, -1, arm, r, stroke);
+      _corner(canvas, rect.bottomLeft, 1, -1, arm, r, stroke);
+    }
   }
 
   // ── Rule of Thirds ──────────────────────────────────────────────────────────
@@ -2979,105 +3671,93 @@ class CompositionPainter extends CustomPainter {
   // }
 
   void _drawGoldenSpiral(Canvas canvas, Size s) {
-    // Assuming _p is your Paint object from the class
     final p = _p;
     const double phi = 1.6180339887;
 
-    Rect rect;
-    int dir;
+    // 90°-per-step rotation lets the user aim the spiral's eye at any corner.
+    // Odd steps stand the spiral on its long edge, so we fit the golden rectangle
+    // into a frame with width/height swapped, then rotate the whole drawing about
+    // the band centre to drop it back into place (still fitting the band).
+    final int turns = spiralTurns & 3;
+    final bool swap = turns.isOdd;
+    final double fw = swap ? s.height : s.width;
+    final double fh = swap ? s.width : s.height;
 
-    // 1. Calculate the maximum Golden Rectangle that fits the screen
-    if (s.width > s.height) {
-      // Landscape: Fit horizontally, or constraint by height
-      double w = s.width;
-      double h = w / phi;
-      if (h > s.height) {
-        h = s.height;
-        w = h * phi;
-      }
-      // Center it perfectly
-      rect = Rect.fromLTWH((s.width - w) / 2, (s.height - h) / 2, w, h);
-      dir = 0; // Landscape starts by cutting the Right square
-    } else {
-      // Portrait: Fit vertically, or constraint by width
-      double h = s.height;
-      double w = h / phi;
-      if (w > s.width) {
-        w = s.width;
-        h = w * phi;
-      }
-      rect = Rect.fromLTWH((s.width - w) / 2, (s.height - h) / 2, w, h);
-      dir = 1; // Portrait starts by cutting the Bottom square
+    // Largest *landscape* golden rectangle (φ:1, wider than tall) that fits the
+    // (possibly swapped) frame, centred — the classic golden-spiral framing.
+    final double maxW = fw * _goldenSpiralFill;
+    final double maxH = fh * _goldenSpiralFill;
+    double w = maxW;
+    double h = w / phi;
+    if (h > maxH) {
+      h = maxH;
+      w = h * phi;
     }
+    Rect rect = Rect.fromLTWH((fw - w) / 2, (fh - h) / 2, w, h);
 
+    canvas.save();
+    // Rotate the drawing frame about the band centre; the (fw × fh) frame is
+    // centred there so the rotated rectangle lands back inside the band.
+    canvas.translate(s.width / 2, s.height / 2);
+    canvas.rotate(turns * (math.pi / 2));
+    canvas.translate(-fw / 2, -fh / 2);
+
+    // Outer golden-rectangle border (the largest nested square's frame).
+    canvas.drawRect(rect, p);
+
+    // Start by cutting the right square so the spiral winds inward toward the
+    // left, the eye settling near the lower-left golden-section point.
+    int dir = 0;
     final path = Path();
     bool isFirst = true;
 
-    // 2. Loop to cut squares and draw continuous quarter arcs
-    // 12 iterations gets us smoothly down to the sub-pixel "eye" of the spiral
+    // Cut squares, drawing the golden-section dividing line for each (the lines
+    // overlaid in the reference) plus a continuous quarter-arc through it. 12
+    // iterations reach the sub-pixel "eye".
     for (int i = 0; i < 12; i++) {
-      // The square size is always the shortest side of the current golden rect
-      double sqSize = math.min(rect.width, rect.height);
-
+      final double sqSize = math.min(rect.width, rect.height);
       Offset center;
       double startAngle;
-      // We always sweep exactly 90 degrees clockwise
       const double sweepAngle = math.pi / 2;
 
       if (dir == 0) {
-        // Cut Right Square, anchor center at Top-Left of that square
+        // Cut Right Square — divider is its left edge (vertical, full height).
         center = Offset(rect.right - sqSize, rect.top);
         startAngle = 0;
-        rect = Rect.fromLTRB(
-          rect.left,
-          rect.top,
-          rect.right - sqSize,
-          rect.bottom,
-        );
+        canvas.drawLine(Offset(rect.right - sqSize, rect.top),
+            Offset(rect.right - sqSize, rect.bottom), p);
+        rect = Rect.fromLTRB(rect.left, rect.top, rect.right - sqSize, rect.bottom);
       } else if (dir == 1) {
-        // Cut Bottom Square, anchor center at Top-Right of that square
+        // Cut Bottom Square — divider is its top edge (horizontal, full width).
         center = Offset(rect.right, rect.bottom - sqSize);
         startAngle = math.pi / 2;
-        rect = Rect.fromLTRB(
-          rect.left,
-          rect.top,
-          rect.right,
-          rect.bottom - sqSize,
-        );
+        canvas.drawLine(Offset(rect.left, rect.bottom - sqSize),
+            Offset(rect.right, rect.bottom - sqSize), p);
+        rect = Rect.fromLTRB(rect.left, rect.top, rect.right, rect.bottom - sqSize);
       } else if (dir == 2) {
-        // Cut Left Square, anchor center at Bottom-Right of that square
+        // Cut Left Square — divider is its right edge (vertical, full height).
         center = Offset(rect.left + sqSize, rect.bottom);
         startAngle = math.pi;
-        rect = Rect.fromLTRB(
-          rect.left + sqSize,
-          rect.top,
-          rect.right,
-          rect.bottom,
-        );
+        canvas.drawLine(Offset(rect.left + sqSize, rect.top),
+            Offset(rect.left + sqSize, rect.bottom), p);
+        rect = Rect.fromLTRB(rect.left + sqSize, rect.top, rect.right, rect.bottom);
       } else {
-        // Cut Top Square, anchor center at Bottom-Left of that square
+        // Cut Top Square — divider is its bottom edge (horizontal, full width).
         center = Offset(rect.left, rect.top + sqSize);
         startAngle = -math.pi / 2;
-        rect = Rect.fromLTRB(
-          rect.left,
-          rect.top + sqSize,
-          rect.right,
-          rect.bottom,
-        );
+        canvas.drawLine(Offset(rect.left, rect.top + sqSize),
+            Offset(rect.right, rect.top + sqSize), p);
+        rect = Rect.fromLTRB(rect.left, rect.top + sqSize, rect.right, rect.bottom);
       }
 
-      // Draw the quarter circle for this specific square
       final arcRect = Rect.fromCircle(center: center, radius: sqSize);
-
-      // Setting forceMoveTo to `isFirst` ensures the whole path is one unbroken line
       path.arcTo(arcRect, startAngle, sweepAngle, isFirst);
       isFirst = false;
-
-      // Cycle direction clockwise
       dir = (dir + 1) % 4;
     }
 
     canvas.drawPath(path, p);
+    canvas.restore();
   }
 
   // ── Harmonious Triangles ────────────────────────────────────────────────────
@@ -3349,7 +4029,60 @@ class CompositionPainter extends CustomPainter {
     canvas.drawCircle(center, radius, p);
   }
 
+  // ── Symmetry ──────────────────────────────────────────────────────────────
+  // A single crisp vertical mirror axis down the centre (with a faint horizontal
+  // for reference). Place the subject on the line so the two halves balance.
+  void _drawSymmetry(Canvas canvas, Size s) {
+    final p = _p;
+    final double cx = s.width / 2;
+    // Vertical mirror axis — full height, the primary guide.
+    canvas.drawLine(Offset(cx, 0), Offset(cx, s.height), p);
+    // Faint horizontal reference at the vertical centre.
+    final faint = Paint()
+      ..color = _gold.withValues(alpha: 0.18)
+      ..strokeWidth = _sw
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
+    canvas.drawLine(Offset(0, s.height / 2), Offset(s.width, s.height / 2), faint);
+  }
+
+  // ── Aspect Ratio ────────────────────────────────────────────────────────────
+  // Crop framing guide for the selected ratio ([aspect] = W/H). Draws the largest
+  // crop of that ratio centred in the band and dims everything outside it, so the
+  // user can frame for 1:1 / 4:5 / 16:9 social or print output.
+  void _drawAspectRatio(Canvas canvas, Size s) {
+    final double r = aspect <= 0 ? 1.0 : aspect;
+    double w, h;
+    if (s.width / s.height > r) {
+      h = s.height;
+      w = h * r;
+    } else {
+      w = s.width;
+      h = w / r;
+    }
+    final Rect crop = Rect.fromCenter(
+      center: Offset(s.width / 2, s.height / 2), width: w, height: h,
+    );
+
+    // Dim outside the crop using an even-odd path (band rect with the crop as a
+    // hole).
+    final dim = Path()
+      ..addRect(Rect.fromLTWH(0, 0, s.width, s.height))
+      ..addRect(crop)
+      ..fillType = PathFillType.evenOdd;
+    canvas.drawPath(dim, Paint()..color = Colors.black.withValues(alpha: 0.38));
+
+    // Crop border.
+    canvas.drawRect(crop, _gp());
+  }
+
   @override
   bool shouldRepaint(CompositionPainter old) =>
-      old.mode != mode || old.glowSegs != glowSegs || old.faceBoxes != faceBoxes;
+      old.mode != mode ||
+      old.glowSegs != glowSegs ||
+      old.faceBoxes != faceBoxes ||
+      old.topInset != topInset ||
+      old.bottomInset != bottomInset ||
+      old.spiralTurns != spiralTurns ||
+      old.aspect != aspect;
 }
