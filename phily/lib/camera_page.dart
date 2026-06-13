@@ -144,8 +144,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // with face proportions preserved. Raise for more FPS, set 1 if faces are missed.
   static const int _detScale = 2;
 
-  // Also detect cats/dogs (Apple Vision). Adds one native call per frame.
-  static const bool _animalsEnabled = true;
+  // Also detect cats/dogs (Apple Vision on iOS; unsupported on Android).
+  // On Android the native channel call returns an empty list gracefully.
+  static bool get _animalsEnabled => !Platform.isAndroid;
 
   // Physical device orientation (the UI is portrait-locked, so we read the
   // accelerometer directly). Quarter-turns clockwise from portrait: 0/1/2/3.
@@ -938,7 +939,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       });
     }
 
-    // ── Animals (cats/dogs) via Apple Vision, reusing the same upright buffer ───
+    // ── Animals (cats/dogs) via native vision API, reusing the same upright buffer ───
     if (_animalsEnabled) {
       try {
         final raw = await _cameraChannel.invokeMethod<List>(
@@ -2314,15 +2315,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             color: Colors.white.withValues(alpha: 0.15),
           ),
 
-          // Format control
-          _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
-
-          // Divider
-          Container(
-            height: 22,
-            width: 0.5,
-            color: Colors.white.withValues(alpha: 0.15),
-          ),
+          // Format control (iOS-only: HEIF/RAW; Android uses JPEG)
+          if (!Platform.isAndroid) ...[
+            _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
+            // Divider
+            Container(
+              height: 22,
+              width: 0.5,
+              color: Colors.white.withValues(alpha: 0.15),
+            ),
+          ],
 
           // Resolution control
           _buildSettingButton(
