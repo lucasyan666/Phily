@@ -1646,7 +1646,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       _stopImageStream(); // no need to detect while the gallery covers the screen
       await Navigator.of(context).push(
         PageRouteBuilder(
-          // Slide up like a sheet; pull-down-to-dismiss slides it back down.
+          // Slide up like a sheet; pull-down-to-dismiss fades it out, revealing
+          // the camera behind — so the route is transparent (not opaque).
+          opaque: false,
+          barrierColor: Colors.transparent,
           transitionDuration: const Duration(milliseconds: 320),
           reverseTransitionDuration: const Duration(milliseconds: 260),
           pageBuilder: (_, _, _) => GalleryGridPage(album: album, count: count),

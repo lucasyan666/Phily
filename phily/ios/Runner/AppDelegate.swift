@@ -26,6 +26,7 @@ private extension Comparable {
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    NSLog("[Phily] ✅ native build with share_plus — plugins registered")
 
     // ── Camera utility channel ────────────────────────────────────────────────
     let cameraRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "PhilyCameraPlugin")!

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:phily/screens/branded_loader.dart';
 
 const _gold = Color(0xFFE5C158);
@@ -40,50 +41,74 @@ class _FrostBar extends StatelessWidget {
 
 /// Pretty floating glass delete button: a frosted circle with a sheen, hairline
 /// ring, soft shadow, and a clean trash glyph.
-class _GlassBin extends StatelessWidget {
+/// Frosted glass circle button (bin + share actions in the pager). Springs down
+/// on press and pops back on release for tactile feedback.
+class _GlassCircleButton extends StatefulWidget {
+  final IconData icon;
+  final double iconSize;
   final VoidCallback onTap;
-  const _GlassBin({required this.onTap});
+  const _GlassCircleButton({
+    super.key,
+    required this.icon,
+    required this.onTap,
+    this.iconSize = 23,
+  });
+
+  @override
+  State<_GlassCircleButton> createState() => _GlassCircleButtonState();
+}
+
+class _GlassCircleButtonState extends State<_GlassCircleButton> {
+  bool _pressed = false;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.3),
-              blurRadius: 14,
-              offset: const Offset(0, 5),
-            ),
-          ],
-        ),
-        child: ClipOval(
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-            child: Container(
-              width: 52,
-              height: 52,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.22),
-                    Colors.white.withValues(alpha: 0.06),
-                  ],
-                ),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.35),
-                  width: 0.8,
-                ),
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) => setState(() => _pressed = false),
+      onTapCancel: () => setState(() => _pressed = false),
+      onTap: widget.onTap,
+      child: AnimatedScale(
+        scale: _pressed ? 0.84 : 1.0,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+        child: Container(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.3),
+                blurRadius: 14,
+                offset: const Offset(0, 5),
               ),
-              child: const Icon(
-                Icons.delete_outline_rounded,
-                color: Colors.white,
-                size: 23,
+            ],
+          ),
+          child: ClipOval(
+            child: BackdropFilter(
+              filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              child: Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Colors.white.withValues(alpha: _pressed ? 0.30 : 0.22),
+                      Colors.white.withValues(alpha: 0.06),
+                    ],
+                  ),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.35),
+                    width: 0.8,
+                  ),
+                ),
+                child: Icon(
+                  widget.icon,
+                  color: Colors.white,
+                  size: widget.iconSize,
+                ),
               ),
             ),
           ),
@@ -107,6 +132,39 @@ String _fmtDuration(Duration d) {
   return '$m:$s';
 }
 
+const _months = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/// "Today" / "Yesterday" / "14 Jun" / "14 Jun 2024" (year only when not current).
+String _dateLabel(DateTime dt) {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final days = today.difference(DateTime(dt.year, dt.month, dt.day)).inDays;
+  if (days == 0) return 'Today';
+  if (days == 1) return 'Yesterday';
+  final y = dt.year != now.year ? ' ${dt.year}' : '';
+  return '${dt.day} ${_months[dt.month - 1]}$y';
+}
+
+/// "1:03 PM".
+String _timeLabel(DateTime dt) {
+  final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+  final m = dt.minute.toString().padLeft(2, '0');
+  return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Grid — the gallery entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -123,9 +181,16 @@ class GalleryGridPage extends StatefulWidget {
 }
 
 class _GalleryGridPageState extends State<GalleryGridPage> {
+  // Load in pages so the grid paints almost instantly instead of waiting for the
+  // whole library; more pages stream in as you scroll near the bottom.
+  static const int _pageSize = 120;
   List<AssetEntity> _items = [];
   bool _loading = true;
+  int _loadedPages = 0;
+  bool _loadingMore = false;
+  bool _hasMore = true;
   double _pull = 0; // accumulated top overscroll for pull-down-to-dismiss
+  bool _pulling = false; // a pull-to-dismiss drag is live (no spring animation)
 
   @override
   void initState() {
@@ -134,29 +199,70 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   }
 
   Future<void> _load() async {
-    final list = await widget.album.getAssetListRange(
-      start: 0,
-      end: widget.count,
+    // Just the first page → grid appears right away.
+    final first = await widget.album.getAssetListPaged(
+      page: 0,
+      size: _pageSize,
     );
-    if (mounted) {
-      setState(() {
-        _items = list;
-        _loading = false;
-      });
+    if (!mounted) return;
+    setState(() {
+      _items = first;
+      _loadedPages = 1;
+      _hasMore = first.length == _pageSize;
+      _loading = false;
+    });
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || !_hasMore) return;
+    _loadingMore = true;
+    final next = await widget.album.getAssetListPaged(
+      page: _loadedPages,
+      size: _pageSize,
+    );
+    if (!mounted) {
+      _loadingMore = false;
+      return;
     }
+    // Dedupe by id (deletions shift page boundaries, which can re-yield an item).
+    final seen = _items.map((a) => a.id).toSet();
+    final fresh = next.where((a) => !seen.contains(a.id)).toList();
+    setState(() {
+      _items.addAll(fresh);
+      _loadedPages++;
+      _hasMore = next.length == _pageSize;
+      _loadingMore = false;
+    });
   }
 
   bool _onScroll(ScrollNotification n) {
     if (n is OverscrollNotification &&
         n.overscroll < 0 &&
         n.metrics.pixels <= 0) {
-      _pull -= n.overscroll; // overscroll is negative at the top
-      if (_pull > 90) {
-        _pull = 0;
-        Navigator.of(context).maybePop(); // back to the camera
+      // Pulling down past the top → grow the live pull (drives the fade).
+      final next = (_pull - n.overscroll).clamp(0.0, 400.0);
+      if (next > 115) {
+        Navigator.of(context).maybePop(); // dismissed → fade reveals the camera
+        return true;
       }
-    } else if (n is ScrollUpdateNotification || n is ScrollEndNotification) {
-      _pull = 0;
+      setState(() {
+        _pulling = true;
+        _pull = next;
+      });
+    } else if (n is ScrollEndNotification || n is ScrollStartNotification) {
+      // Released → spring the fade back.
+      if (_pull != 0 || _pulling) {
+        setState(() {
+          _pulling = false;
+          _pull = 0;
+        });
+      }
+    }
+    // Prefetch the next page well before the user hits the bottom.
+    if (_hasMore &&
+        !_loadingMore &&
+        n.metrics.pixels >= n.metrics.maxScrollExtent - 1500) {
+      _loadMore();
     }
     return false;
   }
@@ -186,63 +292,79 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   @override
   Widget build(BuildContext context) {
     final topPad = MediaQuery.of(context).padding.top + 52;
+    final pullProgress = (_pull / 200).clamp(0.0, 1.0);
+    final contentOpacity = (1 - pullProgress).clamp(0.0, 1.0);
+    final dur = _pulling ? Duration.zero : const Duration(milliseconds: 250);
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: Colors.transparent, // camera shows through on pull-down
       body: Stack(
         children: [
+          // Black backdrop — fades out as you pull down to reveal the camera.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedContainer(
+                duration: dur,
+                color: Colors.black.withValues(alpha: contentOpacity),
+              ),
+            ),
+          ),
           if (_loading)
             const BrandedLoader()
           else
-            NotificationListener<ScrollNotification>(
-              onNotification: _onScroll,
-              child: GridView.builder(
-                // Bounce at the edges so a pull past the top dismisses to camera.
-                physics: const AlwaysScrollableScrollPhysics(
-                  parent: BouncingScrollPhysics(),
+            AnimatedOpacity(
+              opacity: contentOpacity,
+              duration: dur,
+              child: NotificationListener<ScrollNotification>(
+                onNotification: _onScroll,
+                child: GridView.builder(
+                  // Bounce at the edges so a pull past the top dismisses to camera.
+                  physics: const AlwaysScrollableScrollPhysics(
+                    parent: BouncingScrollPhysics(),
+                  ),
+                  padding: EdgeInsets.only(
+                    top: topPad + 2,
+                    bottom: MediaQuery.of(context).padding.bottom + 8,
+                    left: 2,
+                    right: 2,
+                  ),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    mainAxisSpacing: 2,
+                    crossAxisSpacing: 2,
+                  ),
+                  itemCount: _items.length,
+                  itemBuilder: (_, i) {
+                    final asset = _items[i];
+                    return GestureDetector(
+                      key: ValueKey(
+                        asset.id,
+                      ), // stable identity → no reload on shift
+                      onTap: () => _openAt(i),
+                      child: _GridThumb(asset: asset),
+                    );
+                  },
                 ),
-                padding: EdgeInsets.only(
-                  top: topPad + 2,
-                  bottom: MediaQuery.of(context).padding.bottom + 8,
-                  left: 2,
-                  right: 2,
-                ),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 2,
-                  crossAxisSpacing: 2,
-                ),
-                itemCount: _items.length,
-                itemBuilder: (_, i) {
-                  final asset = _items[i];
-                  return GestureDetector(
-                    key: ValueKey(asset.id), // stable identity → no reload on shift
-                    onTap: () => _openAt(i),
-                    child: _GridThumb(asset: asset),
-                  );
-                },
               ),
             ),
 
-          // Frosted top bar.
+          // Frosted top bar — title only; pull down to exit (no close button).
           Positioned(
             top: 0,
             left: 0,
             right: 0,
-            child: _FrostBar(
-              child: Padding(
-                padding: EdgeInsets.only(
-                  top: MediaQuery.of(context).padding.top + 4,
-                  bottom: 8,
-                  left: 4,
-                  right: 16,
-                ),
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.close_rounded, color: Colors.white),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                    const Text(
+            child: AnimatedOpacity(
+              opacity: contentOpacity,
+              duration: dur,
+              child: _FrostBar(
+                child: Padding(
+                  padding: EdgeInsets.only(
+                    top: MediaQuery.of(context).padding.top + 4,
+                    bottom: 10,
+                    left: 16,
+                    right: 16,
+                  ),
+                  child: const Center(
+                    child: Text(
                       'Photos',
                       style: TextStyle(
                         color: Colors.white,
@@ -251,7 +373,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
                         letterSpacing: 0.3,
                       ),
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -351,6 +473,8 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
     with SingleTickerProviderStateMixin {
   late final PageController _controller;
   late int _index;
+  // Anchor for the iOS share sheet popover (the Share button's rect).
+  final GlobalKey _shareBtnKey = GlobalKey();
   // Swipe-down-to-dismiss: downward drag distance, and whether a drag is live.
   double _dragDy = 0;
   bool _dragging = false;
@@ -390,6 +514,22 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
     if (mounted) Navigator.of(context).pop(asset.id);
   }
 
+  Future<void> _shareCurrent() async {
+    final asset = widget.assets[_index];
+    final file = await asset.file; // resolves the photo/video to a temp file
+    if (file == null || !mounted) return;
+    HapticFeedback.selectionClick();
+    // iOS requires a non-zero anchor rect (the iPad popover source; newer iOS
+    // rejects a zero rect even on iPhone). Anchor it to the Share button.
+    final box = _shareBtnKey.currentContext?.findRenderObject() as RenderBox?;
+    final Rect origin = (box != null && box.hasSize)
+        ? box.localToGlobal(Offset.zero) & box.size
+        : (Offset.zero & MediaQuery.of(context).size);
+    // Native iOS share sheet — covers Instagram, Messages, WhatsApp, AirDrop,
+    // Save to Files, etc. The destination app handles its own auth; no login.
+    await Share.shareXFiles([XFile(file.path)], sharePositionOrigin: origin);
+  }
+
   void _onDragUpdate(DragUpdateDetails d) {
     final v = _dragDy + d.delta.dy;
     setState(() => _dragDy = v < 0 ? 0 : v); // downward only
@@ -414,6 +554,8 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
     final safeBottom = MediaQuery.of(context).padding.bottom;
     final progress = (_dragDy / 240).clamp(0.0, 1.0);
     final chromeOpacity = (1 - progress * 2.2).clamp(0.0, 1.0);
+    // The photo/video itself fades as it's dragged down — not just slides.
+    final imgOpacity = (1 - progress * 1.3).clamp(0.0, 1.0);
     final slideDur = _dragging
         ? Duration.zero
         : const Duration(milliseconds: 250);
@@ -465,14 +607,18 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                             scale: 1 - 0.9 * dt,
                             child: Opacity(
                               opacity: 1 - dt,
-                              child: PageView.builder(
-                                controller: _controller,
-                                itemCount: total,
-                                onPageChanged: (i) =>
-                                    setState(() => _index = i),
-                                itemBuilder: (_, i) => _GalleryPage(
-                                  asset: widget.assets[i],
-                                  active: i == _index,
+                              child: AnimatedOpacity(
+                                opacity: imgOpacity,
+                                duration: slideDur,
+                                child: PageView.builder(
+                                  controller: _controller,
+                                  itemCount: total,
+                                  onPageChanged: (i) =>
+                                      setState(() => _index = i),
+                                  itemBuilder: (_, i) => _GalleryPage(
+                                    asset: widget.assets[i],
+                                    active: i == _index,
+                                  ),
                                 ),
                               ),
                             ),
@@ -505,15 +651,39 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                                           Navigator.of(context).pop(),
                                     ),
                                     Expanded(
-                                      child: Text(
-                                        '${_index + 1} / $total',
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w300,
-                                          letterSpacing: 0.8,
-                                        ),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                            _dateLabel(
+                                              widget
+                                                  .assets[_index]
+                                                  .createDateTime,
+                                            ),
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 14.5,
+                                              fontWeight: FontWeight.w500,
+                                              letterSpacing: 0.3,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 1),
+                                          Text(
+                                            _timeLabel(
+                                              widget
+                                                  .assets[_index]
+                                                  .createDateTime,
+                                            ),
+                                            style: TextStyle(
+                                              color: Colors.white.withValues(
+                                                alpha: 0.6,
+                                              ),
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w400,
+                                              letterSpacing: 0.4,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                     const SizedBox(width: 48),
@@ -524,13 +694,29 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                           ),
                         ),
 
-                        // Floating glassy bin (bottom-right).
+                        // Floating glassy share (bottom-left) + bin (bottom-right).
+                        Positioned(
+                          left: 16,
+                          bottom: safeBottom + 16,
+                          child: Opacity(
+                            opacity: chrome,
+                            child: _GlassCircleButton(
+                              key: _shareBtnKey,
+                              icon: Icons.ios_share_rounded,
+                              iconSize: 22,
+                              onTap: _shareCurrent,
+                            ),
+                          ),
+                        ),
                         Positioned(
                           right: 16,
                           bottom: safeBottom + 16,
                           child: Opacity(
                             opacity: chrome,
-                            child: _GlassBin(onTap: _deleteCurrent),
+                            child: _GlassCircleButton(
+                              icon: Icons.delete_outline_rounded,
+                              onTap: _deleteCurrent,
+                            ),
                           ),
                         ),
                       ],
@@ -751,7 +937,10 @@ class _Scrubber extends StatelessWidget {
       valueListenable: controller,
       builder: (context, v, _) {
         final durMs = v.duration.inMilliseconds;
-        final posMs = v.position.inMilliseconds.clamp(0, durMs == 0 ? 1 : durMs);
+        final posMs = v.position.inMilliseconds.clamp(
+          0,
+          durMs == 0 ? 1 : durMs,
+        );
         final frac = durMs > 0 ? posMs / durMs : 0.0;
         const timeStyle = TextStyle(
           color: Colors.white,
