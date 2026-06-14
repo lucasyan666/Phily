@@ -113,6 +113,19 @@ class _BrandedLoaderState extends State<BrandedLoader>
                   letterSpacing: 6,
                 ),
               ),
+              const SizedBox(height: 10),
+              // Pronunciation guide — the name comes from φ ("phi", as in Phi
+              // Grid), not "Philly". Muted gold so it reads as a refined tagline.
+              Text(
+                '( pronounced  fy-lee )',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w300,
+                  fontStyle: FontStyle.italic,
+                  color: gold.withValues(alpha: 0.72),
+                  letterSpacing: 2.2,
+                ),
+              ),
             ],
           ),
         ),

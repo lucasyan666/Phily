@@ -37,6 +37,7 @@ private extension Comparable {
       switch call.method {
       case "getUltraWideCameraId":    self?.handleGetUltraWideCameraId(result: result)
       case "getVirtualCameraId":      self?.handleGetVirtualCameraId(result: result)
+      case "getFieldOfView":          self?.handleGetFieldOfView(result: result)
       case "analyzeRuleOfThirds":     self?.handleAnalyzeRuleOfThirds(call: call, result: result)
       case "detectAnimals":           self?.handleDetectAnimals(call: call, result: result)
       case "detectHorizon":           self?.handleDetectHorizon(call: call, result: result)
@@ -268,6 +269,14 @@ private extension Comparable {
       }
       DispatchQueue.main.async { result(horizon) } // nil when none found
     }
+  }
+
+  /// The active back camera's field of view (degrees, along the sensor's long /
+  /// horizontal axis). In portrait that long axis maps to the preview's vertical
+  /// extent, so Dart uses this to project the gravity horizon's height.
+  private func handleGetFieldOfView(result: @escaping FlutterResult) {
+    let fov = bestVirtualDevice()?.activeFormat.videoFieldOfView ?? 0
+    result(Double(fov))
   }
 
   private func handleGetVirtualCameraId(result: @escaping FlutterResult) {

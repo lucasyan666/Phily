@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
@@ -141,6 +142,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // scene has genuinely had no face for a while.
   int _lastProbeMs = 0;
   int _lastFaceMs = 0;
+  // Throttle the per-frame animal (cat/dog) Vision call; the box's grace window
+  // keeps it steady between detections, so this is invisible but saves a native
+  // request on roughly half the frames.
+  int _lastAnimalMs = 0;
+  List<Map<String, dynamic>> _lastAnimalDets = const [];
 
   // ML Kit face detector — runs on the CameraImage directly (no method-channel
   // image round trip), so detection latency is low enough for live tracking.
@@ -154,10 +160,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     ),
   );
 
-  // Downsample factor applied to camera frames before face detection. 2 = run
-  // detection at half resolution — far cheaper for ML Kit and the rotation pass,
-  // with face proportions preserved. Raise for more FPS, set 1 if faces are missed.
-  static const int _detScale = 2;
+  // Downsample factor applied to camera frames before face detection. 3 = run
+  // detection at a third resolution — far cheaper for ML Kit and the rotation
+  // pass, with face proportions preserved. Raise for more FPS, lower (→2) if
+  // small/distant faces start getting missed.
+  static const int _detScale = 3;
 
   // Also detect cats/dogs (Apple Vision). Adds one native call per frame.
   static const bool _animalsEnabled = true;
@@ -181,22 +188,43 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// portrait-locked, so MediaQuery can't tell us). Updates [_deviceTurns]:
   /// 0 = portrait, 1 = landscape (rotated CW), 2 = upside-down, 3 = landscape (CCW).
   void _startOrientationListener() {
-    _accelSub = accelerometerEventStream().listen((e) {
-      // Use only in-plane gravity (x,y); ignore z (tilt toward/away from scene).
-      final ax = e.x.abs(), ay = e.y.abs();
-      // Need a clear dominant in-plane axis (hysteresis) to avoid flip-flopping
-      // near 45°. Require the dominant axis to beat the other by a margin.
-      const margin = 2.0;
-      int? turns;
-      if (ax > ay + margin) {
-        turns = e.x > 0 ? 3 : 1; // landscape (two directions)
-      } else if (ay > ax + margin) {
-        turns = e.y > 0 ? 0 : 2; // portrait up / upside-down
-      }
-      if (turns != null && turns != _deviceTurns) {
-        setState(() => _deviceTurns = turns!); // rebuild so UI controls rotate
-      }
-    });
+    _accelSub =
+        accelerometerEventStream(samplingPeriod: SensorInterval.gameInterval)
+            .listen((e) {
+          // Low-pass the gravity vector → smooth, jitter-free roll/pitch for the
+          // gravity-based horizon line. (Raw e.* is still used for orientation.)
+          if (!_gravInit) {
+            _gravX = e.x;
+            _gravY = e.y;
+            _gravZ = e.z;
+            _gravInit = true;
+          } else {
+            const double a = 0.2;
+            _gravX += (e.x - _gravX) * a;
+            _gravY += (e.y - _gravY) * a;
+            _gravZ += (e.z - _gravZ) * a;
+          }
+
+          // Use only in-plane gravity (x,y); ignore z (tilt toward/away from scene).
+          final ax = e.x.abs(), ay = e.y.abs();
+          // Need a clear dominant in-plane axis (hysteresis) to avoid flip-flopping
+          // near 45°. Require the dominant axis to beat the other by a margin.
+          const margin = 2.0;
+          int? turns;
+          if (ax > ay + margin) {
+            turns = e.x > 0 ? 3 : 1; // landscape (two directions)
+          } else if (ay > ax + margin) {
+            turns = e.y > 0 ? 0 : 2; // portrait up / upside-down
+          }
+          if (turns != null && turns != _deviceTurns) {
+            setState(() => _deviceTurns = turns!); // rebuild so UI controls rotate
+          }
+
+          // Drive the gravity horizon while Horizon Grid is active.
+          if (_compositionMode == CompositionMode.horizonGrid) {
+            _updateHorizonFromMotion();
+          }
+        });
   }
 
   /// Wraps a UI control so it rotates (smoothly) to stay upright for how the
@@ -411,6 +439,21 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       debugPrint(
         'Zoom range: $_minZoom – $_maxZoom | ultra-wide: ${_ultraWideCamera?.name}',
       );
+
+      // Lens field of view → half the vertical FOV (radians) for projecting the
+      // gravity horizon's on-screen height. In portrait the sensor's long
+      // (horizontal) axis maps to the preview's vertical extent.
+      try {
+        // The full-screen (cover + 1.17× stretched) preview actually presents a
+        // wide vertical FOV — on-device calibration showed the native value
+        // (~107°) is right, so trust it; fall back to ~108° if the query fails.
+        double fovDeg = 108.0;
+        final native = await _cameraChannel.invokeMethod<double>(
+          'getFieldOfView',
+        );
+        if (native != null && native >= 40 && native <= 140) fovDeg = native;
+        _vFovHalfRad = (fovDeg / 2) * math.pi / 180.0;
+      } catch (_) {}
 
       if (mounted) {
         setState(() {
@@ -909,12 +952,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _isProcessingFrame = true;
     _lastFrameTime = now;
     try {
-      // Detection runs for None (boxes only), Horizon Grid (horizon line) and
-      // the alignment modes — Rule of Thirds, Phi Grid (intersection alignment)
-      // and Fibonacci Spiral (eye alignment) — for boxes + glow + haptic.
+      // Horizon Grid doesn't touch camera frames at all — its line comes from
+      // the gravity sensor (_updateHorizonFromMotion). The other detection modes
+      // share the face/animal path.
       switch (_compositionMode) {
         case CompositionMode.none:
-        case CompositionMode.horizonGrid:
         case CompositionMode.ruleOfThirds:
         case CompositionMode.goldenSection:
         case CompositionMode.fibonacciSpiral:
@@ -933,11 +975,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Caches the physical quarter-turn rotation that finds faces per device-turns.
   final Map<int, int> _qtCache = {};
 
-  // Same idea but for the horizon: which rotation makes the horizon HORIZONTAL
-  // in the analysed buffer. A sea/sky scene has no faces to calibrate with, so
-  // we discover it by horizon strength and cache it per device-turns.
-  final Map<int, int> _hzQtCache = {};
-  int _hzProbeMs = 0;
 
   /// Real-time face detection via ML Kit. ML Kit on iOS ignores InputImage
   /// rotation metadata, so to detect faces when the phone is held sideways we
@@ -1024,145 +1061,68 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       });
     }
 
-    // ── Animals (cats/dogs) via Apple Vision, reusing the same upright buffer ───
+    // ── Animals (cats/dogs) via Apple Vision — throttled (~7 Hz). The box's
+    // grace window keeps it steady on the in-between frames, so re-adding the
+    // last result avoids any flicker while saving a native call most frames.
     if (_animalsEnabled) {
-      try {
-        final raw = await _cameraChannel.invokeMethod<List>('detectAnimals', {
-          'bgra': winBytes,
-          'width': winOw,
-          'height': winOh,
-        });
-        if (!mounted) return;
-        _addVisionDets(raw, dets, qt, 'animal');
-      } catch (_) {}
-    }
-
-    // ── Horizon (Horizon Grid mode) — highlight the detected horizon line ──────
-    if (_compositionMode == CompositionMode.horizonGrid) {
-      try {
-        final int hNow = DateTime.now().millisecondsSinceEpoch;
-        const double confStrength = 18; // luma+colour step to trust it
-        const int stableFrames = 2; // consecutive consistent frames to show
-
-        // Run the detector on the buffer rotated by [q] quarter-turns, cropped
-        // to the camera-visible band so it ignores the scene hidden behind the
-        // top/bottom panels. The band is a screen-space y-range; where it lands
-        // in the rotated buffer depends on [q] (see _hzBandCrop).
-        Future<(Map?, double)> tryQt(int q) async {
-          final (b, bw, bh) = _rotatedBytes(
-            plane.bytes,
-            w,
-            h,
-            plane.bytesPerRow,
-            q,
-          );
-          final (cx0, cy0, cx1, cy1) = _hzBandCrop(q);
-          final r = await _cameraChannel.invokeMethod('detectHorizon', {
-            'bgra': b,
-            'width': bw,
-            'height': bh,
-            'cropX0': cx0,
-            'cropY0': cy0,
-            'cropX1': cx1,
-            'cropY1': cy1,
+      if (nowMs - _lastAnimalMs > 140) {
+        _lastAnimalMs = nowMs;
+        try {
+          final raw = await _cameraChannel.invokeMethod<List>('detectAnimals', {
+            'bgra': winBytes,
+            'width': winOw,
+            'height': winOh,
           });
-          final m = r is Map ? r : null;
-          return (m, (m?['strength'] as num?)?.toDouble() ?? 0.0);
-        }
-
-        // Discover the orientation that makes the horizon horizontal (no faces
-        // needed). Once a strong horizon appears, lock that rotation so later
-        // frames only do one rotation. Probing is throttled so a no-horizon
-        // scene doesn't pay four rotations every frame.
-        int hzQt = _hzQtCache[turns] ?? 0;
-        Map? hRaw;
-        if (_hzQtCache.containsKey(turns)) {
-          final (m, _) = await tryQt(hzQt);
           if (!mounted) return;
-          hRaw = m;
-        } else if (hNow - _hzProbeMs > 200) {
-          _hzProbeMs = hNow;
-          double best = 0;
-          for (final q in const [0, 1, 2, 3]) {
-            final (m, s) = await tryQt(q);
-            if (!mounted) return;
-            if (s > best) {
-              best = s;
-              hRaw = m;
-              hzQt = q;
-            }
-          }
-          if (best >= 22) _hzQtCache[turns] = hzQt;
-          debugPrint(
-            '[Horizon] probe best=${best.toStringAsFixed(0)} qt=$hzQt'
-            '${best >= 22 ? ' LOCKED' : ' (weak)'}',
-          );
-        }
-
-        final num strength = (hRaw is Map ? hRaw['strength'] as num? : null) ?? 0;
-        final bool hasLine = hRaw is Map &&
-            hRaw['angle'] != null &&
-            hRaw['x'] != null &&
-            strength >= confStrength;
-
-        if (hasLine) {
-          // Map the point AND a second point a short step along the line back
-          // through the inverse rotation (hzQt) + preview stretch — deriving the
-          // angle from two mapped points keeps the sign/rotation correct for any
-          // device orientation automatically.
-          final double a = (hRaw['angle'] as num).toDouble();
-          final double ux = (hRaw['x'] as num).toDouble();
-          final double uy = (hRaw['y'] as num).toDouble();
-          const double d = 0.1;
-          final p0 = _mapHorizonPt(ux, uy, hzQt);
-          final p1 = _mapHorizonPt(
-            ux + math.cos(a) * d,
-            uy + math.sin(a) * d,
-            hzQt,
-          );
-          double ang = math.atan2(p1.$2 - p0.$2, p1.$1 - p0.$1);
-          // Snap a near-level line to dead-flat (leniency): tiny residual tilt
-          // from detection reads as a clean horizontal instead of a slight slope.
-          if (ang.abs() < 0.045) ang = 0.0; // within ~2.6°
-
-          // Consistency vs the previous frame's raw line. Generous tolerances:
-          // a live sea jitters a little, and the detection is already gated by
-          // strength, so we don't need a tight match to trust it.
-          final bool consistent = _hzRawA != null &&
-              (_lerpAngle(_hzRawA!, ang, 1.0) - _hzRawA!).abs() < 0.10 &&
-              (p0.$1 - _hzRawX!).abs() < 0.15 &&
-              (p0.$2 - _hzRawY!).abs() < 0.15;
-          _hzRawA = ang;
-          _hzRawX = p0.$1;
-          _hzRawY = p0.$2;
-          _hzStable = consistent ? math.min(_hzStable + 1, 12) : 0;
-
-          if (_hzStable >= stableFrames) {
-            if (!_hzActive) {
-              debugPrint(
-                '[Horizon] line ON  ax=${p0.$1.toStringAsFixed(2)} '
-                'ay=${p0.$2.toStringAsFixed(2)} ang=${ang.toStringAsFixed(2)}',
-              );
-            }
-            _hzTAngle = ang;
-            _hzTAx = p0.$1;
-            _hzTAy = p0.$2;
-            _hzActive = true;
-            _horizonSeenMs = hNow;
-            _ensureHorizonTicking();
-          }
-        } else {
-          _hzStable = 0;
-          _hzRawA = null;
-        }
-        // Fade out unless a *stable* horizon was confirmed recently. Covers all
-        // three loss cases: gone, too weak, or jumping between competing lines
-        // (the latter keeps _hzStable below threshold so _horizonSeenMs stalls).
-        if (_hzActive && hNow - _horizonSeenMs > 300) _hzActive = false;
-      } catch (_) {}
+          final tmp = <Map<String, dynamic>>[];
+          _addVisionDets(raw, tmp, qt, 'animal');
+          _lastAnimalDets = tmp;
+        } catch (_) {}
+      }
+      dets.addAll(_lastAnimalDets);
     }
 
     _updateFaceTargets(dets); // ticker animates the displayed boxes
+  }
+
+  /// Compute the horizon line target from the device's gravity vector (Horizon
+  /// Grid mode). The angle is the phone's roll (the true horizon counter-rotates
+  /// to stay level); the on-screen height comes from the camera's pitch +
+  /// vertical FOV. Image-independent → works in any light, costs nothing. The
+  /// 60fps ticker eases the displayed line toward these targets.
+  void _updateHorizonFromMotion() {
+    final double gx = _gravX, gy = _gravY, gz = _gravZ;
+
+    // Roll: phone tilt around the optical axis. Gravity (as measured, points
+    // opposite real gravity) is ≈(0, +g, 0) when upright portrait.
+    final double roll = math.atan2(gx, gy);
+    // Pitch: camera elevation above the true horizon (+ = aimed up at sky).
+    final double pitch = math.atan2(gz, math.sqrt(gx * gx + gy * gy));
+
+    // On-screen line angle — the horizon counter-rotates against the phone roll
+    // so it stays aligned with the real world (a true level). Small deadzone so a
+    // near-level hold reads dead-flat.
+    double ang = roll;
+    if (ang.abs() < 0.02) ang = 0.0;
+
+    // Vertical position from camera pitch. ay = 0.5 at the optical centre and
+    // grows DOWN-screen as the horizon drops (camera tilts up). Projected through
+    // the half-FOV, zoom-scaled (zoom in → same tilt travels further). The
+    // full-screen + stretched preview makes the lens FOV unreliable, so
+    // [_hzPosGain] tunes the travel-per-degree and a default FOV is used if the
+    // native query returned nothing.
+    final double half = _vFovHalfRad > 0 ? _vFovHalfRad : (33 * math.pi / 180);
+    final double vHalfEff = math.atan(math.tan(half) / _currentZoom);
+    final double ay =
+        (0.5 - _hzPosGain * 0.5 * math.tan(pitch) / math.tan(vHalfEff))
+            .clamp(-0.3, 1.3);
+
+    _hzTAngle = ang;
+    _hzTAx = 0.5; // centre anchor; the line spans the full width
+    _hzTAy = ay;
+    // On only while the line is on (or just off) screen.
+    _hzActive = ay > -0.15 && ay < 1.15;
+    _ensureHorizonTicking();
   }
 
   /// Map a native Vision result list (normalised [0,1] top-left boxes in the
@@ -1199,21 +1159,62 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
-  /// Downsample (by [_detScale]) + physically rotate ([qt] quarter-turns CW) a
-  /// BGRA buffer so faces/animals are upright. Returns tightly-packed bytes plus
-  /// the output dimensions. Shared by ML Kit (faces) and Vision (animals).
+  /// Downsample (by [scale]) + physically rotate ([qt] quarter-turns CW) a BGRA
+  /// buffer so subjects are upright. Returns tightly-packed bytes plus the output
+  /// dimensions. Copies a whole BGRA pixel as one 32-bit word (≈4× fewer indexed
+  /// ops than per-byte, and no per-byte bounds checks) — this loop runs on the UI
+  /// isolate every frame, so its speed directly affects preview smoothness.
   (Uint8List, int, int) _rotatedBytes(
     Uint8List src,
     int w,
     int h,
     int srcBpr,
-    int qt,
-  ) {
-    final int s = _detScale;
+    int qt, {
+    int scale = _detScale,
+  }) {
+    final int s = scale;
     final int sw = w ~/ s, sh = h ~/ s;
     final int outW = (qt == 1 || qt == 3) ? sh : sw;
     final int outH = (qt == 1 || qt == 3) ? sw : sh;
-    final bytes = Uint8List(outW * outH * 4);
+    final out32 = Uint32List(outW * outH);
+
+    // Fast path: view source + destination as 32-bit pixels. Requires the source
+    // to be word-aligned (camera BGRA rows always are). Falls back to bytes if not.
+    if (src.offsetInBytes % 4 == 0 && srcBpr % 4 == 0) {
+      final src32 = src.buffer.asUint32List(
+        src.offsetInBytes,
+        src.lengthInBytes ~/ 4,
+      );
+      final int srcStride = srcBpr ~/ 4;
+      for (var dy = 0; dy < outH; dy++) {
+        int di = dy * outW;
+        for (var dx = 0; dx < outW; dx++) {
+          final int sx, sy;
+          switch (qt) {
+            case 1:
+              sx = dy * s;
+              sy = h - 1 - dx * s;
+              break;
+            case 3:
+              sx = w - 1 - dy * s;
+              sy = dx * s;
+              break;
+            case 2:
+              sx = w - 1 - dx * s;
+              sy = h - 1 - dy * s;
+              break;
+            default:
+              sx = dx * s;
+              sy = dy * s;
+          }
+          out32[di++] = src32[sy * srcStride + sx];
+        }
+      }
+      return (out32.buffer.asUint8List(), outW, outH);
+    }
+
+    // Byte fallback (unaligned source).
+    final bytes = out32.buffer.asUint8List();
     for (var dy = 0; dy < outH; dy++) {
       for (var dx = 0; dx < outW; dx++) {
         final int sx, sy;
@@ -1273,33 +1274,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
-  /// Map a normalised point in the upright detection buffer back into full-screen
-  /// preview-normalised space (inverse rotation + the preview's horizontal
-  /// stretch), so the horizon line sits exactly where face boxes would.
-  (double, double) _mapHorizonPt(double ux, double uy, int qt) {
-    final c = _invRotNorm(ux, uy, qt);
-    return ((c.$1 - 0.5) * _previewStretchX + 0.5, c.$2);
-  }
-
-  /// The camera-visible band (between the top/bottom panels) expressed as a crop
-  /// rectangle in the buffer that's been rotated by [qt] quarter-turns. The band
-  /// is the preview-space y-range [topFrac, 1−botFrac]; this is its pre-image
-  /// under the same rotation [_invRotNorm] uses, so cropping the rotated buffer
-  /// to it keeps only the pixels the user can actually see.
-  (double, double, double, double) _hzBandCrop(int qt) {
-    final double t = _topInsetFrac, b = _bottomInsetFrac;
-    switch (qt) {
-      case 1:
-        return (b, 0.0, 1.0 - t, 1.0);
-      case 2:
-        return (0.0, b, 1.0, 1.0 - t);
-      case 3:
-        return (t, 0.0, 1.0 - b, 1.0);
-      default: // 0
-        return (0.0, t, 1.0, 1.0 - b);
-    }
-  }
-
   /// Lerp [a]→[b] by [t] along the shortest angular path.
   double _lerpAngle(double a, double b, double t) {
     double diff = b - a;
@@ -1333,20 +1307,29 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     ({double angle, double ax, double ay, double op, double aligned})?
   >
   _horizon = ValueNotifier(null);
-  int _horizonSeenMs = 0;
   // Horizon message-bubble level: 0 = guide only, 1 = detected (not level),
   // 2 = level on the guide. Drives the shared top hint bubble + the haptic.
   final ValueNotifier<int> _hzLevel = ValueNotifier(0);
   int _hzPrevLevel = 0;
-  // Confident target (set only after the detection is strong AND stable).
+  // Target (from device motion) that the 60fps ticker eases the displayed line
+  // toward.
   double? _hzTAngle, _hzTAx, _hzTAy;
-  bool _hzActive = false; // a horizon is currently believed present
+  bool _hzActive = false; // a horizon is currently on (near) screen
   // Displayed (eased) state + whether it's been seeded since the last appearance.
   double _hzDAngle = 0, _hzDAx = 0.5, _hzDAy = 0.5, _hzDOp = 0;
   bool _hzInit = false;
-  // Temporal stability tracking: last raw detection + consecutive-consistent count.
-  double? _hzRawA, _hzRawX, _hzRawY;
-  int _hzStable = 0;
+
+  // ── Gravity horizon (CoreMotion-style, from the accelerometer) ──────────────
+  // Low-pass-filtered gravity direction in device coords, and the camera's
+  // half-vertical-FOV (radians) for projecting the horizon's on-screen height.
+  // The angle comes straight from gravity (rock-solid in any light); the
+  // position from device pitch + FOV. No per-frame image work at all.
+  double _gravX = 0, _gravY = 9.8, _gravZ = 0;
+  bool _gravInit = false;
+  double _vFovHalfRad = 0; // 0 until queried from the native lens FOV
+  // Travel-per-degree calibration for the horizon's on-screen height. Higher =
+  // the line moves further as you tilt up/down. Tune this if it feels off.
+  static const double _hzPosGain = 1.0;
 
   // Rule-of-Thirds power points (normalised) — intersections of the 1/3 lines.
   static const List<List<double>> _powerPoints = [
@@ -2267,20 +2250,27 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             child: const IgnorePointer(child: _FpsOverlay()),
           ),
 
-          // Branded loading state — full-screen, shown only while the camera is
-          // starting up and gated on real readiness (_isInitialized), not a
-          // timer. Crossfades out the instant the preview is live; absorbs taps
-          // while loading so the shutter can't fire early.
-          Positioned.fill(
-            child: AbsorbPointer(
-              absorbing: !_isInitialized && _error == null,
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 450),
-                child: (!_isInitialized && _error == null)
-                    ? const BrandedLoader(key: ValueKey('loader'))
-                    : const SizedBox.shrink(key: ValueKey('ready')),
-              ),
-            ),
+          // Branded loading state — full-screen, shown whenever the preview
+          // isn't live: first launch, resolution switch (_isInitialized=false)
+          // AND lens switches (_controller briefly null). Same loader everywhere
+          // for a consistent feel. Crossfades out the instant the preview
+          // returns; absorbs taps while loading so the shutter can't fire early.
+          Builder(
+            builder: (_) {
+              final bool loading =
+                  _error == null && (!_isInitialized || _controller == null);
+              return Positioned.fill(
+                child: AbsorbPointer(
+                  absorbing: loading,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 450),
+                    child: loading
+                        ? const BrandedLoader(key: ValueKey('loader'))
+                        : const SizedBox.shrink(key: ValueKey('ready')),
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),
@@ -4185,6 +4175,14 @@ class CompositionPainter extends CustomPainter {
         dash: 9,
         gap: 7,
       );
+      // Guide tag, on the right so it never collides with the TRUE HORIZON tag
+      // (which sits on the left). Always visible; brightens as the line nears.
+      _drawHzLabel(
+        canvas,
+        'BEST SPOT',
+        Offset(size.width * 0.76, guideY - 13),
+        (0.72 + 0.28 * aligned).clamp(0.0, 1.0),
+      );
 
       // Detected horizon line (fades with op). Clipped to the camera-visible
       // band so a tilted line never bleeds into the top/bottom panels.
@@ -4219,6 +4217,12 @@ class CompositionPainter extends CustomPainter {
             ..strokeCap = StrokeCap.round
             ..isAntiAlias = true,
         );
+        // Plain-English tag so anyone knows what the line is — a small pill
+        // riding just above the line, toward the left so it clears the subject.
+        final double slope = dir.dx.abs() < 0.05 ? 0.0 : dir.dy / dir.dx;
+        final double xLabel = size.width * 0.24;
+        final double yLabel = c.dy + (xLabel - c.dx) * slope;
+        _drawHzLabel(canvas, 'TRUE HORIZON', Offset(xLabel, yLabel - 13), op);
         canvas.restore();
       }
     }
@@ -4303,6 +4307,48 @@ class CompositionPainter extends CustomPainter {
       _corner(canvas, rect.bottomRight, -1, -1, arm, r, stroke);
       _corner(canvas, rect.bottomLeft, 1, -1, arm, r, stroke);
     }
+  }
+
+  /// Small frosted gold pill label riding the horizon line. Fades with [op].
+  void _drawHzLabel(Canvas canvas, String text, Offset center, double op) {
+    if (op <= 0.02) return;
+    const gold = Color(0xFFE5C158);
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: gold.withValues(alpha: (0.95 * op).clamp(0.0, 1.0)),
+          fontSize: 9.5,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 1.8,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final Rect r = Rect.fromCenter(
+      center: center,
+      width: tp.width + 18,
+      height: tp.height + 9,
+    );
+    final RRect pill = RRect.fromRectAndRadius(r, const Radius.circular(20));
+    canvas.drawRRect(
+      pill,
+      Paint()
+        ..color = const Color(0xFF000000).withValues(
+          alpha: (0.34 * op).clamp(0.0, 1.0),
+        ),
+    );
+    canvas.drawRRect(
+      pill,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8
+        ..color = gold.withValues(alpha: (0.4 * op).clamp(0.0, 1.0)),
+    );
+    tp.paint(
+      canvas,
+      Offset(r.center.dx - tp.width / 2, r.center.dy - tp.height / 2),
+    );
   }
 
   /// Draws a dashed line from [a] to [b] (used by the Horizon Grid guide line).

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
+import 'package:phily/screens/branded_loader.dart';
 
 const _gold = Color(0xFFE5C158);
 
@@ -190,7 +191,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
       body: Stack(
         children: [
           if (_loading)
-            _spinner()
+            const BrandedLoader()
           else
             NotificationListener<ScrollNotification>(
               onNotification: _onScroll,
