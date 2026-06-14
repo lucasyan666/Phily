@@ -933,6 +933,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Caches the physical quarter-turn rotation that finds faces per device-turns.
   final Map<int, int> _qtCache = {};
 
+  // Same idea but for the horizon: which rotation makes the horizon HORIZONTAL
+  // in the analysed buffer. A sea/sky scene has no faces to calibrate with, so
+  // we discover it by horizon strength and cache it per device-turns.
+  final Map<int, int> _hzQtCache = {};
+  int _hzProbeMs = 0;
+
   /// Real-time face detection via ML Kit. ML Kit on iOS ignores InputImage
   /// rotation metadata, so to detect faces when the phone is held sideways we
   /// must PHYSICALLY rotate the pixel buffer to upright, detect, then map the
@@ -1034,19 +1040,65 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // ── Horizon (Horizon Grid mode) — highlight the detected horizon line ──────
     if (_compositionMode == CompositionMode.horizonGrid) {
       try {
-        final hRaw = await _cameraChannel.invokeMethod('detectHorizon', {
-          'bgra': winBytes,
-          'width': winOw,
-          'height': winOh,
-        });
-        if (!mounted) return;
-        final hNow = DateTime.now().millisecondsSinceEpoch;
-        // Confidence: strong contrast (raw luma step) AND a line that holds
-        // still across frames. A scene "with many lines" makes the best split
-        // jump around frame-to-frame, so it never accumulates stability and the
-        // line stays hidden.
+        final int hNow = DateTime.now().millisecondsSinceEpoch;
         const double confStrength = 18; // luma+colour step to trust it
-        const int stableFrames = 4; // consecutive consistent frames to show
+        const int stableFrames = 2; // consecutive consistent frames to show
+
+        // Run the detector on the buffer rotated by [q] quarter-turns, cropped
+        // to the camera-visible band so it ignores the scene hidden behind the
+        // top/bottom panels. The band is a screen-space y-range; where it lands
+        // in the rotated buffer depends on [q] (see _hzBandCrop).
+        Future<(Map?, double)> tryQt(int q) async {
+          final (b, bw, bh) = _rotatedBytes(
+            plane.bytes,
+            w,
+            h,
+            plane.bytesPerRow,
+            q,
+          );
+          final (cx0, cy0, cx1, cy1) = _hzBandCrop(q);
+          final r = await _cameraChannel.invokeMethod('detectHorizon', {
+            'bgra': b,
+            'width': bw,
+            'height': bh,
+            'cropX0': cx0,
+            'cropY0': cy0,
+            'cropX1': cx1,
+            'cropY1': cy1,
+          });
+          final m = r is Map ? r : null;
+          return (m, (m?['strength'] as num?)?.toDouble() ?? 0.0);
+        }
+
+        // Discover the orientation that makes the horizon horizontal (no faces
+        // needed). Once a strong horizon appears, lock that rotation so later
+        // frames only do one rotation. Probing is throttled so a no-horizon
+        // scene doesn't pay four rotations every frame.
+        int hzQt = _hzQtCache[turns] ?? 0;
+        Map? hRaw;
+        if (_hzQtCache.containsKey(turns)) {
+          final (m, _) = await tryQt(hzQt);
+          if (!mounted) return;
+          hRaw = m;
+        } else if (hNow - _hzProbeMs > 200) {
+          _hzProbeMs = hNow;
+          double best = 0;
+          for (final q in const [0, 1, 2, 3]) {
+            final (m, s) = await tryQt(q);
+            if (!mounted) return;
+            if (s > best) {
+              best = s;
+              hRaw = m;
+              hzQt = q;
+            }
+          }
+          if (best >= 22) _hzQtCache[turns] = hzQt;
+          debugPrint(
+            '[Horizon] probe best=${best.toStringAsFixed(0)} qt=$hzQt'
+            '${best >= 22 ? ' LOCKED' : ' (weak)'}',
+          );
+        }
+
         final num strength = (hRaw is Map ? hRaw['strength'] as num? : null) ?? 0;
         final bool hasLine = hRaw is Map &&
             hRaw['angle'] != null &&
@@ -1055,35 +1107,43 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
         if (hasLine) {
           // Map the point AND a second point a short step along the line back
-          // through the inverse rotation (qt) + preview stretch — deriving the
+          // through the inverse rotation (hzQt) + preview stretch — deriving the
           // angle from two mapped points keeps the sign/rotation correct for any
           // device orientation automatically.
           final double a = (hRaw['angle'] as num).toDouble();
           final double ux = (hRaw['x'] as num).toDouble();
           final double uy = (hRaw['y'] as num).toDouble();
           const double d = 0.1;
-          final p0 = _mapHorizonPt(ux, uy, qt);
+          final p0 = _mapHorizonPt(ux, uy, hzQt);
           final p1 = _mapHorizonPt(
             ux + math.cos(a) * d,
             uy + math.sin(a) * d,
-            qt,
+            hzQt,
           );
           double ang = math.atan2(p1.$2 - p0.$2, p1.$1 - p0.$1);
           // Snap a near-level line to dead-flat (leniency): tiny residual tilt
           // from detection reads as a clean horizontal instead of a slight slope.
           if (ang.abs() < 0.045) ang = 0.0; // within ~2.6°
 
-          // Consistency vs the previous frame's raw line.
+          // Consistency vs the previous frame's raw line. Generous tolerances:
+          // a live sea jitters a little, and the detection is already gated by
+          // strength, so we don't need a tight match to trust it.
           final bool consistent = _hzRawA != null &&
-              (_lerpAngle(_hzRawA!, ang, 1.0) - _hzRawA!).abs() < 0.045 &&
-              (p0.$1 - _hzRawX!).abs() < 0.05 &&
-              (p0.$2 - _hzRawY!).abs() < 0.05;
+              (_lerpAngle(_hzRawA!, ang, 1.0) - _hzRawA!).abs() < 0.10 &&
+              (p0.$1 - _hzRawX!).abs() < 0.15 &&
+              (p0.$2 - _hzRawY!).abs() < 0.15;
           _hzRawA = ang;
           _hzRawX = p0.$1;
           _hzRawY = p0.$2;
           _hzStable = consistent ? math.min(_hzStable + 1, 12) : 0;
 
           if (_hzStable >= stableFrames) {
+            if (!_hzActive) {
+              debugPrint(
+                '[Horizon] line ON  ax=${p0.$1.toStringAsFixed(2)} '
+                'ay=${p0.$2.toStringAsFixed(2)} ang=${ang.toStringAsFixed(2)}',
+              );
+            }
             _hzTAngle = ang;
             _hzTAx = p0.$1;
             _hzTAy = p0.$2;
@@ -1219,6 +1279,25 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   (double, double) _mapHorizonPt(double ux, double uy, int qt) {
     final c = _invRotNorm(ux, uy, qt);
     return ((c.$1 - 0.5) * _previewStretchX + 0.5, c.$2);
+  }
+
+  /// The camera-visible band (between the top/bottom panels) expressed as a crop
+  /// rectangle in the buffer that's been rotated by [qt] quarter-turns. The band
+  /// is the preview-space y-range [topFrac, 1−botFrac]; this is its pre-image
+  /// under the same rotation [_invRotNorm] uses, so cropping the rotated buffer
+  /// to it keeps only the pixels the user can actually see.
+  (double, double, double, double) _hzBandCrop(int qt) {
+    final double t = _topInsetFrac, b = _bottomInsetFrac;
+    switch (qt) {
+      case 1:
+        return (b, 0.0, 1.0 - t, 1.0);
+      case 2:
+        return (0.0, b, 1.0, 1.0 - t);
+      case 3:
+        return (t, 0.0, 1.0 - b, 1.0);
+      default: // 0
+        return (0.0, t, 1.0, 1.0 - b);
+    }
   }
 
   /// Lerp [a]→[b] by [t] along the shortest angular path.
@@ -1509,10 +1588,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         _topInsetFrac +
         (1 - _topInsetFrac - _bottomInsetFrac) *
             CompositionPainter._horizonGuideRatio;
-    // Generous tolerances: "Level" should fire when the line is NEAR the guide
-    // and roughly level, not pixel-perfect. ~8% of the band off + ~5° of tilt
-    // still reads as aligned.
-    final double prox = (1 - (_hzDAy - guideYn).abs() / 0.08).clamp(0.0, 1.0);
+    // `aligned` (0..1) drives only the guide-glow, so it ramps smoothly as the
+    // line approaches (within ~6% it starts glowing). The actual "Level" verdict
+    // is a much stricter explicit check below.
+    final double dyGuide = (_hzDAy - guideYn).abs();
+    final double prox = (1 - dyGuide / 0.06).clamp(0.0, 1.0);
     final double levelness = (1 - _hzDAngle.abs() / 0.09).clamp(0.0, 1.0);
     final double aligned = prox * levelness * _hzDOp.clamp(0.0, 1.0);
 
@@ -1529,15 +1609,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       if (!_hzActive) _hzInit = false; // next appearance seeds fresh
     }
 
-    // Message-bubble level + haptic on the rising edge into "level". Lenient
-    // entry (0.4) with hysteresis (hold until 0.25) so it locks "Level" while
-    // near the guide without chattering — or spamming the haptic.
+    // Message-bubble level + haptic on the rising edge into "Level". STRICT now:
+    // the line must sit within ~2 mm of the guide (≈1.5% of the screen) and be
+    // level. Tiny hysteresis (hold to ~3.5 mm) only stops 1-frame flicker right
+    // at the edge — it won't feel lenient.
     if (_compositionMode == CompositionMode.horizonGrid) {
+      final bool isLevel = _hzDAngle.abs() < 0.06; // ~3.4°
+      final bool enter = dyGuide < 0.015 && isLevel; // ~2 mm
+      final bool hold = dyGuide < 0.024 && isLevel; // ~3.5 mm
       final int lvl = _hzDOp <= 0.4
           ? 0
-          : (_hzPrevLevel == 2
-                ? (aligned > 0.25 ? 2 : 1)
-                : (aligned > 0.4 ? 2 : 1));
+          : ((_hzPrevLevel == 2 ? hold : enter) ? 2 : 1);
       if (lvl != _hzLevel.value) _hzLevel.value = lvl;
       if (lvl == 2 && _hzPrevLevel != 2) {
         _haptic('alignmentPing', intensity: 1.0);
@@ -4104,7 +4186,8 @@ class CompositionPainter extends CustomPainter {
         gap: 7,
       );
 
-      // Detected horizon line (fades with op).
+      // Detected horizon line (fades with op). Clipped to the camera-visible
+      // band so a tilted line never bleeds into the top/bottom panels.
       if (hz != null && hz.op > 0.01) {
         final double op = hz.op;
         final Offset c = Offset(hz.ax * size.width, hz.ay * size.height);
@@ -4114,6 +4197,10 @@ class CompositionPainter extends CustomPainter {
         final p2 = c + dir * L;
         // Level cue: gold intensifies as the line approaches horizontal.
         final level = (1 - (hz.angle.abs() / 0.20)).clamp(0.0, 1.0);
+        canvas.save();
+        canvas.clipRect(
+          Rect.fromLTWH(0, topInset, size.width, bandSpan),
+        );
         canvas.drawLine(
           p1,
           p2,
@@ -4132,6 +4219,7 @@ class CompositionPainter extends CustomPainter {
             ..strokeCap = StrokeCap.round
             ..isAntiAlias = true,
         );
+        canvas.restore();
       }
     }
 
