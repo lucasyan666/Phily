@@ -353,7 +353,10 @@ enum HorizonDetector {
   /// (nx, ny) is a normalised point on the horizon line (top-left origin) and the
   /// angle is the line's roll (0 = level, +ve = right-side-down in image space),
   /// or nil when no sufficiently strong brightness edge is present.
-  static func detect(bgra: Data, width: Int, height: Int) -> [String: Any]? {
+  static func detect(
+    bgra: Data, width: Int, height: Int,
+    cropX0: Double = 0, cropY0: Double = 0, cropX1: Double = 1, cropY1: Double = 1
+  ) -> [String: Any]? {
     guard width >= 16, height >= 16 else { return nil }
 
     // ── Downsample to tiny luma + "blueness" grids (≈64px on the long side) ────
@@ -364,6 +367,15 @@ enum HorizonDetector {
     let gw = width / step
     let gh = height / step
     guard gw >= 8, gh >= 8 else { return nil }
+
+    // Restrict analysis to the camera-visible band (between the UI panels). Only
+    // pixels inside this crop are counted, so the detector never locks onto a
+    // horizon hidden behind a panel. Geometry (centre/offset/angle) stays in
+    // full-buffer space so the result still maps back correctly.
+    let gx0 = max(0, min(gw - 1, Int(cropX0 * Double(gw))))
+    let gx1 = max(gx0 + 1, min(gw, Int(cropX1 * Double(gw))))
+    let gy0 = max(0, min(gh - 1, Int(cropY0 * Double(gh))))
+    let gy1 = max(gy0 + 1, min(gh, Int(cropY1 * Double(gh))))
 
     var lum = [Float](repeating: 0, count: gw * gh)
     var blue = [Float](repeating: 0, count: gw * gh)
@@ -382,46 +394,66 @@ enum HorizonDetector {
       }
     }
 
+    // Local texture (high-frequency energy): the sky is smooth, the sea/ground is
+    // rippled. This separates a daytime sky from sea even when their colour and
+    // brightness are nearly identical — the strongest cue for pale daytime water.
+    var tex = [Float](repeating: 0, count: gw * gh)
+    for gy in 1..<gh {
+      for gx in 1..<gw {
+        let idx = gy * gw + gx
+        tex[idx] = abs(lum[idx] - lum[idx - gw]) + abs(lum[idx] - lum[idx - 1])
+      }
+    }
+
     let cx = Float(gw) * 0.5
     let cy = Float(gh) * 0.5
     let R = (Float(gw) + Float(gh)) * 0.5      // half-diagonal-ish offset span
     let binCount = Int(2 * R) + 2
-    let minSupport = Float(gw * gh) * 0.12     // each side must hold ≥12% of pixels
 
     var lumSum = [Float](repeating: 0, count: binCount)
     var blueSum = [Float](repeating: 0, count: binCount)
+    var texSum = [Float](repeating: 0, count: binCount)
     var cnt = [Float](repeating: 0, count: binCount)
 
-    // Score one candidate angle = its strongest split. Blends the luma step
-    // (hard horizons) with a blueness step (sky vs sea/sand) and nudges toward
-    // the brighter band being on top, as the sky usually is.
+    // Score one candidate angle = its strongest split. Blends three cues: the
+    // luma step (hard horizons), the blueness step (sky vs sea/sand), and the
+    // texture step (smooth sky vs rippled water — the daytime saver). Nudges
+    // toward the brighter band being on top, as the sky usually is.
     func evaluate(_ th: Float) -> (score: Float, offset: Float) {
       let nx = -sin(th), ny = cos(th)          // unit normal to the line
-      for i in 0..<binCount { lumSum[i] = 0; blueSum[i] = 0; cnt[i] = 0 }
-      for gy in 0..<gh {
+      for i in 0..<binCount { lumSum[i] = 0; blueSum[i] = 0; texSum[i] = 0; cnt[i] = 0 }
+      for gy in gy0..<gy1 {
         let fy = Float(gy) - cy
-        for gx in 0..<gw {
+        for gx in gx0..<gx1 {
           let t = (Float(gx) - cx) * nx + fy * ny   // signed perpendicular offset
           let bin = Int(t + R)
           if bin < 0 || bin >= binCount { continue }
           let idx = gy * gw + gx
           lumSum[bin] += lum[idx]
           blueSum[bin] += blue[idx]
+          texSum[bin] += tex[idx]
           cnt[bin] += 1
         }
       }
-      var totLum: Float = 0, totBlue: Float = 0, totCnt: Float = 0
-      for i in 0..<binCount { totLum += lumSum[i]; totBlue += blueSum[i]; totCnt += cnt[i] }
+      var totLum: Float = 0, totBlue: Float = 0, totTex: Float = 0, totCnt: Float = 0
+      for i in 0..<binCount {
+        totLum += lumSum[i]; totBlue += blueSum[i]; totTex += texSum[i]; totCnt += cnt[i]
+      }
+      // Each side must hold ≥12% of the *analysed* (cropped) pixels.
+      let minSupport = totCnt * 0.12
 
       var bestS: Float = 0, bestOff: Float = 0
-      var lumL: Float = 0, blueL: Float = 0, cntL: Float = 0
+      var lumL: Float = 0, blueL: Float = 0, texL: Float = 0, cntL: Float = 0
       for k in 0..<binCount {
-        lumL += lumSum[k]; blueL += blueSum[k]; cntL += cnt[k]
+        lumL += lumSum[k]; blueL += blueSum[k]; texL += texSum[k]; cntL += cnt[k]
         let cntR = totCnt - cntL
         if cntL < minSupport || cntR < minSupport { continue }
         let topLum = lumL / cntL, botLum = (totLum - lumL) / cntR
         let topBlue = blueL / cntL, botBlue = (totBlue - blueL) / cntR
-        var s = abs(topLum - botLum) + 0.7 * abs(topBlue - botBlue)
+        let topTex = texL / cntL, botTex = (totTex - texL) / cntR
+        var s = abs(topLum - botLum)
+              + 0.7 * abs(topBlue - botBlue)
+              + 1.2 * abs(topTex - botTex)
         if topLum > botLum { s *= 1.12 }   // prefer brighter (sky) band on top
         if s > bestS { bestS = s; bestOff = Float(k) + 0.5 - R }
       }
