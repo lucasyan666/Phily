@@ -62,6 +62,15 @@ dev_dependencies:
   # for release. By using this package, you can ensure that your app has a
   # consistent and professional appearance across different devices and screen sizes.   
 
+# Vendored, patched copy of camera_avfoundation 0.9.23+2. The only change is a
+# finite-value guard in DefaultCamera.handleSampleBufferStreaming (sensorExposure
+# Time): upstream casts a CMTime to Int unguarded, which traps with a fatal error
+# when exposureDuration is invalid/indefinite (camera switchover / exposure-mode
+# transitions). Remove this override once upstream guards that conversion.
+dependency_overrides:
+  camera_avfoundation:
+    path: vendor/camera_avfoundation
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

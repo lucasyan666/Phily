@@ -39,6 +39,7 @@ private extension Comparable {
       case "getVirtualCameraId":      self?.handleGetVirtualCameraId(result: result)
       case "analyzeRuleOfThirds":     self?.handleAnalyzeRuleOfThirds(call: call, result: result)
       case "detectAnimals":           self?.handleDetectAnimals(call: call, result: result)
+      case "detectHorizon":           self?.handleDetectHorizon(call: call, result: result)
       default: result(FlutterMethodNotImplemented)
       }
     }
@@ -235,6 +236,29 @@ private extension Comparable {
         animals = AnimalDetector.detect(bgra: data, width: width, height: height)
       }
       DispatchQueue.main.async { result(animals) }
+    }
+  }
+
+  // MARK: - detectHorizon (scene horizon angle via Vision)
+
+  private func handleDetectHorizon(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard
+      let args   = call.arguments as? [String: Any],
+      let typed  = args["bgra"] as? FlutterStandardTypedData,
+      let width  = args["width"]  as? Int,
+      let height = args["height"] as? Int
+    else {
+      result(FlutterError(code: "INVALID_ARGS", message: "bgra, width, height required", details: nil))
+      return
+    }
+
+    let data = typed.data
+    DispatchQueue.global(qos: .userInitiated).async {
+      var horizon: [String: Any]? = nil
+      if #available(iOS 13.0, *) {
+        horizon = HorizonDetector.detect(bgra: data, width: width, height: height)
+      }
+      DispatchQueue.main.async { result(horizon) } // nil when none found
     }
   }
 

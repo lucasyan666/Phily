@@ -6,10 +6,10 @@ import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:sensors_plus/sensors_plus.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:gal/gal.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:phily/screens/branded_loader.dart';
+import 'package:phily/screens/gallery_viewer.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -29,12 +29,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Timer? _recordingTimer;
   Uint8List? _latestThumbnail;
   String? _error;
+  // Photo-library permission, requested only once per session (cached). iOS
+  // never re-prompts once decided, so the gallery/thumbnail paths reuse this.
+  bool? _photoPermission;
 
   // Camera settings
   FlashMode _flashMode = FlashMode.off;
   ResolutionPreset _resolution = ResolutionPreset.veryHigh; // 24MP
   String _imageFormat = 'HEIF'; // HEIF or RAW
   CompositionMode _compositionMode = CompositionMode.none;
+  // Quick toggle to dim the composition overlay for a clean frame (mode stays).
+  bool _gridVisible = true;
   // Fibonacci-spiral orientation: number of 90° clockwise turns (0..3). Lets the
   // user point the spiral's eye at any corner. Persists across mode switches.
   int _spiralTurns = 0;
@@ -68,12 +73,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Thirds power points (which now live in the band) into the full-screen-
   // normalised space the detected face boxes are expressed in.
   double _topInsetFrac = 0, _bottomInsetFrac = 0;
+  // Camera-visible band size (px). Needed to compute the Fibonacci-spiral eye,
+  // whose position depends on the band's aspect ratio.
+  double _bandW = 0, _bandH = 0;
 
-  // Tap-to-focus
+  // Tap-to-focus + exposure + AE/AF lock
   Offset? _focusPoint;
   AnimationController? _focusRingController;
   late Animation<double> _focusRingScale;
-  late Animation<double> _focusRingOpacity;
+  bool _focusShown = false; // drives the focus/exposure UI fade
+  Timer? _focusHideTimer; // auto-hides the focus UI when idle
+  bool _aeAfLocked = false;
+  double _exposureOffset = 0; // current EV offset
+  double _minExposure = 0, _maxExposure = 0; // device EV range
 
   // Zoom
   double _currentZoom = 1.0;
@@ -105,9 +117,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // the tick marks on the zoom meter (like the native Camera app).
   List<double> _switchoverFactors = const [];
 
-  // Animation for bounce effect
+  // Capture "float then fly" animation.
   AnimationController? _bounceController;
-  Animation<double>? _bounceAnimation;
   File? _animatingMedia;
   bool _showBounceAnimation = false;
   bool _showShutterFlash = false;
@@ -125,7 +136,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   DateTime _lastFrameTime = DateTime.fromMillisecondsSinceEpoch(0);
   // Throttle the (expensive) multi-rotation face-detection re-probe so a scene
   // with no face (landscape/street) doesn't pay 4 synchronous rotations/frame.
+  // When a face was tracked recently the probe runs every frame instead, so we
+  // re-acquire instantly (stable tracking); the throttle only bites once the
+  // scene has genuinely had no face for a while.
   int _lastProbeMs = 0;
+  int _lastFaceMs = 0;
 
   // ML Kit face detector — runs on the CameraImage directly (no method-channel
   // image round trip), so detection latency is low enough for live tracking.
@@ -153,9 +168,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   int _deviceTurns = 0;
   StreamSubscription<AccelerometerEvent>? _accelSub;
 
-  final picker = ImagePicker();
-
-  static const MethodChannel _cameraChannel  = MethodChannel('phily/camera');
+  static const MethodChannel _cameraChannel = MethodChannel('phily/camera');
   static const MethodChannel _hapticsChannel = MethodChannel('phily/haptics');
 
   Future<void> _haptic(String type, {double intensity = 1.0}) async {
@@ -176,9 +189,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       const margin = 2.0;
       int? turns;
       if (ax > ay + margin) {
-        turns = e.x > 0 ? 3 : 1;           // landscape (two directions)
+        turns = e.x > 0 ? 3 : 1; // landscape (two directions)
       } else if (ay > ax + margin) {
-        turns = e.y > 0 ? 0 : 2;           // portrait up / upside-down
+        turns = e.y > 0 ? 0 : 2; // portrait up / upside-down
       }
       if (turns != null && turns != _deviceTurns) {
         setState(() => _deviceTurns = turns!); // rebuild so UI controls rotate
@@ -189,11 +202,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Wraps a UI control so it rotates (smoothly) to stay upright for how the
   /// phone is physically held. The camera preview itself stays fixed.
   Widget _rotated(Widget child) => AnimatedRotation(
-        turns: -_deviceTurns / 4,
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeOut,
-        child: child,
-      );
+    turns: -_deviceTurns / 4,
+    duration: const Duration(milliseconds: 250),
+    curve: Curves.easeOut,
+    child: child,
+  );
 
   @override
   void initState() {
@@ -210,55 +223,21 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       viewportFraction: 0.28,
     );
 
-    // Focus ring animation: quick scale-in pulse then fade out
+    // Focus ring: a quick scale-in pop. Visibility/fade is driven by state +
+    // a hide timer (see [_showFocusUI]) so the exposure slider can stay up while
+    // you adjust it.
     _focusRingController = AnimationController(
-      duration: const Duration(milliseconds: 900),
+      duration: const Duration(milliseconds: 260),
       vsync: this,
     );
-    // Scale: starts at 1.4 (large), quickly settles to 1.0
-    _focusRingScale = TweenSequence<double>([
-      TweenSequenceItem(
-        tween: Tween(
-          begin: 1.4,
-          end: 1.0,
-        ).chain(CurveTween(curve: Curves.easeOut)),
-        weight: 30,
-      ),
-      TweenSequenceItem(tween: ConstantTween(1.0), weight: 40),
-      TweenSequenceItem(
-        tween: Tween(
-          begin: 1.0,
-          end: 1.0,
-        ).chain(CurveTween(curve: Curves.linear)),
-        weight: 30,
-      ),
-    ]).animate(_focusRingController!);
-    // Opacity: fully visible, then fades out in the last 40%
-    _focusRingOpacity = TweenSequence<double>([
-      TweenSequenceItem(tween: ConstantTween(1.0), weight: 60),
-      TweenSequenceItem(
-        tween: Tween(
-          begin: 1.0,
-          end: 0.0,
-        ).chain(CurveTween(curve: Curves.easeIn)),
-        weight: 40,
-      ),
-    ]).animate(_focusRingController!);
-    _focusRingController!.addStatusListener((status) {
-      if (status == AnimationStatus.completed && mounted) {
-        setState(() => _focusPoint = null);
-      }
-    });
+    _focusRingScale = Tween(begin: 1.3, end: 1.0)
+        .chain(CurveTween(curve: Curves.easeOutBack))
+        .animate(_focusRingController!);
 
-    // Initialize bounce animation
+    // Capture animation: the shot flies straight into the gallery thumbnail.
     _bounceController = AnimationController(
-      duration: const Duration(milliseconds: 600),
+      duration: const Duration(milliseconds: 620),
       vsync: this,
-    );
-
-    _bounceAnimation = CurvedAnimation(
-      parent: _bounceController!,
-      curve: Curves.easeOutCubic,
     );
 
     _bounceController!.addStatusListener((status) {
@@ -391,6 +370,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       await _controller!.initialize();
       await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
       await _controller!.setFlashMode(_flashMode);
+      try {
+        // Devices report a wide range (≈ ±8 EV on iOS); clamp to a tighter span
+        // so the slider gives fine control over the useful range.
+        const double evLimit = 2.0;
+        _minExposure = (await _controller!.getMinExposureOffset()).clamp(
+          -evLimit,
+          0.0,
+        );
+        _maxExposure = (await _controller!.getMaxExposureOffset()).clamp(
+          0.0,
+          evLimit,
+        );
+      } catch (_) {}
       _minZoom = await _controller!.getMinZoomLevel();
       _maxZoom = (await _controller!.getMaxZoomLevel())
           .clamp(0, _zoomMax)
@@ -482,18 +474,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   /// Briefly initialises and immediately disposes the ultra-wide controller
   /// while no other [AVCaptureSession] is active. Pre-warming means the OS
+  /// Requests photo-library access at most once per session (result cached).
+  Future<bool> _ensurePhotoPermission() async {
+    if (_photoPermission != null) return _photoPermission!;
+    final ps = await PhotoManager.requestPermissionExtend();
+    _photoPermission = ps.isAuth || ps.hasAccess;
+    return _photoPermission!;
+  }
+
   Future<void> _loadLatestThumbnail() async {
     try {
       debugPrint('Starting thumbnail load...');
 
-      // Request permissions
-      final PermissionState ps = await PhotoManager.requestPermissionExtend();
-
-      debugPrint(
-        'Permission state: $ps, isAuth: ${ps.isAuth}, hasAccess: ${ps.hasAccess}',
-      );
-
-      if (!ps.isAuth && !ps.hasAccess) {
+      if (!await _ensurePhotoPermission()) {
         debugPrint('Photo library permission denied or not granted');
         return;
       }
@@ -555,9 +548,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   void dispose() {
     _recordingTimer?.cancel();
     _tipTimer?.cancel();
+    _focusHideTimer?.cancel();
     _accelSub?.cancel();
     _faceAnim?.dispose();
     _alignLevel.dispose();
+    _horizon.dispose();
+    _hzLevel.dispose();
     _faceDetector.close();
     _stopImageStream();
     _controller?.dispose();
@@ -569,20 +565,74 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     super.dispose();
   }
 
+  /// Re-focuses (and re-meters exposure) at [pos]. [locked] sets AE/AF lock and
+  /// keeps the indicator up; otherwise it auto-hides after a few idle seconds.
+  Future<void> _focusAt(
+    Offset pos,
+    BoxConstraints constraints, {
+    bool locked = false,
+  }) async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    final double x = (pos.dx / constraints.maxWidth).clamp(0.0, 1.0);
+    final double y = (pos.dy / constraints.maxHeight).clamp(0.0, 1.0);
+    try {
+      // Unlock first so the new point actually re-focuses / re-meters.
+      await _controller!.setFocusMode(FocusMode.auto);
+      await _controller!.setExposureMode(ExposureMode.auto);
+      await _controller!.setFocusPoint(Offset(x, y));
+      await _controller!.setExposurePoint(Offset(x, y));
+      await _controller!.setExposureOffset(0);
+      if (locked) {
+        await _controller!.setFocusMode(FocusMode.locked);
+        await _controller!.setExposureMode(ExposureMode.locked);
+      }
+    } catch (_) {}
+    if (locked) _haptic('medium');
+    setState(() {
+      _focusPoint = pos;
+      _focusShown = true;
+      _aeAfLocked = locked;
+      _exposureOffset = 0;
+    });
+    _focusRingController!.forward(from: 0);
+    _scheduleFocusHide();
+  }
+
   Future<void> _onTapToFocus(
     TapUpDetails details,
     BoxConstraints constraints,
-  ) async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    final Offset tapPos = details.localPosition;
-    final double x = (tapPos.dx / constraints.maxWidth).clamp(0.0, 1.0);
-    final double y = (tapPos.dy / constraints.maxHeight).clamp(0.0, 1.0);
+  ) => _focusAt(details.localPosition, constraints);
+
+  /// Auto-hides the focus/exposure UI after a few idle seconds — unless AE/AF is
+  /// locked, in which case it stays until the user taps again.
+  void _scheduleFocusHide() {
+    _focusHideTimer?.cancel();
+    if (_aeAfLocked) return;
+    _focusHideTimer = Timer(const Duration(milliseconds: 3500), () {
+      if (!mounted) return;
+      setState(() => _focusShown = false);
+      Future.delayed(const Duration(milliseconds: 260), () {
+        if (mounted && !_focusShown) setState(() => _focusPoint = null);
+      });
+    });
+  }
+
+  /// Drag handler for the exposure slider: [dy] is the upward drag (positive =
+  /// brighter), [span] the slider's pixel height.
+  Future<void> _adjustExposure(double dy, double span) async {
+    if (_controller == null || _maxExposure <= _minExposure) return;
+    final range = _maxExposure - _minExposure;
+    // Full slider travel covers the EV range; drag up brightens.
+    final next = (_exposureOffset + (dy / span) * range).clamp(
+      _minExposure,
+      _maxExposure,
+    );
+    if ((next - _exposureOffset).abs() < 0.001) return;
+    setState(() => _exposureOffset = next);
     try {
-      await _controller!.setFocusPoint(Offset(x, y));
-      await _controller!.setExposurePoint(Offset(x, y));
+      await _controller!.setExposureOffset(next);
     } catch (_) {}
-    setState(() => _focusPoint = tapPos);
-    _focusRingController!.forward(from: 0);
+    _scheduleFocusHide();
   }
 
   void _onScaleStart(ScaleStartDetails details) {
@@ -617,8 +667,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Switches the composition mode by [delta] steps, animating the belt so its
   /// onPageChanged keeps the index, mode and UI in sync.
   void _changeCompositionBy(int delta) {
-    final int next =
-        (_currentCompositionIndex + delta).clamp(0, _compositionModes.length - 1);
+    final int next = (_currentCompositionIndex + delta).clamp(
+      0,
+      _compositionModes.length - 1,
+    );
     if (next == _currentCompositionIndex) return;
     _compositionPageController.animateToPage(
       next,
@@ -633,6 +685,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     switch (_compositionMode) {
       case CompositionMode.none:
         return null;
+      case CompositionMode.horizonGrid:
+        return 'Landscapes & seascapes — level the horizon onto the golden line for a balanced, sky-forward frame.';
       case CompositionMode.ruleOfThirds:
         return 'Everyday shots — people, landscapes, street. Put your subject on a dot.';
       case CompositionMode.goldenSection:
@@ -753,7 +807,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
-
   Future<void> _saveMediaInBackground(String filePath) async {
     try {
       // Save to gallery — gal uses separate methods for images vs videos.
@@ -856,13 +909,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _isProcessingFrame = true;
     _lastFrameTime = now;
     try {
-      // Detection runs for None (boxes only) and the alignment modes — Rule of
-      // Thirds, Phi Grid (intersection alignment) and Fibonacci Spiral (eye
-      // alignment) — for boxes + glow + haptic.
+      // Detection runs for None (boxes only), Horizon Grid (horizon line) and
+      // the alignment modes — Rule of Thirds, Phi Grid (intersection alignment)
+      // and Fibonacci Spiral (eye alignment) — for boxes + glow + haptic.
       switch (_compositionMode) {
         case CompositionMode.none:
+        case CompositionMode.horizonGrid:
         case CompositionMode.ruleOfThirds:
         case CompositionMode.goldenSection:
+        case CompositionMode.fibonacciSpiral:
           await _analyzeDetections(image);
           break;
         default:
@@ -892,30 +947,51 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // reuse it for both ML Kit (faces) and Vision (subjects) — one synchronous
     // pixel loop on the UI isolate per frame.
     int qt = _qtCache[turns] ?? 0;
-    var (winBytes, winOw, winOh) =
-        _rotatedBytes(plane.bytes, w, h, plane.bytesPerRow, qt);
-    List<Face> faces =
-        await _faceDetector.processImage(_inputFromBytes(winBytes, winOw, winOh));
+    var (winBytes, winOw, winOh) = _rotatedBytes(
+      plane.bytes,
+      w,
+      h,
+      plane.bytesPerRow,
+      qt,
+    );
+    List<Face> faces = await _faceDetector.processImage(
+      _inputFromBytes(winBytes, winOw, winOh),
+    );
     if (!mounted) return;
 
     // If nothing was found, the rotation may be wrong — re-probe the other three
     // orientations to (re)discover it. Throttled to ~1/sec so a genuinely
     // face-less scene (landscape/street) doesn't pay 4 rotations every frame.
     final int nowMs = DateTime.now().millisecondsSinceEpoch;
-    if (faces.isEmpty && nowMs - _lastProbeMs > 800) {
+    // Probe every frame while we're actively tracking (instant re-acquire), but
+    // throttle to ~1/sec once the scene has had no face for a while.
+    final bool recentlyTracked = nowMs - _lastFaceMs < 1500;
+    if (faces.isEmpty && (recentlyTracked || nowMs - _lastProbeMs > 800)) {
       _lastProbeMs = nowMs;
       for (final cand in const [1, 3, 2]) {
         if (cand == qt) continue; // already tried above
-        final (b, ow, oh) =
-            _rotatedBytes(plane.bytes, w, h, plane.bytesPerRow, cand);
-        final found = await _faceDetector.processImage(_inputFromBytes(b, ow, oh));
+        final (b, ow, oh) = _rotatedBytes(
+          plane.bytes,
+          w,
+          h,
+          plane.bytesPerRow,
+          cand,
+        );
+        final found = await _faceDetector.processImage(
+          _inputFromBytes(b, ow, oh),
+        );
         if (!mounted) return;
         if (found.length > faces.length) {
-          faces = found; qt = cand; winBytes = b; winOw = ow; winOh = oh;
+          faces = found;
+          qt = cand;
+          winBytes = b;
+          winOw = ow;
+          winOh = oh;
         }
       }
       if (faces.isNotEmpty) _qtCache[turns] = qt; // cache only a real winner
     }
+    if (faces.isNotEmpty) _lastFaceMs = nowMs;
 
     final double ow = winOw.toDouble(), oh = winOh.toDouble();
 
@@ -933,20 +1009,96 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final cx = (nx + nw / 2 - 0.5) * _previewStretchX + 0.5;
       final stretchedW = nw * _previewStretchX;
       dets.add({
-        'x': cx - stretchedW / 2, 'y': ny, 'w': stretchedW, 'h': nh,
-        'label': 'face', 'confidence': 1.0,
+        'x': cx - stretchedW / 2,
+        'y': ny,
+        'w': stretchedW,
+        'h': nh,
+        'label': 'face',
+        'confidence': 1.0,
       });
     }
 
     // ── Animals (cats/dogs) via Apple Vision, reusing the same upright buffer ───
     if (_animalsEnabled) {
       try {
-        final raw = await _cameraChannel.invokeMethod<List>(
-          'detectAnimals',
-          {'bgra': winBytes, 'width': winOw, 'height': winOh},
-        );
+        final raw = await _cameraChannel.invokeMethod<List>('detectAnimals', {
+          'bgra': winBytes,
+          'width': winOw,
+          'height': winOh,
+        });
         if (!mounted) return;
         _addVisionDets(raw, dets, qt, 'animal');
+      } catch (_) {}
+    }
+
+    // ── Horizon (Horizon Grid mode) — highlight the detected horizon line ──────
+    if (_compositionMode == CompositionMode.horizonGrid) {
+      try {
+        final hRaw = await _cameraChannel.invokeMethod('detectHorizon', {
+          'bgra': winBytes,
+          'width': winOw,
+          'height': winOh,
+        });
+        if (!mounted) return;
+        final hNow = DateTime.now().millisecondsSinceEpoch;
+        // Confidence: strong contrast (raw luma step) AND a line that holds
+        // still across frames. A scene "with many lines" makes the best split
+        // jump around frame-to-frame, so it never accumulates stability and the
+        // line stays hidden.
+        const double confStrength = 18; // luma+colour step to trust it
+        const int stableFrames = 4; // consecutive consistent frames to show
+        final num strength = (hRaw is Map ? hRaw['strength'] as num? : null) ?? 0;
+        final bool hasLine = hRaw is Map &&
+            hRaw['angle'] != null &&
+            hRaw['x'] != null &&
+            strength >= confStrength;
+
+        if (hasLine) {
+          // Map the point AND a second point a short step along the line back
+          // through the inverse rotation (qt) + preview stretch — deriving the
+          // angle from two mapped points keeps the sign/rotation correct for any
+          // device orientation automatically.
+          final double a = (hRaw['angle'] as num).toDouble();
+          final double ux = (hRaw['x'] as num).toDouble();
+          final double uy = (hRaw['y'] as num).toDouble();
+          const double d = 0.1;
+          final p0 = _mapHorizonPt(ux, uy, qt);
+          final p1 = _mapHorizonPt(
+            ux + math.cos(a) * d,
+            uy + math.sin(a) * d,
+            qt,
+          );
+          double ang = math.atan2(p1.$2 - p0.$2, p1.$1 - p0.$1);
+          // Snap a near-level line to dead-flat (leniency): tiny residual tilt
+          // from detection reads as a clean horizontal instead of a slight slope.
+          if (ang.abs() < 0.045) ang = 0.0; // within ~2.6°
+
+          // Consistency vs the previous frame's raw line.
+          final bool consistent = _hzRawA != null &&
+              (_lerpAngle(_hzRawA!, ang, 1.0) - _hzRawA!).abs() < 0.045 &&
+              (p0.$1 - _hzRawX!).abs() < 0.05 &&
+              (p0.$2 - _hzRawY!).abs() < 0.05;
+          _hzRawA = ang;
+          _hzRawX = p0.$1;
+          _hzRawY = p0.$2;
+          _hzStable = consistent ? math.min(_hzStable + 1, 12) : 0;
+
+          if (_hzStable >= stableFrames) {
+            _hzTAngle = ang;
+            _hzTAx = p0.$1;
+            _hzTAy = p0.$2;
+            _hzActive = true;
+            _horizonSeenMs = hNow;
+            _ensureHorizonTicking();
+          }
+        } else {
+          _hzStable = 0;
+          _hzRawA = null;
+        }
+        // Fade out unless a *stable* horizon was confirmed recently. Covers all
+        // three loss cases: gone, too weak, or jumping between competing lines
+        // (the latter keeps _hzStable below threshold so _horizonSeenMs stalls).
+        if (_hzActive && hNow - _horizonSeenMs > 300) _hzActive = false;
       } catch (_) {}
     }
 
@@ -956,7 +1108,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Map a native Vision result list (normalised [0,1] top-left boxes in the
   /// upright image) back into portrait preview space and append to [dets].
   void _addVisionDets(
-    List? raw, List<Map<String, dynamic>> dets, int qt, String fallbackLabel,
+    List? raw,
+    List<Map<String, dynamic>> dets,
+    int qt,
+    String fallbackLabel,
   ) {
     if (raw == null) return;
     for (final a in raw) {
@@ -974,7 +1129,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final cx = (nx + nw / 2 - 0.5) * _previewStretchX + 0.5;
       final stretchedW = nw * _previewStretchX;
       dets.add({
-        'x': cx - stretchedW / 2, 'y': ny, 'w': stretchedW, 'h': nh,
+        'x': cx - stretchedW / 2,
+        'y': ny,
+        'w': stretchedW,
+        'h': nh,
         'label': (a['label'] ?? fallbackLabel).toString(),
         'confidence': (a['confidence'] as num?)?.toDouble() ?? 1.0,
       });
@@ -985,7 +1143,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// BGRA buffer so faces/animals are upright. Returns tightly-packed bytes plus
   /// the output dimensions. Shared by ML Kit (faces) and Vision (animals).
   (Uint8List, int, int) _rotatedBytes(
-    Uint8List src, int w, int h, int srcBpr, int qt,
+    Uint8List src,
+    int w,
+    int h,
+    int srcBpr,
+    int qt,
   ) {
     final int s = _detScale;
     final int sw = w ~/ s, sh = h ~/ s;
@@ -996,15 +1158,28 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       for (var dx = 0; dx < outW; dx++) {
         final int sx, sy;
         switch (qt) {
-          case 1:  sx = dy * s;         sy = h - 1 - dx * s; break;
-          case 3:  sx = w - 1 - dy * s; sy = dx * s;         break;
-          case 2:  sx = w - 1 - dx * s; sy = h - 1 - dy * s; break;
-          default: sx = dx * s;         sy = dy * s;
+          case 1:
+            sx = dy * s;
+            sy = h - 1 - dx * s;
+            break;
+          case 3:
+            sx = w - 1 - dy * s;
+            sy = dx * s;
+            break;
+          case 2:
+            sx = w - 1 - dx * s;
+            sy = h - 1 - dy * s;
+            break;
+          default:
+            sx = dx * s;
+            sy = dy * s;
         }
         final si = sy * srcBpr + sx * 4;
         final di = (dy * outW + dx) * 4;
-        bytes[di] = src[si]; bytes[di + 1] = src[si + 1];
-        bytes[di + 2] = src[si + 2]; bytes[di + 3] = src[si + 3];
+        bytes[di] = src[si];
+        bytes[di + 1] = src[si + 1];
+        bytes[di + 2] = src[si + 2];
+        bytes[di + 3] = src[si + 3];
       }
     }
     return (bytes, outW, outH);
@@ -1027,18 +1202,41 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// space) for a physical rotation of [qt] quarter-turns clockwise.
   (double, double) _invRotNorm(double ux, double uy, int qt) {
     switch (qt) {
-      case 1:  return (uy, 1 - ux);
-      case 2:  return (1 - ux, 1 - uy);
-      case 3:  return (1 - uy, ux);
-      default: return (ux, uy); // 0
+      case 1:
+        return (uy, 1 - ux);
+      case 2:
+        return (1 - ux, 1 - uy);
+      case 3:
+        return (1 - uy, ux);
+      default:
+        return (ux, uy); // 0
     }
+  }
+
+  /// Map a normalised point in the upright detection buffer back into full-screen
+  /// preview-normalised space (inverse rotation + the preview's horizontal
+  /// stretch), so the horizon line sits exactly where face boxes would.
+  (double, double) _mapHorizonPt(double ux, double uy, int qt) {
+    final c = _invRotNorm(ux, uy, qt);
+    return ((c.$1 - 0.5) * _previewStretchX + 0.5, c.$2);
+  }
+
+  /// Lerp [a]→[b] by [t] along the shortest angular path.
+  double _lerpAngle(double a, double b, double t) {
+    double diff = b - a;
+    while (diff > math.pi) {
+      diff -= 2 * math.pi;
+    }
+    while (diff < -math.pi) {
+      diff += 2 * math.pi;
+    }
+    return a + diff * t;
   }
 
   // Must match the horizontal stretch applied to the preview in _buildPreview
   // (Matrix4.diagonal3Values(1.17, 1.0, 1.0)) so detection boxes line up with
   // faces across the full width, not just the centre.
   static const double _previewStretchX = 1.17;
-
 
   // ── Animated face indicators ────────────────────────────────────────────────
   // Detection updates the *targets*; a 60fps ticker eases the displayed boxes
@@ -1047,17 +1245,46 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   final List<_FaceBox> _faceBoxes = [];
   AnimationController? _faceAnim;
   int _lastTickMs = 0;
+  // Detected horizon for the None-mode test (preview space, full-screen
+  // normalised): roll angle + an anchor point on the line + a fade opacity.
+  // Null when fully faded out. A ValueNotifier so only the overlay repaints.
+  // The 60fps face ticker eases the *displayed* values toward the confident
+  // *target* (gated below) — smooth motion + fade independent of detection rate.
+  final ValueNotifier<
+    ({double angle, double ax, double ay, double op, double aligned})?
+  >
+  _horizon = ValueNotifier(null);
+  int _horizonSeenMs = 0;
+  // Horizon message-bubble level: 0 = guide only, 1 = detected (not level),
+  // 2 = level on the guide. Drives the shared top hint bubble + the haptic.
+  final ValueNotifier<int> _hzLevel = ValueNotifier(0);
+  int _hzPrevLevel = 0;
+  // Confident target (set only after the detection is strong AND stable).
+  double? _hzTAngle, _hzTAx, _hzTAy;
+  bool _hzActive = false; // a horizon is currently believed present
+  // Displayed (eased) state + whether it's been seeded since the last appearance.
+  double _hzDAngle = 0, _hzDAx = 0.5, _hzDAy = 0.5, _hzDOp = 0;
+  bool _hzInit = false;
+  // Temporal stability tracking: last raw detection + consecutive-consistent count.
+  double? _hzRawA, _hzRawX, _hzRawY;
+  int _hzStable = 0;
 
   // Rule-of-Thirds power points (normalised) — intersections of the 1/3 lines.
   static const List<List<double>> _powerPoints = [
-    [1 / 3, 1 / 3], [2 / 3, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 2 / 3],
+    [1 / 3, 1 / 3],
+    [2 / 3, 1 / 3],
+    [1 / 3, 2 / 3],
+    [2 / 3, 2 / 3],
   ];
   // Phi-Grid power points — intersections of the golden-section lines at
   // 1/φ² ≈ 0.382 and 1/φ ≈ 0.618.
   static const double _phiLo = 0.3819660113;
   static const double _phiHi = 0.6180339887;
   static const List<List<double>> _phiPoints = [
-    [_phiLo, _phiLo], [_phiHi, _phiLo], [_phiLo, _phiHi], [_phiHi, _phiHi],
+    [_phiLo, _phiLo],
+    [_phiHi, _phiLo],
+    [_phiLo, _phiHi],
+    [_phiHi, _phiHi],
   ];
   // Forgiveness margin when testing whether a power point falls inside a box
   // (fraction of the box half-size). 0.15 = box bounds + 15%. → "Almost".
@@ -1077,6 +1304,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         return _powerPoints;
       case CompositionMode.goldenSection:
         return _phiPoints;
+      case CompositionMode.fibonacciSpiral:
+        // Single target: the spiral's eye (convergence point), as a band
+        // fraction so it matches the dot the painter draws.
+        if (_bandW <= 0 || _bandH <= 0) return null; // band not measured yet
+        final eye = _goldenSpiralEyePx(
+          Size(_bandW, _bandH),
+          _spiralTurns,
+          CompositionPainter._goldenSpiralFill,
+        );
+        return [
+          [eye.dx / _bandW, eye.dy / _bandH],
+        ];
       default:
         return null;
     }
@@ -1100,6 +1339,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// fade out. Does not touch displayed positions — the ticker animates those.
   void _updateFaceTargets(List<Map<String, dynamic>> fresh) {
     const double matchRadius = 0.22;
+    final int now = DateTime.now().millisecondsSinceEpoch;
     // Only the boxes that exist *now* are match candidates; newly-added boxes
     // (created below) must not be matched against in the same pass. Capture the
     // count up-front so growing _faceBoxes can't push an index past `used`.
@@ -1119,17 +1359,26 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       for (var i = 0; i < existing; i++) {
         if (used[i]) continue;
         final b = _faceBoxes[i];
-        final dist = math.sqrt((cx - b.cx) * (cx - b.cx) + (cy - b.cy) * (cy - b.cy));
-        if (dist < bestDist) { bestDist = dist; best = i; }
+        final dist = math.sqrt(
+          (cx - b.cx) * (cx - b.cx) + (cy - b.cy) * (cy - b.cy),
+        );
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = i;
+        }
       }
 
       if (best >= 0) {
         used[best] = true;
         final b = _faceBoxes[best];
-        b.tcx = cx; b.tcy = cy; b.tw = w; b.th = h;
+        b.tcx = cx;
+        b.tcy = cy;
+        b.tw = w;
+        b.th = h;
         b.matched = true;
+        b.lastSeenMs = now;
       } else {
-        _faceBoxes.add(_FaceBox(cx, cy, w, h)); // new — fades/scales in
+        _faceBoxes.add(_FaceBox(cx, cy, w, h, now)); // new — fades/scales in
       }
     }
 
@@ -1155,7 +1404,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           // Inside the box (+margin) → counts as "almost".
           if (dx.abs() <= mx && dy.abs() <= my) {
             final d = dx * dx + dy * dy;
-            if (d < bestD) { bestD = d; near = i; }
+            if (d < bestD) {
+              bestD = d;
+              near = i;
+            }
           }
         }
         // "Perfect" = the chosen point sits near the box centre (within
@@ -1198,25 +1450,32 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _lastTickMs = now;
 
     // Time-constant easing (frame-rate independent). Smaller tau = snappier.
-    final posK = 1 - math.exp(-dt / 0.06);   // position glide
-    final opK  = 1 - math.exp(-dt / 0.08);   // opacity/appear fade
+    final posK = 1 - math.exp(-dt / 0.06); // position glide
+    final opK = 1 - math.exp(-dt / 0.08); // opacity/appear fade
 
+    // Grace window: a box that briefly stops matching (ML Kit drops the odd
+    // frame) holds its position + opacity rather than flickering out. It only
+    // fades once it's been unseen for longer than this.
+    const int graceMs = 300;
     _faceBoxes.removeWhere((b) => !b.matched && b.opacity < 0.02);
     final pTarget = [0.0, 0.0, 0.0, 0.0];
     for (final b in _faceBoxes) {
       b.cx += (b.tcx - b.cx) * posK;
       b.cy += (b.tcy - b.cy) * posK;
-      b.w  += (b.tw  - b.w)  * posK;
-      b.h  += (b.th  - b.h)  * posK;
-      final targetOpacity = b.matched ? 1.0 : 0.0;
+      b.w += (b.tw - b.w) * posK;
+      b.h += (b.th - b.h) * posK;
+      final bool alive = b.matched || (now - b.lastSeenMs) <= graceMs;
+      final targetOpacity = alive ? 1.0 : 0.0;
       b.opacity += (targetOpacity - b.opacity) * opK;
       b.appear += (1.0 - b.appear) * opK;
       // Alignment glow: full for "perfect", softer for "almost" (in box only).
       final alignTarget = b.perfect ? 1.0 : (b.intersection >= 0 ? 0.45 : 0.0);
       b.alignGlow += (alignTarget - b.alignGlow) * opK;
       if (b.intersection >= 0 && b.opacity > 0.3) {
-        pTarget[b.intersection] =
-            math.max(pTarget[b.intersection], b.opacity * (b.perfect ? 1.0 : 0.5));
+        pTarget[b.intersection] = math.max(
+          pTarget[b.intersection],
+          b.opacity * (b.perfect ? 1.0 : 0.5),
+        );
       }
     }
     // Ease each power point's glow toward whether a box is on it.
@@ -1224,19 +1483,122 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       _powerGlow[i] += (pTarget[i] - _powerGlow[i]) * opK;
     }
 
+    // ── Horizon easing (None-mode test) ───────────────────────────────────────
+    // Ease the displayed line toward the confident target and fade it in/out, so
+    // motion is smooth regardless of the (slower, occasionally jumpy) detector.
+    if (_compositionMode != CompositionMode.horizonGrid) _hzActive = false;
+    if (_hzTAngle != null) {
+      if (!_hzInit) {
+        // Seed at the target on (re)appear → fades IN in place, no slide-in.
+        _hzDAngle = _hzTAngle!;
+        _hzDAx = _hzTAx!;
+        _hzDAy = _hzTAy!;
+        _hzInit = true;
+      } else {
+        _hzDAngle = _lerpAngle(_hzDAngle, _hzTAngle!, posK);
+        _hzDAx += (_hzTAx! - _hzDAx) * posK;
+        _hzDAy += (_hzTAy! - _hzDAy) * posK;
+      }
+    }
+    _hzDOp += ((_hzActive ? 1.0 : 0.0) - _hzDOp) * opK;
+
+    // Alignment of the displayed line vs the golden guide: near it (proximity)
+    // AND level (small angle). Same value feeds the guide-glow, the message
+    // bubble level, and the haptic — one source of truth.
+    final double guideYn =
+        _topInsetFrac +
+        (1 - _topInsetFrac - _bottomInsetFrac) *
+            CompositionPainter._horizonGuideRatio;
+    // Generous tolerances: "Level" should fire when the line is NEAR the guide
+    // and roughly level, not pixel-perfect. ~8% of the band off + ~5° of tilt
+    // still reads as aligned.
+    final double prox = (1 - (_hzDAy - guideYn).abs() / 0.08).clamp(0.0, 1.0);
+    final double levelness = (1 - _hzDAngle.abs() / 0.09).clamp(0.0, 1.0);
+    final double aligned = prox * levelness * _hzDOp.clamp(0.0, 1.0);
+
+    if (_hzInit && (_hzActive || _hzDOp > 0.01)) {
+      _horizon.value = (
+        angle: _hzDAngle,
+        ax: _hzDAx,
+        ay: _hzDAy,
+        op: _hzDOp.clamp(0.0, 1.0),
+        aligned: aligned,
+      );
+    } else {
+      if (_horizon.value != null) _horizon.value = null;
+      if (!_hzActive) _hzInit = false; // next appearance seeds fresh
+    }
+
+    // Message-bubble level + haptic on the rising edge into "level". Lenient
+    // entry (0.4) with hysteresis (hold until 0.25) so it locks "Level" while
+    // near the guide without chattering — or spamming the haptic.
+    if (_compositionMode == CompositionMode.horizonGrid) {
+      final int lvl = _hzDOp <= 0.4
+          ? 0
+          : (_hzPrevLevel == 2
+                ? (aligned > 0.25 ? 2 : 1)
+                : (aligned > 0.4 ? 2 : 1));
+      if (lvl != _hzLevel.value) _hzLevel.value = lvl;
+      if (lvl == 2 && _hzPrevLevel != 2) {
+        _haptic('alignmentPing', intensity: 1.0);
+      }
+      _hzPrevLevel = lvl;
+    } else if (_hzLevel.value != 0) {
+      _hzLevel.value = 0;
+      _hzPrevLevel = 0;
+    }
+
     // Keep ticking while anything is visible or any glow is still fading.
     final glowActive = _powerGlow.any((g) => g > 0.02);
-    if (_faceBoxes.isEmpty && !glowActive) _faceAnim?.stop();
+    final hzVisible = _hzActive || _hzDOp > 0.02;
+    if (_faceBoxes.isEmpty && !glowActive && !hzVisible) _faceAnim?.stop();
   }
 
-  Future<void> _selectFromGallery() async {
+  /// Start the shared 60fps ticker if it isn't already running (the horizon
+  /// overlay needs it even when there are no face boxes to animate).
+  void _ensureHorizonTicking() {
+    if (!(_faceAnim?.isAnimating ?? false)) {
+      _lastTickMs = DateTime.now().millisecondsSinceEpoch;
+      _faceAnim?.repeat();
+    }
+  }
+
+  /// Opens the in-app gallery (a glassy grid → tap into the full-screen pager).
+  /// Detection is paused while it's on top, then resumed on return.
+  Future<void> _openGalleryViewer() async {
     try {
-      // Refresh thumbnail when tapping gallery button
-      await _loadLatestThumbnail();
-      // Also open gallery picker
-      await picker.pickMedia();
+      if (!await _ensurePhotoPermission()) return;
+      final albums = await PhotoManager.getAssetPathList(
+        type: RequestType.common, // photos + videos
+        hasAll: true,
+        onlyAll: true,
+      );
+      if (albums.isEmpty) return;
+      final album = albums.first;
+      final count = await album.assetCountAsync;
+      if (count == 0 || !mounted) return;
+
+      _stopImageStream(); // no need to detect while the gallery covers the screen
+      await Navigator.of(context).push(
+        PageRouteBuilder(
+          // Slide up like a sheet; pull-down-to-dismiss slides it back down.
+          transitionDuration: const Duration(milliseconds: 320),
+          reverseTransitionDuration: const Duration(milliseconds: 260),
+          pageBuilder: (_, _, _) => GalleryGridPage(album: album, count: count),
+          transitionsBuilder: (_, anim, _, child) => SlideTransition(
+            position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
+                .animate(
+                  CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
+                ),
+            child: child,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      await _startImageStream();
+      _loadLatestThumbnail(); // refresh in case anything changed
     } catch (e) {
-      debugPrint('Error picking from gallery: $e');
+      debugPrint('Error opening gallery: $e');
     }
   }
 
@@ -1311,18 +1673,22 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// epsilon so it rebuilds at most once after the panels settle.
   void _measurePanels() {
     if (!mounted) return;
-    final topBox = _topPanelKey.currentContext?.findRenderObject() as RenderBox?;
+    final topBox =
+        _topPanelKey.currentContext?.findRenderObject() as RenderBox?;
     final botBox =
         _bottomPanelKey.currentContext?.findRenderObject() as RenderBox?;
     final double top = topBox?.size.height ?? 0;
     final double bot = botBox?.size.height ?? 0;
     if ((top - _topInset).abs() > 0.5 || (bot - _bottomInset).abs() > 0.5) {
-      final double screenH = MediaQuery.of(context).size.height;
+      final Size screen = MediaQuery.of(context).size;
+      final double screenH = screen.height;
       setState(() {
         _topInset = top;
         _bottomInset = bot;
         _topInsetFrac = screenH > 0 ? top / screenH : 0;
         _bottomInsetFrac = screenH > 0 ? bot / screenH : 0;
+        _bandW = screen.width;
+        _bandH = screenH - top - bot;
       });
     }
   }
@@ -1339,6 +1705,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             child: LayoutBuilder(
               builder: (context, constraints) => GestureDetector(
                 onTapUp: (d) => _onTapToFocus(d, constraints),
+                onLongPressStart: (d) =>
+                    _focusAt(d.localPosition, constraints, locked: true),
                 onScaleStart: _onScaleStart,
                 onScaleUpdate: _onScaleUpdate,
                 onScaleEnd: _onScaleEnd,
@@ -1347,58 +1715,70 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             ),
           ),
 
-          // Focus ring — cinema corner-bracket with AF/AE lock label
+          // Focus ring — corner brackets + (when locked) an AE/AF badge.
           if (_focusPoint != null)
-            AnimatedBuilder(
-              animation: _focusRingController!,
-              builder: (context, _) {
-                const double size = 72.0;
-                const Color gold = Color(0xFFE5C158);
-                return Positioned(
-                  left: _focusPoint!.dx - size / 2,
-                  top: _focusPoint!.dy - size / 2 - 18,
-                  child: IgnorePointer(
-                    child: Opacity(
-                      opacity: _focusRingOpacity.value,
-                      child: Transform.scale(
-                        scale: _focusRingScale.value,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            SizedBox(
-                              width: size,
-                              height: size,
-                              child: CustomPaint(
-                                painter: _FocusBracketPainter(gold: gold),
+            Positioned(
+              left: _focusPoint!.dx - 36,
+              top: _focusPoint!.dy - 36,
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: _focusShown ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 240),
+                  child: AnimatedBuilder(
+                    animation: _focusRingController!,
+                    builder: (context, _) => Transform.scale(
+                      scale: _focusRingScale.value,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(
+                            width: 72,
+                            height: 72,
+                            child: CustomPaint(
+                              painter: _FocusBracketPainter(
+                                gold: Color(0xFFE5C158),
                               ),
                             ),
+                          ),
+                          if (_aeAfLocked) ...[
                             const SizedBox(height: 5),
-                            Text(
-                              'AF · AE LOCK',
+                            const Text(
+                              'AE/AF LOCK',
                               style: TextStyle(
-                                color: gold,
+                                color: Color(0xFFE5C158),
                                 fontSize: 8.5,
-                                fontWeight: FontWeight.w300,
+                                fontWeight: FontWeight.w400,
                                 letterSpacing: 2.0,
                               ),
                             ),
-                            const SizedBox(height: 2),
-                            Text(
-                              'φ  1.618',
-                              style: TextStyle(
-                                color: gold.withValues(alpha: 0.55),
-                                fontSize: 7.5,
-                                fontWeight: FontWeight.w300,
-                                letterSpacing: 1.5,
-                              ),
-                            ),
                           ],
-                        ),
+                        ],
                       ),
                     ),
                   ),
-                );
-              },
+                ),
+              ),
+            ),
+
+          // Exposure slider — appears to the right of the focus ring.
+          if (_focusPoint != null && _maxExposure > _minExposure)
+            Positioned(
+              left: (_focusPoint!.dx + 36 + 12).clamp(
+                8.0,
+                MediaQuery.of(context).size.width - 44,
+              ),
+              top: (_focusPoint!.dy - 52).clamp(
+                _topInset + 8,
+                MediaQuery.of(context).size.height - 220,
+              ),
+              child: IgnorePointer(
+                ignoring: !_focusShown,
+                child: AnimatedOpacity(
+                  opacity: _focusShown ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 240),
+                  child: _buildExposureSlider(104),
+                ),
+              ),
             ),
 
           // Composition guide overlay — grid + power points + detection boxes.
@@ -1406,18 +1786,24 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           // preview and panels, so only this layer re-rasterises each frame.
           Positioned.fill(
             child: IgnorePointer(
-              child: RepaintBoundary(
-                child: CustomPaint(
-                  painter: CompositionPainter(
-                    _compositionMode,
-                    glowSegs: _glowSegMap.values.toList(),
-                    faceBoxes: _faceBoxes,
-                    powerGlow: _powerGlow,
-                    topInset: _topInset,
-                    bottomInset: _bottomInset,
-                    spiralTurns: _spiralTurns,
-                    aspect: _aspectRatios[_aspectIndex].ratio,
-                    repaint: _faceAnim,
+              child: AnimatedOpacity(
+                opacity: _gridVisible ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOut,
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: CompositionPainter(
+                      _compositionMode,
+                      glowSegs: _glowSegMap.values.toList(),
+                      faceBoxes: _faceBoxes,
+                      powerGlow: _powerGlow,
+                      topInset: _topInset,
+                      bottomInset: _bottomInset,
+                      spiralTurns: _spiralTurns,
+                      aspect: _aspectRatios[_aspectIndex].ratio,
+                      horizon: _horizon,
+                      repaint: Listenable.merge([_faceAnim, _horizon]),
+                    ),
                   ),
                 ),
               ),
@@ -1432,6 +1818,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             right: 0,
             child: _buildTopSettingsPanel(),
           ),
+
+          // Grid on/off toggle — dims the overlay for a clean frame.
+          if (_isInitialized && !_isRecording)
+            Positioned(
+              bottom: (_bottomInset > 0 ? _bottomInset : 160) + 14,
+              right: 16,
+              child: _buildGridToggle(),
+            ),
 
           // Zoom level indicator — thin right-edge tag
           if (_currentZoom > _minZoom + 0.05)
@@ -1527,7 +1921,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                       },
                     ),
                   ),
-                  if (MediaQuery.of(context).orientation == Orientation.portrait) ...[
+                  if (MediaQuery.of(context).orientation ==
+                      Orientation.portrait) ...[
                     const SizedBox(height: 2),
                     if (_isInitialized) _buildZoomMeter(),
                     const SizedBox(height: 10),
@@ -1540,7 +1935,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     children: [
                       // Gallery button (left, centred with capture button)
                       GestureDetector(
-                        onTap: _isRecording ? null : _selectFromGallery,
+                        onTap: _isRecording ? null : _openGalleryViewer,
                         child: Container(
                           width: 52,
                           height: 52,
@@ -1560,11 +1955,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                     fit: BoxFit.cover,
                                   ),
                                 )
-                              : _rotated(Icon(
-                                  Icons.photo_library_outlined,
-                                  color: Colors.white.withValues(alpha: 0.55),
-                                  size: 24,
-                                )),
+                              : _rotated(
+                                  Icon(
+                                    Icons.photo_library_outlined,
+                                    color: Colors.white.withValues(alpha: 0.55),
+                                    size: 24,
+                                  ),
+                                ),
                         ),
                       ),
 
@@ -1593,11 +1990,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                   builder: (_, _) {
                     final pulse = _glowAnimation?.value ?? 1.0;
                     final e = _recordingStopwatch.elapsed;
-                    final m = e.inMinutes.remainder(60).toString().padLeft(2, '0');
-                    final s = e.inSeconds.remainder(60).toString().padLeft(2, '0');
+                    final m = e.inMinutes
+                        .remainder(60)
+                        .toString()
+                        .padLeft(2, '0');
+                    final s = e.inSeconds
+                        .remainder(60)
+                        .toString()
+                        .padLeft(2, '0');
                     return Container(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 7,
+                        horizontal: 14,
+                        vertical: 7,
                       ),
                       decoration: BoxDecoration(
                         color: Colors.black.withValues(alpha: 0.55),
@@ -1620,9 +2024,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                               shape: BoxShape.circle,
                               boxShadow: [
                                 BoxShadow(
-                                  color: const Color(0xFFFF3B30).withValues(
-                                    alpha: 0.65 * pulse,
-                                  ),
+                                  color: const Color(
+                                    0xFFFF3B30,
+                                  ).withValues(alpha: 0.65 * pulse),
                                   blurRadius: 7,
                                   spreadRadius: 1,
                                 ),
@@ -1647,64 +2051,63 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               ),
             ),
 
-          // Bounce animation from capture button to gallery
+          // Capture animation: the shot flies from centre-frame straight into
+          // the gallery thumbnail (bottom-left), shrinking and fading away.
           if (_showBounceAnimation && _animatingMedia != null)
             AnimatedBuilder(
-              animation: _bounceAnimation!,
+              animation: _bounceController!,
               builder: (context, child) {
-                final screenWidth = MediaQuery.of(context).size.width;
+                final size = MediaQuery.of(context).size;
+                final fly = Curves.easeInOutCubic.transform(
+                  _bounceController!.value,
+                );
 
-                // Start position (capture button center bottom)
-                final startLeft =
-                    (screenWidth / 2) - 35; // Center - half of button size
+                // Start card (centred, portrait) → gallery-thumb target.
+                final startW = size.width * 0.6;
+                final startH = startW * 4 / 3;
+                const endW = 50.0, endH = 50.0;
+                final startCx = size.width / 2;
+                final startCy = size.height * 0.5; // distance from bottom
+                const endCx = 46.0, endCy = 64.0; // ~gallery-thumb centre
 
-                // End position (gallery button left bottom)
-                const endBottom = 40.0;
-                const endLeft = 20.0;
+                final w = ui.lerpDouble(startW, endW, fly)!;
+                final h = ui.lerpDouble(startH, endH, fly)!;
+                final cx = ui.lerpDouble(startCx, endCx, fly)!;
+                final cy = ui.lerpDouble(startCy, endCy, fly)!;
+                final radius = ui.lerpDouble(20, 8, fly)!;
 
-                // Interpolate positions
-                final currentLeft =
-                    startLeft + (endLeft - startLeft) * _bounceAnimation!.value;
-                final currentBottom = endBottom;
-
-                // Scale animation - starts at button size, shrinks to gallery size
-                final scale =
-                    1.4 -
-                    (0.7 * _bounceAnimation!.value); // 70px to 50px equivalent
-
-                // Opacity fade in the beginning
-                final opacity = _bounceAnimation!.value < 0.1
-                    ? _bounceAnimation!.value * 10
-                    : 1.0;
+                // Quick pop-in, then dissolve into the thumbnail at the end.
+                final appear = (_bounceController!.value / 0.12).clamp(0.0, 1.0);
+                final tail = ((fly - 0.82) / 0.18).clamp(0.0, 1.0);
+                final opacity = (Curves.easeOut.transform(appear) * (1 - tail))
+                    .clamp(0.0, 1.0);
 
                 return Positioned(
-                  left: currentLeft,
-                  bottom: currentBottom,
+                  left: cx - w / 2,
+                  bottom: cy - h / 2,
                   child: Opacity(
                     opacity: opacity,
-                    child: Transform.scale(
-                      scale: scale,
-                      child: Container(
-                        width: 50,
-                        height: 50,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.white, width: 2),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.5),
-                              blurRadius: 10,
-                              spreadRadius: 2,
-                            ),
-                          ],
+                    child: Container(
+                      width: w,
+                      height: h,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(radius),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.9),
+                          width: 2,
                         ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: Image.file(
-                            _animatingMedia!,
-                            fit: BoxFit.cover,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.45),
+                            blurRadius: 18,
+                            spreadRadius: 1,
+                            offset: const Offset(0, 6),
                           ),
-                        ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(radius - 2),
+                        child: Image.file(_animatingMedia!, fit: BoxFit.cover),
                       ),
                     ),
                   ),
@@ -1722,10 +2125,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               child: Center(child: _buildVerticalZoomMeter()),
             ),
 
-          // Alignment instruction / "Perfect" hint — top centre, below panel.
-          // Shown for the alignment modes; suppressed while the tip bubble shows
-          // (they share the same spot).
-          if (_modePowerPoints != null && !_isRecording && !_showTip)
+          // Alignment / horizon hint — top centre, below panel. Shown for the
+          // alignment modes (power points) and Horizon Grid; suppressed while the
+          // tip bubble shows (they share the same spot).
+          if ((_modePowerPoints != null ||
+                  _compositionMode == CompositionMode.horizonGrid) &&
+              !_isRecording &&
+              !_showTip &&
+              _gridVisible)
             Positioned(
               top: MediaQuery.of(context).padding.top + 92,
               left: 0,
@@ -1734,7 +2141,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 child: Center(
                   child: RepaintBoundary(
                     child: ValueListenableBuilder<int>(
-                      valueListenable: _alignLevel,
+                      valueListenable:
+                          _compositionMode == CompositionMode.horizonGrid
+                          ? _hzLevel
+                          : _alignLevel,
                       builder: (_, level, __) => _buildCompositionHint(level),
                     ),
                   ),
@@ -1816,7 +2226,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         transitionBuilder: (child, anim) => SlideTransition(
           position: Tween<Offset>(
             // Travels > full height so it fully clears the panel edge.
-            begin: const Offset(0, -1.4), end: Offset.zero,
+            begin: const Offset(0, -1.4),
+            end: Offset.zero,
           ).animate(anim),
           child: ScaleTransition(
             scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
@@ -1853,7 +2264,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                       filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 15, vertical: 10,
+                          horizontal: 15,
+                          vertical: 10,
                         ),
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(20),
@@ -1875,8 +2287,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.auto_awesome_rounded,
-                                color: gold, size: 14),
+                            const Icon(
+                              Icons.auto_awesome_rounded,
+                              color: gold,
+                              size: 14,
+                            ),
                             const SizedBox(width: 8),
                             Flexible(
                               child: Text(
@@ -1926,118 +2341,136 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
-  /// "Perfect" — ambient, gently breathing golden glow.
-  Widget _perfectBadge() {
+  /// Unified glassy message pill — the shared style for the on-screen alignment
+  /// / horizon hint bubbles. [emphasis] tints text + border gold (the "Perfect"/
+  /// "Level" state) and [breathe] adds a soft pulsing gold glow.
+  ///
+  /// NOTE: deliberately NO BackdropFilter. These pills are shown persistently
+  /// over the live camera, so a real blur would re-rasterise every frame and
+  /// crater FPS. A white→dark gradient fakes the frosted look cheaply.
+  Widget _glassPill({
+    required Key key,
+    required IconData icon,
+    required String text,
+    bool emphasis = false,
+    bool breathe = false,
+  }) {
     const gold = Color(0xFFE5C158);
-    return AnimatedBuilder(
-      key: const ValueKey('perfect'),
-      animation: _faceAnim!,
-      builder: (context, _) {
-        // Slow breathe. Only ALPHA animates — blur radius is constant so the
-        // glow isn't re-rasterised every frame (cheap).
-        final t = DateTime.now().millisecondsSinceEpoch / 900.0;
-        final breathe = 0.5 + 0.5 * math.sin(t);
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 7),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.28),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: gold.withValues(alpha: 0.45 + 0.40 * breathe),
-              width: 1.0,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: gold.withValues(alpha: 0.12 + 0.22 * breathe),
-                blurRadius: 12,
-                spreadRadius: 0.5,
-              ),
+    Widget build(double pulse) {
+      final Color textColor = emphasis
+          ? gold
+          : Colors.white.withValues(alpha: 0.92);
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.white.withValues(alpha: 0.18),
+              Colors.black.withValues(alpha: 0.52),
             ],
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.check_circle_rounded,
-                  color: gold.withValues(alpha: 0.75 + 0.25 * breathe), size: 14),
-              const SizedBox(width: 6),
-              const Text(
-                'Perfect',
+          border: Border.all(
+            color: emphasis
+                ? gold.withValues(alpha: 0.45 + 0.40 * pulse)
+                : Colors.white.withValues(alpha: 0.28),
+            width: emphasis ? 1.0 : 0.8,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: emphasis
+                  ? gold.withValues(alpha: 0.12 + 0.22 * pulse)
+                  : Colors.black.withValues(alpha: 0.30),
+              blurRadius: emphasis ? 14 : 12,
+              spreadRadius: emphasis ? 0.5 : 0,
+              offset: emphasis ? Offset.zero : const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              color: emphasis ? gold.withValues(alpha: 0.75 + 0.25 * pulse) : gold,
+              size: 14,
+            ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                text,
+                textAlign: TextAlign.center,
                 style: TextStyle(
-                  color: gold,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w500,
-                  letterSpacing: 1.0,
+                  color: textColor,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w400,
+                  letterSpacing: 0.2,
+                  height: 1.25,
                 ),
               ),
-            ],
-          ),
-        );
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (!breathe) return KeyedSubtree(key: key, child: build(0));
+    // Soft breathe for the "Perfect"/"Level" state. Only alpha animates.
+    return AnimatedBuilder(
+      key: key,
+      animation: _faceAnim!,
+      builder: (context, _) {
+        final t = DateTime.now().millisecondsSinceEpoch / 900.0;
+        return build(0.5 + 0.5 * math.sin(t));
       },
     );
   }
 
-  /// "Almost" — calm, static amber pill (no breathing) to read as lower energy.
-  Widget _almostBadge() {
-    const amber = Color(0xFFE5C158);
-    return Container(
-      key: const ValueKey('almost'),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.30),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: amber.withValues(alpha: 0.40), width: 0.8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.adjust_rounded, color: amber.withValues(alpha: 0.70), size: 14),
-          const SizedBox(width: 6),
-          Text(
-            'Almost — centre it',
-            style: TextStyle(
-              color: amber.withValues(alpha: 0.92),
-              fontSize: 12,
-              fontWeight: FontWeight.w400,
-              letterSpacing: 0.6,
-            ),
-          ),
-        ],
-      ),
+  /// "Perfect"/"Level" — emphasised, gently breathing golden pill.
+  Widget _perfectBadge() {
+    final bool hz = _compositionMode == CompositionMode.horizonGrid;
+    return _glassPill(
+      key: const ValueKey('hint-perfect'),
+      icon: Icons.check_circle_rounded,
+      text: hz ? 'Level' : 'Perfect',
+      emphasis: true,
+      breathe: true,
     );
   }
 
-  /// Default instruction pill (translucent). Wording adapts to the mode's
-  /// target: grid intersections, the spiral's eye, or a single centre marker.
+  /// "Almost" — calm pill nudging the subject/horizon into place.
+  Widget _almostBadge() {
+    final bool hz = _compositionMode == CompositionMode.horizonGrid;
+    return _glassPill(
+      key: const ValueKey('hint-almost'),
+      icon: Icons.adjust_rounded,
+      text: hz ? 'Almost — level it out' : 'Almost — centre it',
+    );
+  }
+
+  /// Default instruction pill. Wording adapts to the mode's target: grid
+  /// intersections, the spiral's eye, or the horizon guide line.
   Widget _instructionPill() {
-    const gold = Color(0xFFE5C158);
-    return Container(
-      key: const ValueKey('hint'),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.30),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.08), width: 0.5),
+    final (IconData, String) content = switch (_compositionMode) {
+      CompositionMode.fibonacciSpiral => (
+        Icons.flare_rounded,
+        "Place your subject on the spiral's eye",
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.grid_3x3_rounded,
-            color: gold.withValues(alpha: 0.75),
-            size: 14,
-          ),
-          const SizedBox(width: 7),
-          Text(
-            'Place your target on the intersection points!',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.78),
-              fontSize: 11.5,
-              fontWeight: FontWeight.w300,
-              letterSpacing: 0.4,
-            ),
-          ),
-        ],
+      CompositionMode.horizonGrid => (
+        Icons.straighten_rounded,
+        'Line your horizon up with the gold line',
       ),
+      _ => (
+        Icons.grid_3x3_rounded,
+        'Place your subject on an intersection',
+      ),
+    };
+    return _glassPill(
+      key: const ValueKey('hint-instruction'),
+      icon: content.$1,
+      text: content.$2,
     );
   }
 
@@ -2061,7 +2494,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     return GestureDetector(
       onTap: () {
         HapticFeedback.selectionClick();
-        setState(() => _aspectIndex = (_aspectIndex + 1) % _aspectRatios.length);
+        setState(
+          () => _aspectIndex = (_aspectIndex + 1) % _aspectRatios.length,
+        );
       },
       child: Container(
         width: 52,
@@ -2075,15 +2510,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ),
         ),
         child: Center(
-          child: _rotated(Text(
-            _aspectRatios[_aspectIndex].label,
-            style: const TextStyle(
-              color: Color(0xFFE5C158),
-              fontSize: 13,
-              fontWeight: FontWeight.w400,
-              letterSpacing: 0.4,
+          child: _rotated(
+            Text(
+              _aspectRatios[_aspectIndex].label,
+              style: const TextStyle(
+                color: Color(0xFFE5C158),
+                fontSize: 13,
+                fontWeight: FontWeight.w400,
+                letterSpacing: 0.4,
+              ),
             ),
-          )),
+          ),
         ),
       ),
     );
@@ -2109,11 +2546,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             width: 1.0,
           ),
         ),
-        child: _rotated(const Icon(
-          Icons.rotate_90_degrees_cw_rounded,
-          color: Color(0xFFE5C158),
-          size: 24,
-        )),
+        child: _rotated(
+          const Icon(
+            Icons.rotate_90_degrees_cw_rounded,
+            color: Color(0xFFE5C158),
+            size: 24,
+          ),
+        ),
       ),
     );
   }
@@ -2274,6 +2713,102 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
+  /// Frosted-glass toggle that dims the composition overlay for a clean frame
+  /// (gold + lit when shown, muted with a struck-through grid when hidden).
+  Widget _buildGridToggle() {
+    const gold = Color(0xFFE5C158);
+    final on = _gridVisible;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() => _gridVisible = !_gridVisible);
+      },
+      child: ClipOval(
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.black.withValues(alpha: on ? 0.26 : 0.40),
+              border: Border.all(
+                color: on
+                    ? gold.withValues(alpha: 0.65)
+                    : Colors.white.withValues(alpha: 0.20),
+                width: on ? 1.0 : 0.8,
+              ),
+            ),
+            child: Icon(
+              on ? Icons.grid_3x3_rounded : Icons.grid_off,
+              color: on ? gold : Colors.white.withValues(alpha: 0.6),
+              size: 20,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Vertical exposure (EV) slider with a draggable sun knob. Drag up = brighter.
+  Widget _buildExposureSlider(double h) {
+    const gold = Color(0xFFE5C158);
+    final range = _maxExposure - _minExposure;
+    final frac = range > 0
+        ? ((_exposureOffset - _minExposure) / range).clamp(0.0, 1.0)
+        : 0.5;
+    const knob = 24.0;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragUpdate: (d) => _adjustExposure(-d.delta.dy, h),
+      child: SizedBox(
+        width: 34,
+        height: h,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Track.
+            Container(
+              width: 2,
+              height: h,
+              decoration: BoxDecoration(
+                color: gold.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(1),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black54, blurRadius: 3),
+                ],
+              ),
+            ),
+            // Sun knob.
+            Positioned(
+              bottom: frac * (h - knob),
+              child: Container(
+                width: knob,
+                height: knob,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.black.withValues(alpha: 0.35),
+                  boxShadow: [
+                    BoxShadow(
+                      color: gold.withValues(alpha: 0.4),
+                      blurRadius: 8,
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.wb_sunny_rounded,
+                  color: gold,
+                  size: 16,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildTopSettingsPanel() {
     const Color gold = Color(0xFFE5C158);
     return Container(
@@ -2401,31 +2936,35 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                   ),
                 ),
                 alignment: Alignment.center,
-                child: _rotated(Text(
-                  type.toUpperCase(),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Color(0xFFE5C158),
-                    fontSize: 9,
-                    fontWeight: FontWeight.w300,
-                    letterSpacing: 1.2,
+                child: _rotated(
+                  Text(
+                    type.toUpperCase(),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xFFE5C158),
+                      fontSize: 9,
+                      fontWeight: FontWeight.w300,
+                      letterSpacing: 1.2,
+                    ),
                   ),
-                )),
+                ),
               ),
             ),
           )
         : Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: _rotated(Text(
-              type.toUpperCase(),
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.32),
-                fontSize: 9,
-                fontWeight: FontWeight.w300,
-                letterSpacing: 1.2,
+            child: _rotated(
+              Text(
+                type.toUpperCase(),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.32),
+                  fontSize: 9,
+                  fontWeight: FontWeight.w300,
+                  letterSpacing: 1.2,
+                ),
               ),
-            )),
+            ),
           );
   }
 
@@ -2634,7 +3173,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Widget _buildVerticalZoomMeter() {
     const double pxPerUnit = 32.0;
     const double h = 220.0;
-    const double w = 68.0;   // radius of the semicircle = protrusion from screen edge
+    const double w =
+        68.0; // radius of the semicircle = protrusion from screen edge
     final double clampedZoom = _currentZoom.clamp(0.5, _zoomMax);
 
     return ClipPath(
@@ -2651,8 +3191,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           onVerticalDragUpdate: (d) {
             final delta = d.localPosition.dy - _meterDragStart;
             // Up (negative delta) → zoom in; down → zoom out.
-            final newZoom =
-                (_zoomAtDragStart - delta / pxPerUnit).clamp(0.5, _zoomMax);
+            final newZoom = (_zoomAtDragStart - delta / pxPerUnit).clamp(
+              0.5,
+              _zoomMax,
+            );
             _setCameraZoom(newZoom);
           },
           onVerticalDragEnd: (_) {},
@@ -2927,13 +3469,13 @@ class _SemicircleFromRightClipper extends CustomClipper<Path> {
     path.addArc(
       Rect.fromCenter(
         center: Offset(size.width, size.height / 2),
-        width: size.height,   // diameter = height → radius = height/2
+        width: size.height, // diameter = height → radius = height/2
         height: size.height,
       ),
-      -math.pi / 2,   // start at top  (12 o'clock)
-      -math.pi,       // sweep 180° CCW → through 9 o'clock to 6 o'clock
+      -math.pi / 2, // start at top  (12 o'clock)
+      -math.pi, // sweep 180° CCW → through 9 o'clock to 6 o'clock
     );
-    path.close();    // straight line back along the right edge
+    path.close(); // straight line back along the right edge
     return path;
   }
 
@@ -2961,17 +3503,23 @@ class _VerticalZoomMeterPainter extends CustomPainter {
   });
 
   static const Color _white = Color(0xFFFFFFFF);
-  static const Color _gold  = Color(0xFFE5C158);
+  static const Color _gold = Color(0xFFE5C158);
   static const List<double> _major = [0.5, 1, 2, 5, 10, 15, 20, 25];
 
   @override
   void paint(Canvas canvas, Size size) {
     final double cy = size.height / 2;
-    final double rx = size.width;   // right edge — tick origin
+    final double rx = size.width; // right edge — tick origin
 
     final double visibleUnits = (size.height / 2) / pxPerUnit;
-    final double lo = (zoom - visibleUnits - 1).floorToDouble().clamp(0.5, maxZoom);
-    final double hi = (zoom + visibleUnits + 1).ceilToDouble().clamp(0.5, maxZoom);
+    final double lo = (zoom - visibleUnits - 1).floorToDouble().clamp(
+      0.5,
+      maxZoom,
+    );
+    final double hi = (zoom + visibleUnits + 1).ceilToDouble().clamp(
+      0.5,
+      maxZoom,
+    );
 
     final Paint tickPaint = Paint()
       ..color = _white.withValues(alpha: 0.28)
@@ -2996,8 +3544,11 @@ class _VerticalZoomMeterPainter extends CustomPainter {
         continue;
       }
 
-      final bool isSwitchover = switchoverFactors.any((s) => (v - s).abs() < 0.08);
-      final bool isMajor = _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
+      final bool isSwitchover = switchoverFactors.any(
+        (s) => (v - s).abs() < 0.08,
+      );
+      final bool isMajor =
+          _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
       final double tickLen = isSwitchover ? 22.0 : (isMajor ? 16.0 : 7.0);
 
       final Paint p = isSwitchover
@@ -3010,7 +3561,9 @@ class _VerticalZoomMeterPainter extends CustomPainter {
       canvas.drawLine(Offset(rx - tickLen, y), Offset(rx, y), p);
 
       if (isMajor) {
-        final String label = v < 1 ? v.toStringAsFixed(1) : v.toInt().toString();
+        final String label = v < 1
+            ? v.toStringAsFixed(1)
+            : v.toInt().toString();
         tp.text = TextSpan(
           text: label,
           style: TextStyle(
@@ -3024,7 +3577,10 @@ class _VerticalZoomMeterPainter extends CustomPainter {
         );
         tp.layout();
         // Label sits just to the left of the tick, vertically centred on it
-        tp.paint(canvas, Offset(rx - tickLen - tp.width - 3, y - tp.height / 2));
+        tp.paint(
+          canvas,
+          Offset(rx - tickLen - tp.width - 3, y - tp.height / 2),
+        );
       }
 
       v = double.parse(((v * 10).round() / 10 + 0.1).toStringAsFixed(1));
@@ -3046,7 +3602,10 @@ class _VerticalZoomMeterPainter extends CustomPainter {
       ),
     );
     tp.layout();
-    tp.paint(canvas, Offset(rx - tickLen(zoom) - tp.width - 6, cy - tp.height / 2));
+    tp.paint(
+      canvas,
+      Offset(rx - tickLen(zoom) - tp.width - 6, cy - tp.height / 2),
+    );
   }
 
   double tickLen(double v) {
@@ -3066,6 +3625,7 @@ class _VerticalZoomMeterPainter extends CustomPainter {
 
 enum CompositionMode {
   none,
+  horizonGrid,
   ruleOfThirds,
   goldenSection,
   goldenTriangles,
@@ -3088,6 +3648,8 @@ enum CompositionMode {
     switch (this) {
       case CompositionMode.none:
         return 'None';
+      case CompositionMode.horizonGrid:
+        return 'Horizon Grid';
       case CompositionMode.ruleOfThirds:
         return 'Rule of Thirds';
       case CompositionMode.goldenSection:
@@ -3149,16 +3711,25 @@ class _FaceBox {
   double cx, cy, w, h;
   // Latest detection target.
   double tcx, tcy, tw, th;
-  double opacity;   // 0..1, fades in on appear / out on loss
-  double appear;    // 0..1, drives a subtle scale-in
-  bool matched;     // matched in the most recent detection cycle
-  int intersection; // index 0..3 of the rule-of-thirds power point it's on, -1 none
-  bool perfect;     // true when that point sits near the box centre
+  double opacity; // 0..1, fades in on appear / out on loss
+  double appear; // 0..1, drives a subtle scale-in
+  bool matched; // matched in the most recent detection cycle
+  int lastSeenMs; // last time it was matched — grace window before fading
+  int
+  intersection; // index 0..3 of the rule-of-thirds power point it's on, -1 none
+  bool perfect; // true when that point sits near the box centre
   double alignGlow; // 0..1 animated alignment-glow strength
-  _FaceBox(this.cx, this.cy, this.w, this.h)
-      : tcx = cx, tcy = cy, tw = w, th = h,
-        opacity = 0, appear = 0, matched = true,
-        intersection = -1, perfect = false, alignGlow = 0;
+  _FaceBox(this.cx, this.cy, this.w, this.h, this.lastSeenMs)
+    : tcx = cx,
+      tcy = cy,
+      tw = w,
+      th = h,
+      opacity = 0,
+      appear = 0,
+      matched = true,
+      intersection = -1,
+      perfect = false,
+      alignGlow = 0;
 }
 
 /// Lightweight on-screen FPS meter (testing). Counts vsync ticks via a Ticker
@@ -3202,8 +3773,8 @@ class _FpsOverlayState extends State<_FpsOverlay>
     final Color color = _fps >= 55
         ? const Color(0xFF4CD964) // green
         : _fps >= 30
-            ? const Color(0xFFE5C158) // gold
-            : const Color(0xFFFF3B30); // red
+        ? const Color(0xFFE5C158) // gold
+        : const Color(0xFFFF3B30); // red
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -3224,24 +3795,84 @@ class _FpsOverlayState extends State<_FpsOverlay>
   }
 }
 
+/// Pixel position (in [size] space) of the Fibonacci-spiral "eye" — the point
+/// the arcs converge to — for [turns] 90° clockwise rotations and [fill] frame
+/// fraction. Mirrors `_drawGoldenSpiral`'s geometry exactly so the alignment
+/// target and the dot the user sees always coincide. Shared by the painter and
+/// the alignment logic.
+Offset _goldenSpiralEyePx(Size size, int turns, double fill) {
+  const double phi = 1.6180339887;
+  final int t = turns & 3;
+  final bool swap = t.isOdd;
+  final double fw = swap ? size.height : size.width;
+  final double fh = swap ? size.width : size.height;
+  final double maxW = fw * fill, maxH = fh * fill;
+  double w = maxW, h = w / phi;
+  if (h > maxH) {
+    h = maxH;
+    w = h * phi;
+  }
+  Rect rect = Rect.fromLTWH((fw - w) / 2, (fh - h) / 2, w, h);
+  int dir = 0;
+  // Cut squares until the remaining rect collapses onto the eye (sub-pixel).
+  for (int i = 0; i < 20; i++) {
+    final double sq = math.min(rect.width, rect.height);
+    switch (dir) {
+      case 0:
+        rect = Rect.fromLTRB(rect.left, rect.top, rect.right - sq, rect.bottom);
+        break;
+      case 1:
+        rect = Rect.fromLTRB(rect.left, rect.top, rect.right, rect.bottom - sq);
+        break;
+      case 2:
+        rect = Rect.fromLTRB(rect.left + sq, rect.top, rect.right, rect.bottom);
+        break;
+      default:
+        rect = Rect.fromLTRB(rect.left, rect.top + sq, rect.right, rect.bottom);
+    }
+    dir = (dir + 1) % 4;
+  }
+  final Offset local = rect.center;
+  // Same transform the painter applies: about the band centre, rotate t·90°,
+  // with the (fw × fh) frame centred there.
+  final double a = t * (math.pi / 2);
+  final double dx = local.dx - fw / 2, dy = local.dy - fh / 2;
+  final double rx = dx * math.cos(a) - dy * math.sin(a);
+  final double ry = dx * math.sin(a) + dy * math.cos(a);
+  return Offset(size.width / 2 + rx, size.height / 2 + ry);
+}
+
 class CompositionPainter extends CustomPainter {
   final CompositionMode mode;
 
   /// Lines from the active grid that are currently edge-aligned.
   final List<_GlowSeg> glowSegs;
+
   /// Animated face indicators (drawn as corner brackets).
   final List<_FaceBox> faceBoxes;
+
   /// Per-power-point glow strength (0..1) for Rule-of-Thirds alignment.
   final List<double> powerGlow;
+
   /// Heights (px) of the top/bottom UI panels. The composition grid is drawn
   /// only within the camera-visible band `[topInset, height − bottomInset]`,
   /// so guide lines stop at the panel edges instead of sliding under them.
   final double topInset;
   final double bottomInset;
+
   /// Fibonacci-spiral orientation in 90° clockwise turns (0..3).
   final int spiralTurns;
+
   /// Selected crop ratio (W/H) for the Aspect Ratio mode.
   final double aspect;
+
+  /// Detected horizon (preview space): roll angle + an anchor point on the line
+  /// (full-screen normalised) + fade opacity + alignment-with-guide [0..1], or
+  /// null. Drawn in Horizon Grid mode.
+  final ValueNotifier<
+    ({double angle, double ax, double ay, double op, double aligned})?
+  >?
+  horizon;
   CompositionPainter(
     this.mode, {
     List<_GlowSeg>? glowSegs,
@@ -3251,17 +3882,26 @@ class CompositionPainter extends CustomPainter {
     this.bottomInset = 0,
     this.spiralTurns = 0,
     this.aspect = 1.0,
+    this.horizon,
     Listenable? repaint,
-  })  : glowSegs = glowSegs ?? const [],
-        faceBoxes = faceBoxes ?? const [],
-        powerGlow = powerGlow ?? const [0, 0, 0, 0],
-        super(repaint: repaint);
+  }) : glowSegs = glowSegs ?? const [],
+       faceBoxes = faceBoxes ?? const [],
+       powerGlow = powerGlow ?? const [0, 0, 0, 0],
+       super(repaint: repaint);
 
   static const Color _gold = Color(0xFFFFFFFF);
   static const double _sw = 0.8;
+
   /// Fraction of the frame the golden-spiral rectangle fills (1.0 = edge-to-
   /// edge like the reference; lower for more breathing room).
   static const double _goldenSpiralFill = 1.0;
+
+  /// Where the Horizon Grid's guide line sits, as a fraction of the camera band
+  /// from the top. 0.618 = the golden-section "low horizon" — the line falls in
+  /// the lower part of the frame, leaving ~62% sky above, which landscape
+  /// research finds the most balanced default (sky-forward, not centred/static).
+  /// Foreground-heavy scenes suit the upper golden line (0.382) instead.
+  static const double _horizonGuideRatio = 0.6180339887;
 
   /// Normal white hairline paint used by all draw methods.
   Paint _gp({StrokeCap cap = StrokeCap.butt}) => Paint()
@@ -3278,7 +3918,13 @@ class CompositionPainter extends CustomPainter {
   /// direction the arms extend from the corner [c]; [arm] is arm length, [r] the
   /// rounding radius at the corner.
   void _corner(
-    Canvas canvas, Offset c, int sx, int sy, double arm, double r, Paint p,
+    Canvas canvas,
+    Offset c,
+    int sx,
+    int sy,
+    double arm,
+    double r,
+    Paint p,
   ) {
     final path = Path()
       ..moveTo(c.dx + sx * arm, c.dy)
@@ -3307,6 +3953,10 @@ class CompositionPainter extends CustomPainter {
     }
     switch (mode) {
       case CompositionMode.none:
+        break;
+      case CompositionMode.horizonGrid:
+        // Guide line + detected horizon are drawn after restore() (full-screen,
+        // like the face boxes), so nothing to draw inside the banded clip.
         break;
       case CompositionMode.ruleOfThirds:
         _drawRuleOfThirds(canvas, grid);
@@ -3363,16 +4013,27 @@ class CompositionPainter extends CustomPainter {
 
     // ── Target points (glow when a subject lands on them) ──────────────────────
     // Rule of Thirds uses the 1/3 intersections; Phi Grid uses the golden-
-    // section intersections at 1/φ² ≈ 0.382 and 1/φ ≈ 0.618. Other modes have no
-    // alignment markers yet.
+    // section intersections at 1/φ² ≈ 0.382 and 1/φ ≈ 0.618; Fibonacci Spiral
+    // uses a single point — the spiral's eye.
     final List<List<double>>? pts = switch (mode) {
       CompositionMode.ruleOfThirds => const [
-          [1 / 3, 1 / 3], [2 / 3, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 2 / 3],
-        ],
+        [1 / 3, 1 / 3],
+        [2 / 3, 1 / 3],
+        [1 / 3, 2 / 3],
+        [2 / 3, 2 / 3],
+      ],
       CompositionMode.goldenSection => const [
-          [0.3819660113, 0.3819660113], [0.6180339887, 0.3819660113],
-          [0.3819660113, 0.6180339887], [0.6180339887, 0.6180339887],
-        ],
+        [0.3819660113, 0.3819660113],
+        [0.6180339887, 0.3819660113],
+        [0.3819660113, 0.6180339887],
+        [0.6180339887, 0.6180339887],
+      ],
+      CompositionMode.fibonacciSpiral => () {
+        final eye = _goldenSpiralEyePx(grid, spiralTurns, _goldenSpiralFill);
+        return [
+          [eye.dx / grid.width, eye.dy / grid.height],
+        ];
+      }(),
       _ => null,
     };
     if (pts != null) {
@@ -3382,18 +4043,21 @@ class CompositionPainter extends CustomPainter {
         final g = (i < powerGlow.length ? powerGlow[i] : 0.0).clamp(0.0, 1.0);
         // Faint dot always; blooms into a soft glowing ring when aligned.
         canvas.drawCircle(
-          c, 2.0,
+          c,
+          2.0,
           Paint()..color = gold.withValues(alpha: 0.25 + 0.55 * g),
         );
         if (g > 0.01) {
           canvas.drawCircle(
-            c, 6.0 + 10.0 * g,
+            c,
+            6.0 + 10.0 * g,
             Paint()
               ..color = gold.withValues(alpha: 0.45 * g)
               ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4.0 + 6.0 * g),
           );
           canvas.drawCircle(
-            c, 5.0 + 4.0 * g,
+            c,
+            5.0 + 4.0 * g,
             Paint()
               ..style = PaintingStyle.stroke
               ..strokeWidth = 1.5
@@ -3403,6 +4067,73 @@ class CompositionPainter extends CustomPainter {
       }
     }
     canvas.restore();
+
+    // ── Horizon Grid: a golden guide line marking the ideal horizon placement,
+    // plus the live detected horizon that glows gold as it lands on the guide. ──
+    if (mode == CompositionMode.horizonGrid) {
+      const gold = Color(0xFFE5C158);
+      final double bandSpan = size.height - topInset - bottomInset;
+      final double guideY = topInset + bandSpan * _horizonGuideRatio;
+      final hz = horizon?.value;
+      // Alignment with the guide is computed once in the ticker (single source
+      // of truth — also drives the message bubble + haptic). Labels live in the
+      // shared top message bubble, not on the line.
+      final double aligned = hz?.aligned ?? 0;
+
+      // Guide line: dashed gold, always visible; blooms when aligned.
+      if (aligned > 0.02) {
+        canvas.drawLine(
+          Offset(0, guideY),
+          Offset(size.width, guideY),
+          Paint()
+            ..color = gold.withValues(alpha: 0.55 * aligned)
+            ..strokeWidth = 4.0
+            ..strokeCap = StrokeCap.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0),
+        );
+      }
+      _drawDashedLine(
+        canvas,
+        Offset(0, guideY),
+        Offset(size.width, guideY),
+        Paint()
+          ..color = gold.withValues(alpha: (0.42 + 0.5 * aligned).clamp(0.0, 1.0))
+          ..strokeWidth = 1.2
+          ..strokeCap = StrokeCap.butt,
+        dash: 9,
+        gap: 7,
+      );
+
+      // Detected horizon line (fades with op).
+      if (hz != null && hz.op > 0.01) {
+        final double op = hz.op;
+        final Offset c = Offset(hz.ax * size.width, hz.ay * size.height);
+        final double L = size.width * 1.6; // extend well past both edges
+        final Offset dir = Offset(math.cos(hz.angle), math.sin(hz.angle));
+        final p1 = c - dir * L;
+        final p2 = c + dir * L;
+        // Level cue: gold intensifies as the line approaches horizontal.
+        final level = (1 - (hz.angle.abs() / 0.20)).clamp(0.0, 1.0);
+        canvas.drawLine(
+          p1,
+          p2,
+          Paint()
+            ..color = gold.withValues(alpha: (0.25 + 0.35 * level) * op)
+            ..strokeWidth = 3.5
+            ..strokeCap = StrokeCap.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0),
+        );
+        canvas.drawLine(
+          p1,
+          p2,
+          Paint()
+            ..color = gold.withValues(alpha: 0.85 * op)
+            ..strokeWidth = 1.6
+            ..strokeCap = StrokeCap.round
+            ..isAntiAlias = true,
+        );
+      }
+    }
 
     _paintFaceBoxes(canvas, size);
 
@@ -3444,8 +4175,8 @@ class CompositionPainter extends CustomPainter {
 
       final a = b.opacity.clamp(0.0, 1.0);
       final align = b.alignGlow.clamp(0.0, 1.0);
-      const gold = Color(0xFFE5C158);       // composition-text gold (aligned)
-      const grid = Color(0xFFFFFFFF);       // grid-line white (not aligned)
+      const gold = Color(0xFFE5C158); // composition-text gold (aligned)
+      const grid = Color(0xFFFFFFFF); // grid-line white (not aligned)
       final arm = (math.min(rect.width, rect.height) * 0.26).clamp(8.0, 26.0);
       final r = math.min(8.0, arm * 0.6);
 
@@ -3483,6 +4214,26 @@ class CompositionPainter extends CustomPainter {
       _corner(canvas, rect.topRight, -1, 1, arm, r, stroke);
       _corner(canvas, rect.bottomRight, -1, -1, arm, r, stroke);
       _corner(canvas, rect.bottomLeft, 1, -1, arm, r, stroke);
+    }
+  }
+
+  /// Draws a dashed line from [a] to [b] (used by the Horizon Grid guide line).
+  void _drawDashedLine(
+    Canvas canvas,
+    Offset a,
+    Offset b,
+    Paint paint, {
+    double dash = 8,
+    double gap = 6,
+  }) {
+    final double total = (b - a).distance;
+    if (total <= 0) return;
+    final Offset dir = (b - a) / total;
+    double d = 0;
+    while (d < total) {
+      final double end = math.min(d + dash, total);
+      canvas.drawLine(a + dir * d, a + dir * end, paint);
+      d = end + gap;
     }
   }
 
@@ -3724,30 +4475,62 @@ class CompositionPainter extends CustomPainter {
         // Cut Right Square — divider is its left edge (vertical, full height).
         center = Offset(rect.right - sqSize, rect.top);
         startAngle = 0;
-        canvas.drawLine(Offset(rect.right - sqSize, rect.top),
-            Offset(rect.right - sqSize, rect.bottom), p);
-        rect = Rect.fromLTRB(rect.left, rect.top, rect.right - sqSize, rect.bottom);
+        canvas.drawLine(
+          Offset(rect.right - sqSize, rect.top),
+          Offset(rect.right - sqSize, rect.bottom),
+          p,
+        );
+        rect = Rect.fromLTRB(
+          rect.left,
+          rect.top,
+          rect.right - sqSize,
+          rect.bottom,
+        );
       } else if (dir == 1) {
         // Cut Bottom Square — divider is its top edge (horizontal, full width).
         center = Offset(rect.right, rect.bottom - sqSize);
         startAngle = math.pi / 2;
-        canvas.drawLine(Offset(rect.left, rect.bottom - sqSize),
-            Offset(rect.right, rect.bottom - sqSize), p);
-        rect = Rect.fromLTRB(rect.left, rect.top, rect.right, rect.bottom - sqSize);
+        canvas.drawLine(
+          Offset(rect.left, rect.bottom - sqSize),
+          Offset(rect.right, rect.bottom - sqSize),
+          p,
+        );
+        rect = Rect.fromLTRB(
+          rect.left,
+          rect.top,
+          rect.right,
+          rect.bottom - sqSize,
+        );
       } else if (dir == 2) {
         // Cut Left Square — divider is its right edge (vertical, full height).
         center = Offset(rect.left + sqSize, rect.bottom);
         startAngle = math.pi;
-        canvas.drawLine(Offset(rect.left + sqSize, rect.top),
-            Offset(rect.left + sqSize, rect.bottom), p);
-        rect = Rect.fromLTRB(rect.left + sqSize, rect.top, rect.right, rect.bottom);
+        canvas.drawLine(
+          Offset(rect.left + sqSize, rect.top),
+          Offset(rect.left + sqSize, rect.bottom),
+          p,
+        );
+        rect = Rect.fromLTRB(
+          rect.left + sqSize,
+          rect.top,
+          rect.right,
+          rect.bottom,
+        );
       } else {
         // Cut Top Square — divider is its bottom edge (horizontal, full width).
         center = Offset(rect.left, rect.top + sqSize);
         startAngle = -math.pi / 2;
-        canvas.drawLine(Offset(rect.left, rect.top + sqSize),
-            Offset(rect.right, rect.top + sqSize), p);
-        rect = Rect.fromLTRB(rect.left, rect.top + sqSize, rect.right, rect.bottom);
+        canvas.drawLine(
+          Offset(rect.left, rect.top + sqSize),
+          Offset(rect.right, rect.top + sqSize),
+          p,
+        );
+        rect = Rect.fromLTRB(
+          rect.left,
+          rect.top + sqSize,
+          rect.right,
+          rect.bottom,
+        );
       }
 
       final arcRect = Rect.fromCircle(center: center, radius: sqSize);
@@ -4043,7 +4826,11 @@ class CompositionPainter extends CustomPainter {
       ..strokeWidth = _sw
       ..style = PaintingStyle.stroke
       ..isAntiAlias = true;
-    canvas.drawLine(Offset(0, s.height / 2), Offset(s.width, s.height / 2), faint);
+    canvas.drawLine(
+      Offset(0, s.height / 2),
+      Offset(s.width, s.height / 2),
+      faint,
+    );
   }
 
   // ── Aspect Ratio ────────────────────────────────────────────────────────────
@@ -4061,7 +4848,9 @@ class CompositionPainter extends CustomPainter {
       h = w / r;
     }
     final Rect crop = Rect.fromCenter(
-      center: Offset(s.width / 2, s.height / 2), width: w, height: h,
+      center: Offset(s.width / 2, s.height / 2),
+      width: w,
+      height: h,
     );
 
     // Dim outside the crop using an even-odd path (band rect with the crop as a

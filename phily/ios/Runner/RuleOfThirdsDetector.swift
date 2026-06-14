@@ -336,3 +336,128 @@ enum AnimalDetector {
     )
   }
 }
+
+// MARK: - HorizonDetector
+//
+// Estimates the scene horizon as the straight line that best separates the frame
+// into a brighter region (sky) and a darker region (ground / sea). Unlike
+// VNDetectHorizonRequest — which only reports a roll *angle* for near-level shots
+// and carries no position — this returns BOTH the line's angle AND a point on it,
+// and works across the full in-quadrant tilt range. Input is the already-upright,
+// downsampled, tightly-packed BGRA buffer prepared in Dart.
+
+@available(iOS 13.0, *)
+enum HorizonDetector {
+
+  /// Returns `["angle": radians, "x": nx, "y": ny, "strength": contrast]` where
+  /// (nx, ny) is a normalised point on the horizon line (top-left origin) and the
+  /// angle is the line's roll (0 = level, +ve = right-side-down in image space),
+  /// or nil when no sufficiently strong brightness edge is present.
+  static func detect(bgra: Data, width: Int, height: Int) -> [String: Any]? {
+    guard width >= 16, height >= 16 else { return nil }
+
+    // ── Downsample to tiny luma + "blueness" grids (≈64px on the long side) ────
+    // Blueness (B − (R+G)/2) separates sky from sea/sand where the two have
+    // similar brightness but different colour — luma alone misses those horizons.
+    let target = 64
+    let step = max(1, max(width, height) / target)
+    let gw = width / step
+    let gh = height / step
+    guard gw >= 8, gh >= 8 else { return nil }
+
+    var lum = [Float](repeating: 0, count: gw * gh)
+    var blue = [Float](repeating: 0, count: gw * gh)
+    bgra.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+      let p = raw.bindMemory(to: UInt8.self)
+      let rowStride = width * 4
+      for gy in 0..<gh {
+        let rowBase = gy * step * rowStride
+        for gx in 0..<gw {
+          let i = rowBase + gx * step * 4
+          let b = Float(p[i]), g = Float(p[i + 1]), r = Float(p[i + 2])
+          let idx = gy * gw + gx
+          lum[idx] = 0.114 * b + 0.587 * g + 0.299 * r   // Rec.601 luma
+          blue[idx] = b - 0.5 * (r + g)                   // blueness
+        }
+      }
+    }
+
+    let cx = Float(gw) * 0.5
+    let cy = Float(gh) * 0.5
+    let R = (Float(gw) + Float(gh)) * 0.5      // half-diagonal-ish offset span
+    let binCount = Int(2 * R) + 2
+    let minSupport = Float(gw * gh) * 0.12     // each side must hold ≥12% of pixels
+
+    var lumSum = [Float](repeating: 0, count: binCount)
+    var blueSum = [Float](repeating: 0, count: binCount)
+    var cnt = [Float](repeating: 0, count: binCount)
+
+    // Score one candidate angle = its strongest split. Blends the luma step
+    // (hard horizons) with a blueness step (sky vs sea/sand) and nudges toward
+    // the brighter band being on top, as the sky usually is.
+    func evaluate(_ th: Float) -> (score: Float, offset: Float) {
+      let nx = -sin(th), ny = cos(th)          // unit normal to the line
+      for i in 0..<binCount { lumSum[i] = 0; blueSum[i] = 0; cnt[i] = 0 }
+      for gy in 0..<gh {
+        let fy = Float(gy) - cy
+        for gx in 0..<gw {
+          let t = (Float(gx) - cx) * nx + fy * ny   // signed perpendicular offset
+          let bin = Int(t + R)
+          if bin < 0 || bin >= binCount { continue }
+          let idx = gy * gw + gx
+          lumSum[bin] += lum[idx]
+          blueSum[bin] += blue[idx]
+          cnt[bin] += 1
+        }
+      }
+      var totLum: Float = 0, totBlue: Float = 0, totCnt: Float = 0
+      for i in 0..<binCount { totLum += lumSum[i]; totBlue += blueSum[i]; totCnt += cnt[i] }
+
+      var bestS: Float = 0, bestOff: Float = 0
+      var lumL: Float = 0, blueL: Float = 0, cntL: Float = 0
+      for k in 0..<binCount {
+        lumL += lumSum[k]; blueL += blueSum[k]; cntL += cnt[k]
+        let cntR = totCnt - cntL
+        if cntL < minSupport || cntR < minSupport { continue }
+        let topLum = lumL / cntL, botLum = (totLum - lumL) / cntR
+        let topBlue = blueL / cntL, botBlue = (totBlue - blueL) / cntR
+        var s = abs(topLum - botLum) + 0.7 * abs(topBlue - botBlue)
+        if topLum > botLum { s *= 1.12 }   // prefer brighter (sky) band on top
+        if s > bestS { bestS = s; bestOff = Float(k) + 0.5 - R }
+      }
+      return (bestS, bestOff)
+    }
+
+    // Coarse sweep (5°) across the tilt range, then refine ±4° at 1° steps so the
+    // result isn't quantised to 5° — which otherwise leaves a level horizon
+    // visibly tilted.
+    var best: (score: Float, angle: Float, offset: Float) = (0, 0, 0)
+    var deg: Float = -62
+    while deg <= 62 {
+      let r = evaluate(deg * .pi / 180)
+      if r.score > best.score { best = (r.score, deg * .pi / 180, r.offset) }
+      deg += 5
+    }
+    let coarse = best.angle * 180 / .pi
+    var rdeg = coarse - 4
+    while rdeg <= coarse + 4 {
+      let r = evaluate(rdeg * .pi / 180)
+      if r.score > best.score { best = (r.score, rdeg * .pi / 180, r.offset) }
+      rdeg += 1
+    }
+
+    // Need a clear step to even consider it a horizon (Dart adds a confidence +
+    // temporal-stability gate on top).
+    guard best.score >= 14 else { return nil }
+
+    let nx = -sin(best.angle), ny = cos(best.angle)
+    let px = cx + best.offset * nx
+    let py = cy + best.offset * ny
+    return [
+      "angle":    Double(best.angle),
+      "x":        Double(px / Float(gw)),   // normalised, top-left origin
+      "y":        Double(py / Float(gh)),
+      "strength": Double(best.score),
+    ]
+  }
+}
