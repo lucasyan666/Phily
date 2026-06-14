@@ -253,10 +253,18 @@ private extension Comparable {
     }
 
     let data = typed.data
+    // Optional crop (normalised) limiting analysis to the camera-visible band.
+    let cx0 = (args["cropX0"] as? Double) ?? 0
+    let cy0 = (args["cropY0"] as? Double) ?? 0
+    let cx1 = (args["cropX1"] as? Double) ?? 1
+    let cy1 = (args["cropY1"] as? Double) ?? 1
     DispatchQueue.global(qos: .userInitiated).async {
       var horizon: [String: Any]? = nil
       if #available(iOS 13.0, *) {
-        horizon = HorizonDetector.detect(bgra: data, width: width, height: height)
+        horizon = HorizonDetector.detect(
+          bgra: data, width: width, height: height,
+          cropX0: cx0, cropY0: cy0, cropX1: cx1, cropY1: cy1
+        )
       }
       DispatchQueue.main.async { result(horizon) } // nil when none found
     }
