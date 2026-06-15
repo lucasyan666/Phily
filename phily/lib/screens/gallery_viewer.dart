@@ -189,13 +189,24 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   int _loadedPages = 0;
   bool _loadingMore = false;
   bool _hasMore = true;
-  double _pull = 0; // accumulated top overscroll for pull-down-to-dismiss
-  bool _pulling = false; // a pull-to-dismiss drag is live (no spring animation)
+  // Live pull-to-dismiss distance (px past the top). A ValueNotifier so only the
+  // dim overlay repaints as you pull — the GridView is never rebuilt mid-pull.
+  final ValueNotifier<double> _pull = ValueNotifier(0);
+  bool _dismissing = false; // guard so we pop only once
+  // Loaded grid thumbnails by asset id → handed to the viewer as an instant
+  // placeholder so opening a photo/video doesn't flash a spinner.
+  final Map<String, Uint8List> _thumbCache = {};
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _pull.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -236,28 +247,19 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   }
 
   bool _onScroll(ScrollNotification n) {
-    if (n is OverscrollNotification &&
-        n.overscroll < 0 &&
-        n.metrics.pixels <= 0) {
-      // Pulling down past the top → grow the live pull (drives the fade).
-      final next = (_pull - n.overscroll).clamp(0.0, 400.0);
-      if (next > 115) {
-        Navigator.of(context).maybePop(); // dismissed → fade reveals the camera
-        return true;
-      }
-      setState(() {
-        _pulling = true;
-        _pull = next;
-      });
-    } else if (n is ScrollEndNotification || n is ScrollStartNotification) {
-      // Released → spring the fade back.
-      if (_pull != 0 || _pulling) {
-        setState(() {
-          _pulling = false;
-          _pull = 0;
-        });
-      }
+    // BouncingScrollPhysics lets the position go past the top (pixels < 0)
+    // instead of firing an OverscrollNotification — so read the position
+    // directly. `past` = how far the grid is pulled below the top edge.
+    final double past = -n.metrics.pixels;
+    if (past > 110 && !_dismissing) {
+      _dismissing = true;
+      Navigator.of(context).pop(); // pull past the top → close to the camera
+      return true;
     }
+    // Drive the dim via the notifier only — no setState, so the grid isn't
+    // rebuilt. The bounce springs `pixels` back to 0 on release, fading it out.
+    final double v = past > 0 ? past : 0;
+    if (_pull.value != v) _pull.value = v;
     // Prefetch the next page well before the user hits the bottom.
     if (_hasMore &&
         !_loadingMore &&
@@ -276,8 +278,11 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
         barrierColor: Colors.transparent,
         transitionDuration: const Duration(milliseconds: 240),
         reverseTransitionDuration: const Duration(milliseconds: 200),
-        pageBuilder: (_, _, _) =>
-            GalleryViewerPage(assets: _items, initialIndex: i),
+        pageBuilder: (_, _, _) => GalleryViewerPage(
+          assets: _items,
+          initialIndex: i,
+          thumbs: _thumbCache,
+        ),
         transitionsBuilder: (_, anim, _, child) =>
             FadeTransition(opacity: anim, child: child),
       ),
@@ -292,86 +297,82 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   @override
   Widget build(BuildContext context) {
     final topPad = MediaQuery.of(context).padding.top + 52;
-    final pullProgress = (_pull / 200).clamp(0.0, 1.0);
-    final contentOpacity = (1 - pullProgress).clamp(0.0, 1.0);
-    final dur = _pulling ? Duration.zero : const Duration(milliseconds: 250);
     return Scaffold(
-      backgroundColor: Colors.transparent, // camera shows through on pull-down
+      backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // Black backdrop — fades out as you pull down to reveal the camera.
-          Positioned.fill(
-            child: IgnorePointer(
-              child: AnimatedContainer(
-                duration: dur,
-                color: Colors.black.withValues(alpha: contentOpacity),
-              ),
-            ),
-          ),
           if (_loading)
             const BrandedLoader()
           else
-            AnimatedOpacity(
-              opacity: contentOpacity,
-              duration: dur,
-              child: NotificationListener<ScrollNotification>(
-                onNotification: _onScroll,
-                child: GridView.builder(
-                  // Bounce at the edges so a pull past the top dismisses to camera.
-                  physics: const AlwaysScrollableScrollPhysics(
-                    parent: BouncingScrollPhysics(),
-                  ),
-                  padding: EdgeInsets.only(
-                    top: topPad + 2,
-                    bottom: MediaQuery.of(context).padding.bottom + 8,
-                    left: 2,
-                    right: 2,
-                  ),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    mainAxisSpacing: 2,
-                    crossAxisSpacing: 2,
-                  ),
-                  itemCount: _items.length,
-                  itemBuilder: (_, i) {
-                    final asset = _items[i];
-                    return GestureDetector(
-                      key: ValueKey(
-                        asset.id,
-                      ), // stable identity → no reload on shift
-                      onTap: () => _openAt(i),
-                      child: _GridThumb(asset: asset),
-                    );
-                  },
+            NotificationListener<ScrollNotification>(
+              onNotification: _onScroll,
+              child: GridView.builder(
+                // Bounce so a pull past the top dims + dismisses to the camera.
+                physics: const AlwaysScrollableScrollPhysics(
+                  parent: BouncingScrollPhysics(),
                 ),
+                padding: EdgeInsets.only(
+                  top: topPad + 2,
+                  bottom: MediaQuery.of(context).padding.bottom + 8,
+                  left: 2,
+                  right: 2,
+                ),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  mainAxisSpacing: 2,
+                  crossAxisSpacing: 2,
+                ),
+                itemCount: _items.length,
+                itemBuilder: (_, i) {
+                  final asset = _items[i];
+                  return GestureDetector(
+                    key: ValueKey(asset.id), // stable identity → no reload
+                    onTap: () => _openAt(i),
+                    child: _GridThumb(
+                      asset: asset,
+                      onLoaded: (b) => _thumbCache[asset.id] = b,
+                    ),
+                  );
+                },
               ),
             ),
+
+          // Cheap dim that follows the pull (and springs back with the bounce) —
+          // only this repaints as you pull, never the grid.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: ValueListenableBuilder<double>(
+                valueListenable: _pull,
+                builder: (_, p, _) {
+                  final a = (p / 150).clamp(0.0, 0.9);
+                  if (a <= 0.001) return const SizedBox.shrink();
+                  return ColoredBox(color: Colors.black.withValues(alpha: a));
+                },
+              ),
+            ),
+          ),
 
           // Frosted top bar — title only; pull down to exit (no close button).
           Positioned(
             top: 0,
             left: 0,
             right: 0,
-            child: AnimatedOpacity(
-              opacity: contentOpacity,
-              duration: dur,
-              child: _FrostBar(
-                child: Padding(
-                  padding: EdgeInsets.only(
-                    top: MediaQuery.of(context).padding.top + 4,
-                    bottom: 10,
-                    left: 16,
-                    right: 16,
-                  ),
-                  child: const Center(
-                    child: Text(
-                      'Photos',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w500,
-                        letterSpacing: 0.3,
-                      ),
+            child: _FrostBar(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  top: MediaQuery.of(context).padding.top + 4,
+                  bottom: 10,
+                  left: 16,
+                  right: 16,
+                ),
+                child: const Center(
+                  child: Text(
+                    'Photos',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 0.3,
                     ),
                   ),
                 ),
@@ -388,7 +389,8 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
 /// in state; keyed by asset id so it survives list re-orders without reloading.
 class _GridThumb extends StatefulWidget {
   final AssetEntity asset;
-  const _GridThumb({required this.asset});
+  final void Function(Uint8List bytes)? onLoaded;
+  const _GridThumb({required this.asset, this.onLoaded});
 
   @override
   State<_GridThumb> createState() => _GridThumbState();
@@ -404,6 +406,7 @@ class _GridThumbState extends State<_GridThumb> {
         .thumbnailDataWithSize(const ThumbnailSize(300, 300), quality: 80)
         .then((b) {
           if (mounted) setState(() => _bytes = b);
+          if (b != null) widget.onLoaded?.call(b); // cache for instant open
         });
   }
 
@@ -458,11 +461,13 @@ class _GridThumbState extends State<_GridThumb> {
 class GalleryViewerPage extends StatefulWidget {
   final List<AssetEntity> assets;
   final int initialIndex;
+  final Map<String, Uint8List> thumbs; // instant placeholders by asset id
 
   const GalleryViewerPage({
     super.key,
     required this.assets,
     this.initialIndex = 0,
+    this.thumbs = const {},
   });
 
   @override
@@ -618,6 +623,8 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                                   itemBuilder: (_, i) => _GalleryPage(
                                     asset: widget.assets[i],
                                     active: i == _index,
+                                    placeholder:
+                                        widget.thumbs[widget.assets[i].id],
                                   ),
                                 ),
                               ),
@@ -736,20 +743,26 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
 class _GalleryPage extends StatelessWidget {
   final AssetEntity asset;
   final bool active;
-  const _GalleryPage({required this.asset, required this.active});
+  final Uint8List? placeholder;
+  const _GalleryPage({
+    required this.asset,
+    required this.active,
+    this.placeholder,
+  });
 
   @override
   Widget build(BuildContext context) {
     return asset.type == AssetType.video
-        ? _VideoPage(asset: asset, active: active)
-        : _PhotoPage(asset: asset);
+        ? _VideoPage(asset: asset, active: active, placeholder: placeholder)
+        : _PhotoPage(asset: asset, placeholder: placeholder);
   }
 }
 
 /// A pinch-to-zoom photo. Loads a high-res JPEG thumbnail once.
 class _PhotoPage extends StatefulWidget {
   final AssetEntity asset;
-  const _PhotoPage({required this.asset});
+  final Uint8List? placeholder;
+  const _PhotoPage({required this.asset, this.placeholder});
 
   @override
   State<_PhotoPage> createState() => _PhotoPageState();
@@ -763,10 +776,15 @@ class _PhotoPageState extends State<_PhotoPage> {
   @override
   void initState() {
     super.initState();
+    // Show the grid's already-decoded thumbnail instantly (no spinner, no work
+    // during the open transition), then sharpen to full-res in the background.
+    _bytes = widget.placeholder;
     widget.asset
         .thumbnailDataWithSize(const ThumbnailSize(1440, 1440), quality: 90)
         .then((b) {
-          if (mounted) setState(() => _bytes = b);
+          if (mounted && b != null) {
+            setState(() => _bytes = b);
+          }
         });
   }
 
@@ -810,7 +828,12 @@ class _PhotoPageState extends State<_PhotoPage> {
 class _VideoPage extends StatefulWidget {
   final AssetEntity asset;
   final bool active;
-  const _VideoPage({required this.asset, required this.active});
+  final Uint8List? placeholder;
+  const _VideoPage({
+    required this.asset,
+    required this.active,
+    this.placeholder,
+  });
 
   @override
   State<_VideoPage> createState() => _VideoPageState();
@@ -864,7 +887,18 @@ class _VideoPageState extends State<_VideoPage> {
   @override
   Widget build(BuildContext context) {
     final vc = _vc;
-    if (vc == null) return _spinner();
+    if (vc == null) {
+      // Poster the grid thumbnail while the player spins up — no spinner flash.
+      final ph = widget.placeholder;
+      return Stack(
+        fit: StackFit.expand,
+        alignment: Alignment.center,
+        children: [
+          if (ph != null) Image.memory(ph, fit: BoxFit.contain),
+          _spinner(),
+        ],
+      );
+    }
     return GestureDetector(
       onTap: _toggle,
       child: Stack(
