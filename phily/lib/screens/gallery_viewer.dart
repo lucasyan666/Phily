@@ -12,29 +12,32 @@ const _gold = Color(0xFFE5C158);
 // Shared glassy chrome (matches the camera page)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A frosted top bar — backdrop blur + dark tint + a hairline bottom edge.
+/// A frosted-look top bar. Uses a dark gradient (NOT a real BackdropFilter blur)
+/// so it's cheap to paint — a live blur here janks the open/close zoom badly.
 class _FrostBar extends StatelessWidget {
   final Widget child;
   const _FrostBar({required this.child});
 
   @override
   Widget build(BuildContext context) {
-    return ClipRect(
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.30),
-            border: Border(
-              bottom: BorderSide(
-                color: Colors.white.withValues(alpha: 0.10),
-                width: 0.5,
-              ),
-            ),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Colors.black.withValues(alpha: 0.55),
+            Colors.black.withValues(alpha: 0.16),
+          ],
+        ),
+        border: Border(
+          bottom: BorderSide(
+            color: Colors.white.withValues(alpha: 0.10),
+            width: 0.5,
           ),
-          child: child,
         ),
       ),
+      child: child,
     );
   }
 }
@@ -72,9 +75,25 @@ class _GlassCircleButtonState extends State<_GlassCircleButton> {
         scale: _pressed ? 0.84 : 1.0,
         duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
+        // Faux-glass (gradient, no BackdropFilter) — a real blur here janks the
+        // zoom. Darker base keeps the white icon readable over any photo.
         child: Container(
+          width: 52,
+          height: 52,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.white.withValues(alpha: _pressed ? 0.34 : 0.26),
+                Colors.black.withValues(alpha: 0.28),
+              ],
+            ),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.35),
+              width: 0.8,
+            ),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withValues(alpha: 0.3),
@@ -83,35 +102,7 @@ class _GlassCircleButtonState extends State<_GlassCircleButton> {
               ),
             ],
           ),
-          child: ClipOval(
-            child: BackdropFilter(
-              filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-              child: Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Colors.white.withValues(alpha: _pressed ? 0.30 : 0.22),
-                      Colors.white.withValues(alpha: 0.06),
-                    ],
-                  ),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.35),
-                    width: 0.8,
-                  ),
-                ),
-                child: Icon(
-                  widget.icon,
-                  color: Colors.white,
-                  size: widget.iconSize,
-                ),
-              ),
-            ),
-          ),
+          child: Icon(widget.icon, color: Colors.white, size: widget.iconSize),
         ),
       ),
     );
@@ -169,6 +160,46 @@ String _timeLabel(DateTime dt) {
 // Grid — the gallery entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// A date group: a header label + the indices (into _items) it contains.
+class _Section {
+  final String label;
+  final List<int> indices;
+  _Section(this.label, this.indices);
+}
+
+/// Sticky date header that pins below the top bar as you scroll.
+class _SectionHeader extends SliverPersistentHeaderDelegate {
+  final String label;
+  const _SectionHeader(this.label);
+
+  @override
+  double get minExtent => 40;
+  @override
+  double get maxExtent => 40;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlaps) {
+    return Container(
+      height: 40,
+      color: Colors.black, // opaque so cells don't show through while pinned
+      alignment: Alignment.centerLeft,
+      padding: const EdgeInsets.only(left: 12, top: 10, bottom: 6),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 15,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.2,
+        ),
+      ),
+    );
+  }
+
+  @override
+  bool shouldRebuild(_SectionHeader old) => old.label != label;
+}
+
 /// A glassy grid of the library's photos & videos (most recent first). The asset
 /// list is loaded once and cached; tap a cell to open the full-screen pager.
 class GalleryGridPage extends StatefulWidget {
@@ -196,6 +227,9 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   // Loaded grid thumbnails by asset id → handed to the viewer as an instant
   // placeholder so opening a photo/video doesn't flash a spinner.
   final Map<String, Uint8List> _thumbCache = {};
+  // Multi-select: long-press to enter, tap to toggle, batch share/delete.
+  bool _selectMode = false;
+  final Set<String> _selectedIds = {};
 
   @override
   void initState() {
@@ -246,6 +280,81 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
     });
   }
 
+  // Group consecutive items by capture day ("Today" / "14 Jun"). _items is
+  // already most-recent-first, so days come out in descending order.
+  List<_Section> _buildSections() {
+    final out = <_Section>[];
+    String? key;
+    for (var i = 0; i < _items.length; i++) {
+      final dt = _items[i].createDateTime;
+      final k = '${dt.year}.${dt.month}.${dt.day}';
+      if (k != key) {
+        key = k;
+        out.add(_Section(_dateLabel(dt), []));
+      }
+      out.last.indices.add(i);
+    }
+    return out;
+  }
+
+  void _enterSelect(AssetEntity a) {
+    HapticFeedback.mediumImpact();
+    setState(() {
+      _selectMode = true;
+      _selectedIds.add(a.id);
+    });
+  }
+
+  void _toggleSelect(AssetEntity a) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      if (!_selectedIds.remove(a.id)) _selectedIds.add(a.id);
+      if (_selectedIds.isEmpty) _selectMode = false;
+    });
+  }
+
+  void _exitSelect() => setState(() {
+    _selectMode = false;
+    _selectedIds.clear();
+  });
+
+  Future<void> _deleteSelected() async {
+    if (_selectedIds.isEmpty) return;
+    // iOS shows one confirmation for the batch; returns the ids it removed.
+    final deleted = await PhotoManager.editor.deleteWithIds(
+      _selectedIds.toList(),
+    );
+    if (deleted.isEmpty || !mounted) return;
+    HapticFeedback.heavyImpact();
+    final del = deleted.toSet();
+    setState(() {
+      _items.removeWhere((a) => del.contains(a.id));
+      for (final id in deleted) {
+        _thumbCache.remove(id);
+      }
+      _selectedIds.clear();
+      _selectMode = false;
+    });
+  }
+
+  Future<void> _shareSelected() async {
+    if (_selectedIds.isEmpty) return;
+    final chosen = _items.where((a) => _selectedIds.contains(a.id)).toList();
+    final files = <XFile>[];
+    for (final a in chosen) {
+      final f = await a.file;
+      if (f != null) files.add(XFile(f.path));
+    }
+    if (files.isEmpty || !mounted) return;
+    final size = MediaQuery.of(context).size;
+    await Share.shareXFiles(
+      files,
+      sharePositionOrigin:
+          Offset(size.width / 2 - 1, size.height - 1) & const Size(2, 2),
+    );
+    if (mounted) _exitSelect();
+  }
+
   bool _onScroll(ScrollNotification n) {
     // BouncingScrollPhysics lets the position go past the top (pixels < 0)
     // instead of firing an OverscrollNotification — so read the position
@@ -273,18 +382,30 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
     // Pass the cached list; the viewer returns the id of anything it deleted.
     final deletedId = await Navigator.of(context).push<String>(
       PageRouteBuilder(
-        // Transparent so the grid shows through the pager's dismiss fade.
-        opaque: false,
-        barrierColor: Colors.transparent,
-        transitionDuration: const Duration(milliseconds: 240),
-        reverseTransitionDuration: const Duration(milliseconds: 200),
+        // Opaque so nothing heavy (the full grid + its frosted blurs) renders
+        // behind the viewer during the open — that was the source of the jank.
+        transitionDuration: const Duration(milliseconds: 300),
+        reverseTransitionDuration: const Duration(milliseconds: 240),
         pageBuilder: (_, _, _) => GalleryViewerPage(
           assets: _items,
           initialIndex: i,
           thumbs: _thumbCache,
         ),
-        transitionsBuilder: (_, anim, _, child) =>
-            FadeTransition(opacity: anim, child: child),
+        // Zoom in: scale up from the thumbnail size + fade.
+        transitionsBuilder: (_, anim, _, child) {
+          final curved = CurvedAnimation(
+            parent: anim,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.86, end: 1.0).animate(curved),
+              child: child,
+            ),
+          );
+        },
       ),
     );
     if (deletedId != null && mounted) {
@@ -296,7 +417,9 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
 
   @override
   Widget build(BuildContext context) {
-    final topPad = MediaQuery.of(context).padding.top + 52;
+    final barH = MediaQuery.of(context).padding.top + 52;
+    final bottomPad = MediaQuery.of(context).padding.bottom + 8;
+    final sections = _buildSections();
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -304,41 +427,44 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
           if (_loading)
             const BrandedLoader()
           else
-            NotificationListener<ScrollNotification>(
-              onNotification: _onScroll,
-              child: GridView.builder(
-                // Bounce so a pull past the top dims + dismisses to the camera.
-                physics: const AlwaysScrollableScrollPhysics(
-                  parent: BouncingScrollPhysics(),
+            // Inset below the bar so pinned date headers sit under it, not behind.
+            Padding(
+              padding: EdgeInsets.only(top: barH),
+              child: NotificationListener<ScrollNotification>(
+                onNotification: _onScroll,
+                child: CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(
+                    parent: BouncingScrollPhysics(),
+                  ),
+                  slivers: [
+                    for (final s in sections) ...[
+                      SliverPersistentHeader(
+                        pinned: true,
+                        delegate: _SectionHeader(s.label),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        sliver: SliverGrid(
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 3,
+                                mainAxisSpacing: 2,
+                                crossAxisSpacing: 2,
+                              ),
+                          delegate: SliverChildBuilderDelegate(
+                            (_, j) => _cell(s.indices[j]),
+                            childCount: s.indices.length,
+                          ),
+                        ),
+                      ),
+                    ],
+                    SliverToBoxAdapter(child: SizedBox(height: bottomPad)),
+                  ],
                 ),
-                padding: EdgeInsets.only(
-                  top: topPad + 2,
-                  bottom: MediaQuery.of(context).padding.bottom + 8,
-                  left: 2,
-                  right: 2,
-                ),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 2,
-                  crossAxisSpacing: 2,
-                ),
-                itemCount: _items.length,
-                itemBuilder: (_, i) {
-                  final asset = _items[i];
-                  return GestureDetector(
-                    key: ValueKey(asset.id), // stable identity → no reload
-                    onTap: () => _openAt(i),
-                    child: _GridThumb(
-                      asset: asset,
-                      onLoaded: (b) => _thumbCache[asset.id] = b,
-                    ),
-                  );
-                },
               ),
             ),
 
-          // Cheap dim that follows the pull (and springs back with the bounce) —
-          // only this repaints as you pull, never the grid.
+          // Cheap dim that follows the pull (springs back with the bounce).
           Positioned.fill(
             child: IgnorePointer(
               child: ValueListenableBuilder<double>(
@@ -352,34 +478,82 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
             ),
           ),
 
-          // Frosted top bar — title only; pull down to exit (no close button).
+          // Top bar — "Photos" normally; selection controls in select mode.
           Positioned(
             top: 0,
             left: 0,
             right: 0,
-            child: _FrostBar(
-              child: Padding(
-                padding: EdgeInsets.only(
-                  top: MediaQuery.of(context).padding.top + 4,
-                  bottom: 10,
-                  left: 16,
-                  right: 16,
-                ),
-                child: const Center(
-                  child: Text(
-                    'Photos',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
+            child: _FrostBar(child: _topBar(context)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cell(int i) {
+    final asset = _items[i];
+    return GestureDetector(
+      key: ValueKey(asset.id),
+      onTap: () => _selectMode ? _toggleSelect(asset) : _openAt(i),
+      onLongPress: _selectMode ? null : () => _enterSelect(asset),
+      child: _GridThumb(
+        asset: asset,
+        selecting: _selectMode,
+        selected: _selectedIds.contains(asset.id),
+        onLoaded: (b) => _thumbCache[asset.id] = b,
+      ),
+    );
+  }
+
+  Widget _topBar(BuildContext context) {
+    final topInset = MediaQuery.of(context).padding.top + 4;
+    if (_selectMode) {
+      return Padding(
+        padding: EdgeInsets.only(top: topInset, bottom: 10, left: 8, right: 8),
+        child: Row(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.white),
+              onPressed: _exitSelect,
+            ),
+            Expanded(
+              child: Text(
+                '${_selectedIds.length} selected',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
             ),
+            IconButton(
+              icon: const Icon(Icons.ios_share_rounded, color: Colors.white),
+              onPressed: _selectedIds.isEmpty ? null : _shareSelected,
+            ),
+            IconButton(
+              icon: const Icon(
+                Icons.delete_outline_rounded,
+                color: Colors.white,
+              ),
+              onPressed: _selectedIds.isEmpty ? null : _deleteSelected,
+            ),
+          ],
+        ),
+      );
+    }
+    return Padding(
+      padding: EdgeInsets.only(top: topInset, bottom: 10, left: 16, right: 16),
+      child: const Center(
+        child: Text(
+          'Photos',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 17,
+            fontWeight: FontWeight.w500,
+            letterSpacing: 0.3,
           ),
-        ],
+        ),
       ),
     );
   }
@@ -390,7 +564,14 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
 class _GridThumb extends StatefulWidget {
   final AssetEntity asset;
   final void Function(Uint8List bytes)? onLoaded;
-  const _GridThumb({required this.asset, this.onLoaded});
+  final bool selecting; // multi-select mode is active
+  final bool selected; // this cell is selected
+  const _GridThumb({
+    required this.asset,
+    this.onLoaded,
+    this.selecting = false,
+    this.selected = false,
+  });
 
   @override
   State<_GridThumb> createState() => _GridThumbState();
@@ -417,36 +598,78 @@ class _GridThumbState extends State<_GridThumb> {
       return Container(color: Colors.white.withValues(alpha: 0.06));
     }
     final isVideo = widget.asset.type == AssetType.video;
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true),
-        if (isVideo)
-          Positioned(
-            right: 5,
-            bottom: 4,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.play_arrow_rounded,
-                  color: Colors.white,
-                  size: 15,
-                ),
-                const SizedBox(width: 1),
-                Text(
-                  _fmtDuration(widget.asset.videoDuration),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    shadows: [Shadow(color: Colors.black54, blurRadius: 3)],
-                  ),
-                ),
-              ],
+    // Gentle fade-in as each thumbnail loads (instead of popping in).
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+      builder: (_, t, child) => Opacity(opacity: t, child: child),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Selected cells shrink slightly to read as "lifted".
+          AnimatedScale(
+            scale: widget.selected ? 0.86 : 1.0,
+            duration: const Duration(milliseconds: 140),
+            curve: Curves.easeOut,
+            child: Image.memory(
+              bytes,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
             ),
           ),
-      ],
+          if (isVideo)
+            Positioned(
+              right: 5,
+              bottom: 4,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.play_arrow_rounded,
+                    color: Colors.white,
+                    size: 15,
+                  ),
+                  const SizedBox(width: 1),
+                  Text(
+                    _fmtDuration(widget.asset.videoDuration),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      shadows: [Shadow(color: Colors.black54, blurRadius: 3)],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          // Selection check (multi-select mode): gold filled when selected,
+          // hollow white otherwise.
+          if (widget.selecting)
+            Positioned(
+              right: 5,
+              top: 5,
+              child: Container(
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: widget.selected
+                      ? _gold
+                      : Colors.black.withValues(alpha: 0.3),
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+                child: widget.selected
+                    ? const Icon(
+                        Icons.check_rounded,
+                        color: Colors.black,
+                        size: 15,
+                      )
+                    : null,
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -486,6 +709,22 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
   // "Sucked into the bin" delete animation.
   late final AnimationController _deleteCtrl;
   bool _deleting = false;
+  // Immersive viewing: tap a photo to hide the top bar + buttons.
+  bool _chromeVisible = true;
+
+  void _toggleChrome() => setState(() => _chromeVisible = !_chromeVisible);
+
+  // Fades a chrome element with the tap-to-hide toggle and blocks its taps once
+  // hidden. (The inner Opacity still handles the swipe-down/delete fades.)
+  Widget _chrome(Widget child) => IgnorePointer(
+    ignoring: !_chromeVisible,
+    child: AnimatedOpacity(
+      opacity: _chromeVisible ? 1.0 : 0.0,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+      child: child,
+    ),
+  );
 
   @override
   void initState() {
@@ -570,7 +809,7 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
     final total = widget.assets.length;
 
     return Scaffold(
-      backgroundColor: Colors.transparent, // grid shows through while dragging
+      backgroundColor: Colors.black, // opaque → nothing heavy renders behind
       body: GestureDetector(
         onVerticalDragStart: (_) => setState(() => _dragging = true),
         onVerticalDragUpdate: _onDragUpdate,
@@ -625,6 +864,7 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                                     active: i == _index,
                                     placeholder:
                                         widget.thumbs[widget.assets[i].id],
+                                    onTap: _toggleChrome,
                                   ),
                                 ),
                               ),
@@ -632,69 +872,71 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                           ),
                         ),
 
-                        // Frosted top bar: close + counter.
+                        // Frosted top bar: close + timestamp.
                         Positioned(
                           top: 0,
                           left: 0,
                           right: 0,
-                          child: Opacity(
-                            opacity: chrome,
-                            child: _FrostBar(
-                              child: Padding(
-                                padding: EdgeInsets.only(
-                                  top: MediaQuery.of(context).padding.top + 4,
-                                  bottom: 8,
-                                  left: 6,
-                                  right: 6,
-                                ),
-                                child: Row(
-                                  children: [
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.close_rounded,
-                                        color: Colors.white,
+                          child: _chrome(
+                            Opacity(
+                              opacity: chrome,
+                              child: _FrostBar(
+                                child: Padding(
+                                  padding: EdgeInsets.only(
+                                    top: MediaQuery.of(context).padding.top + 4,
+                                    bottom: 8,
+                                    left: 6,
+                                    right: 6,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(
+                                          Icons.close_rounded,
+                                          color: Colors.white,
+                                        ),
+                                        onPressed: () =>
+                                            Navigator.of(context).pop(),
                                       ),
-                                      onPressed: () =>
-                                          Navigator.of(context).pop(),
-                                    ),
-                                    Expanded(
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Text(
-                                            _dateLabel(
-                                              widget
-                                                  .assets[_index]
-                                                  .createDateTime,
-                                            ),
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 14.5,
-                                              fontWeight: FontWeight.w500,
-                                              letterSpacing: 0.3,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 1),
-                                          Text(
-                                            _timeLabel(
-                                              widget
-                                                  .assets[_index]
-                                                  .createDateTime,
-                                            ),
-                                            style: TextStyle(
-                                              color: Colors.white.withValues(
-                                                alpha: 0.6,
+                                      Expanded(
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              _dateLabel(
+                                                widget
+                                                    .assets[_index]
+                                                    .createDateTime,
                                               ),
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w400,
-                                              letterSpacing: 0.4,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 14.5,
+                                                fontWeight: FontWeight.w500,
+                                                letterSpacing: 0.3,
+                                              ),
                                             ),
-                                          ),
-                                        ],
+                                            const SizedBox(height: 1),
+                                            Text(
+                                              _timeLabel(
+                                                widget
+                                                    .assets[_index]
+                                                    .createDateTime,
+                                              ),
+                                              style: TextStyle(
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.6,
+                                                ),
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w400,
+                                                letterSpacing: 0.4,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
-                                    ),
-                                    const SizedBox(width: 48),
-                                  ],
+                                      const SizedBox(width: 48),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
@@ -705,24 +947,28 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                         Positioned(
                           left: 16,
                           bottom: safeBottom + 16,
-                          child: Opacity(
-                            opacity: chrome,
-                            child: _GlassCircleButton(
-                              key: _shareBtnKey,
-                              icon: Icons.ios_share_rounded,
-                              iconSize: 22,
-                              onTap: _shareCurrent,
+                          child: _chrome(
+                            Opacity(
+                              opacity: chrome,
+                              child: _GlassCircleButton(
+                                key: _shareBtnKey,
+                                icon: Icons.ios_share_rounded,
+                                iconSize: 22,
+                                onTap: _shareCurrent,
+                              ),
                             ),
                           ),
                         ),
                         Positioned(
                           right: 16,
                           bottom: safeBottom + 16,
-                          child: Opacity(
-                            opacity: chrome,
-                            child: _GlassCircleButton(
-                              icon: Icons.delete_outline_rounded,
-                              onTap: _deleteCurrent,
+                          child: _chrome(
+                            Opacity(
+                              opacity: chrome,
+                              child: _GlassCircleButton(
+                                icon: Icons.delete_outline_rounded,
+                                onTap: _deleteCurrent,
+                              ),
                             ),
                           ),
                         ),
@@ -744,38 +990,52 @@ class _GalleryPage extends StatelessWidget {
   final AssetEntity asset;
   final bool active;
   final Uint8List? placeholder;
+  final VoidCallback? onTap; // tap a photo to hide/show the chrome
   const _GalleryPage({
     required this.asset,
     required this.active,
     this.placeholder,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     return asset.type == AssetType.video
         ? _VideoPage(asset: asset, active: active, placeholder: placeholder)
-        : _PhotoPage(asset: asset, placeholder: placeholder);
+        : _PhotoPage(asset: asset, placeholder: placeholder, onTap: onTap);
   }
 }
 
-/// A pinch-to-zoom photo. Loads a high-res JPEG thumbnail once.
+/// A pinch- and double-tap-zoom photo. Loads a high-res JPEG thumbnail once.
 class _PhotoPage extends StatefulWidget {
   final AssetEntity asset;
   final Uint8List? placeholder;
-  const _PhotoPage({required this.asset, this.placeholder});
+  final VoidCallback? onTap;
+  const _PhotoPage({required this.asset, this.placeholder, this.onTap});
 
   @override
   State<_PhotoPage> createState() => _PhotoPageState();
 }
 
-class _PhotoPageState extends State<_PhotoPage> {
+class _PhotoPageState extends State<_PhotoPage>
+    with SingleTickerProviderStateMixin {
   Uint8List? _bytes;
   final TransformationController _tc = TransformationController();
   bool _zoomed = false;
+  late final AnimationController _zoomCtrl;
+  Animation<Matrix4>? _zoomAnim;
+  TapDownDetails? _doubleTapPos;
 
   @override
   void initState() {
     super.initState();
+    _zoomCtrl =
+        AnimationController(
+          vsync: this,
+          duration: const Duration(milliseconds: 240),
+        )..addListener(() {
+          if (_zoomAnim != null) _tc.value = _zoomAnim!.value;
+        });
     // Show the grid's already-decoded thumbnail instantly (no spinner, no work
     // during the open transition), then sharpen to full-res in the background.
     _bytes = widget.placeholder;
@@ -790,6 +1050,7 @@ class _PhotoPageState extends State<_PhotoPage> {
 
   @override
   void dispose() {
+    _zoomCtrl.dispose();
     _tc.dispose();
     super.dispose();
   }
@@ -799,24 +1060,51 @@ class _PhotoPageState extends State<_PhotoPage> {
     if (z != _zoomed) setState(() => _zoomed = z);
   }
 
+  // Double-tap: zoom to the tapped point (2.6×), or snap back if already zoomed.
+  void _handleDoubleTap() {
+    final Matrix4 target;
+    if (_tc.value.getMaxScaleOnAxis() > 1.02) {
+      target = Matrix4.identity();
+    } else {
+      const double scale = 2.6;
+      final p = _doubleTapPos?.localPosition ?? Offset.zero;
+      target = Matrix4.identity()
+        ..translateByDouble(-p.dx * (scale - 1), -p.dy * (scale - 1), 0, 1)
+        ..scaleByDouble(scale, scale, scale, 1);
+    }
+    _zoomAnim = Matrix4Tween(
+      begin: _tc.value,
+      end: target,
+    ).animate(CurvedAnimation(parent: _zoomCtrl, curve: Curves.easeOutCubic));
+    _zoomCtrl.forward(from: 0).whenComplete(() {
+      final z = target.getMaxScaleOnAxis() > 1.02;
+      if (mounted && z != _zoomed) setState(() => _zoomed = z);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final bytes = _bytes;
     if (bytes == null) return _spinner();
     // Pan only while zoomed → at 1× the PageView keeps horizontal swipes and the
     // pager keeps vertical drags free for swipe-to-dismiss.
-    return InteractiveViewer(
-      transformationController: _tc,
-      minScale: 1.0,
-      maxScale: 4.0,
-      panEnabled: _zoomed,
-      onInteractionEnd: (_) => _onInteractionEnd(),
-      child: Center(
-        child: Image.memory(
-          bytes,
-          fit: BoxFit.contain,
-          gaplessPlayback: true,
-          filterQuality: FilterQuality.medium,
+    return GestureDetector(
+      onTap: widget.onTap,
+      onDoubleTapDown: (d) => _doubleTapPos = d,
+      onDoubleTap: _handleDoubleTap,
+      child: InteractiveViewer(
+        transformationController: _tc,
+        minScale: 1.0,
+        maxScale: 5.0,
+        panEnabled: _zoomed,
+        onInteractionEnd: (_) => _onInteractionEnd(),
+        child: Center(
+          child: Image.memory(
+            bytes,
+            fit: BoxFit.contain,
+            gaplessPlayback: true,
+            filterQuality: FilterQuality.medium,
+          ),
         ),
       ),
     );
