@@ -722,6 +722,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
+  /// Jumps the belt straight to [index] (tapping a mode rather than swiping).
+  /// animateToPage fires onPageChanged, so haptic/mode/tip stay in sync.
+  void _goToCompositionIndex(int index) {
+    if (index == _currentCompositionIndex) return;
+    _compositionPageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+    );
+  }
+
   /// Compact "best for" blurb for the current mode, or null when there's
   /// nothing worth saying (None).
   String? get _compositionTip {
@@ -1975,12 +1986,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                             ? 1.0 -
                                   (index - _currentCompositionIndex).abs() * 0.4
                             : 0.3;
-                        return Center(
-                          child: Opacity(
-                            opacity: opacity.clamp(0.3, 1.0),
-                            child: _buildCompositionButton(
-                              _compositionModes[index].label,
-                              isSelected: index == _currentCompositionIndex,
+                        return GestureDetector(
+                          // Tap a mode to jump to it (in addition to swiping).
+                          // opaque so the whole page slot is tappable, not just
+                          // the label glyph.
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => _goToCompositionIndex(index),
+                          child: Center(
+                            child: Opacity(
+                              opacity: opacity.clamp(0.3, 1.0),
+                              child: _buildCompositionButton(
+                                _compositionModes[index].label,
+                                isSelected: index == _currentCompositionIndex,
+                              ),
                             ),
                           ),
                         );

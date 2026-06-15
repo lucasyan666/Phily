@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:flutter_sticky_header/flutter_sticky_header.dart';
 import 'package:phily/screens/branded_loader.dart';
 
 const _gold = Color(0xFFE5C158);
@@ -167,21 +168,17 @@ class _Section {
   _Section(this.label, this.indices);
 }
 
-/// Sticky date header that pins below the top bar as you scroll.
-class _SectionHeader extends SliverPersistentHeaderDelegate {
+/// Sticky date header bar. Opaque so grid cells don't show through while it's
+/// pinned; pushed off by the next section's header (handled by SliverStickyHeader).
+class _SectionHeaderBar extends StatelessWidget {
   final String label;
-  const _SectionHeader(this.label);
+  const _SectionHeaderBar(this.label);
 
   @override
-  double get minExtent => 40;
-  @override
-  double get maxExtent => 40;
-
-  @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlaps) {
+  Widget build(BuildContext context) {
     return Container(
       height: 40,
-      color: Colors.black, // opaque so cells don't show through while pinned
+      color: Colors.black,
       alignment: Alignment.centerLeft,
       padding: const EdgeInsets.only(left: 12, top: 10, bottom: 6),
       child: Text(
@@ -195,9 +192,6 @@ class _SectionHeader extends SliverPersistentHeaderDelegate {
       ),
     );
   }
-
-  @override
-  bool shouldRebuild(_SectionHeader old) => old.label != label;
 }
 
 /// A glassy grid of the library's photos & videos (most recent first). The asset
@@ -230,6 +224,11 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   // Multi-select: long-press to enter, tap to toggle, batch share/delete.
   bool _selectMode = false;
   final Set<String> _selectedIds = {};
+  // Fast-scroll thumb: a tiny grabbable pill on the right edge. The controller
+  // lets us jump the grid as you drag; the notifier feeds the thumb's position
+  // (0..1) without rebuilding the grid.
+  final ScrollController _scrollCtrl = ScrollController();
+  final ValueNotifier<double> _scrollFrac = ValueNotifier(0);
 
   @override
   void initState() {
@@ -240,6 +239,8 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   @override
   void dispose() {
     _pull.dispose();
+    _scrollCtrl.dispose();
+    _scrollFrac.dispose();
     super.dispose();
   }
 
@@ -369,6 +370,10 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
     // rebuilt. The bounce springs `pixels` back to 0 on release, fading it out.
     final double v = past > 0 ? past : 0;
     if (_pull.value != v) _pull.value = v;
+    // Feed the fast-scroll thumb its 0..1 position.
+    final double max = n.metrics.maxScrollExtent;
+    final double f = max > 0 ? (n.metrics.pixels / max).clamp(0.0, 1.0) : 0.0;
+    if (_scrollFrac.value != f) _scrollFrac.value = f;
     // Prefetch the next page well before the user hits the bottom.
     if (_hasMore &&
         !_loadingMore &&
@@ -376,6 +381,13 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
       _loadMore();
     }
     return false;
+  }
+
+  // Drag the fast-scroll thumb → jump the grid to that fraction of its extent.
+  void _scrubTo(double frac) {
+    if (!_scrollCtrl.hasClients) return;
+    final max = _scrollCtrl.position.maxScrollExtent;
+    _scrollCtrl.jumpTo((frac * max).clamp(0.0, max));
   }
 
   Future<void> _openAt(int i) async {
@@ -437,27 +449,28 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
                     parent: BouncingScrollPhysics(),
                   ),
                   slivers: [
-                    for (final s in sections) ...[
-                      SliverPersistentHeader(
-                        pinned: true,
-                        delegate: _SectionHeader(s.label),
-                      ),
-                      SliverPadding(
-                        padding: const EdgeInsets.symmetric(horizontal: 2),
-                        sliver: SliverGrid(
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 3,
-                                mainAxisSpacing: 2,
-                                crossAxisSpacing: 2,
-                              ),
-                          delegate: SliverChildBuilderDelegate(
-                            (_, j) => _cell(s.indices[j]),
-                            childCount: s.indices.length,
+                    // Each header pins only while its own section is on screen;
+                    // the next day's header pushes it up and replaces it (iOS
+                    // Photos behaviour) instead of stacking.
+                    for (final s in sections)
+                      SliverStickyHeader(
+                        header: _SectionHeaderBar(s.label),
+                        sliver: SliverPadding(
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          sliver: SliverGrid(
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: 3,
+                                  mainAxisSpacing: 2,
+                                  crossAxisSpacing: 2,
+                                ),
+                            delegate: SliverChildBuilderDelegate(
+                              (_, j) => _cell(s.indices[j]),
+                              childCount: s.indices.length,
+                            ),
                           ),
                         ),
                       ),
-                    ],
                     SliverToBoxAdapter(child: SizedBox(height: bottomPad)),
                   ],
                 ),
