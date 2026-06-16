@@ -1,30 +1,25 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
+// Deterministic tests that don't depend on the camera/sensor platform channels.
+// The camera screen is plugin- and timer-driven (sensor streams, delayed
+// thumbnail loads, repeating tickers), so it can't be mounted in a plain widget
+// test without mocking every channel — out of scope here. Instead we lock the
+// shared brand constant and smoke-test real rendering code.
+import 'dart:ui';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:phily/main.dart';
+import 'package:phily/screens/branded_loader.dart';
+import 'package:phily/theme.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  test('brand gold constant matches the design value', () {
+    expect(kGold, const Color(0xFFE5C158));
+  });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  test('FibonacciSpiralPainter paints without throwing', () {
+    final recorder = PictureRecorder();
+    final canvas = Canvas(recorder);
+    const FibonacciSpiralPainter(
+      color: kGold,
+    ).paint(canvas, const Size(240, 240));
+    recorder.endRecording().dispose();
   });
 }

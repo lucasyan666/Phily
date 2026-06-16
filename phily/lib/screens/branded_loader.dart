@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:phily/theme.dart';
 
 /// Fibonacci-spiral mark — gold hairline segments stepping outward from the
 /// centre by Fibonacci radii, rotating a quarter-turn at each step.
@@ -77,7 +78,7 @@ class _BrandedLoaderState extends State<BrandedLoader>
 
   @override
   Widget build(BuildContext context) {
-    const gold = Color(0xFFE5C158);
+    const gold = kGold;
     return Container(
       color: Colors.black,
       child: Center(

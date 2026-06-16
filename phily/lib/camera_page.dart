@@ -13,6 +13,9 @@ import 'package:phily/screens/branded_loader.dart';
 import 'package:phily/screens/gallery_viewer.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
+import 'package:phily/theme.dart';
+
+part 'camera_overlays.dart';
 
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
@@ -44,6 +47,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Fibonacci-spiral orientation: number of 90° clockwise turns (0..3). Lets the
   // user point the spiral's eye at any corner. Persists across mode switches.
   int _spiralTurns = 0;
+  // The spiral is always drawn a quarter-turn off the stored value, so it sits
+  // in the rotated (landscape) orientation by default; the rotate button cycles
+  // from there. Used for both the painter and the alignment eye so they match.
+  int get _spiralTurnsEffective => (_spiralTurns + 1) & 3;
   // Aspect Ratio mode: selected crop ratio. Cycled by a button in that mode.
   static const List<({String label, double ratio})> _aspectRatios = [
     (label: '1:1', ratio: 1.0),
@@ -148,6 +155,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   int _lastAnimalMs = 0;
   List<Map<String, dynamic>> _lastAnimalDets = const [];
 
+  // Experimental: highlight buildings in None mode via Apple Vision rectangle
+  // detection (architectural rects — facades/windows). Throttled native call;
+  // results are normalised preview-space rects the painter highlights.
+  static const bool _buildingsEnabled = true;
+  int _lastBuildingMs = 0;
+  final List<Rect> _buildingBoxes = [];
+  final ValueNotifier<int> _buildingRepaint = ValueNotifier(0);
+
   // ML Kit face detector — runs on the CameraImage directly (no method-channel
   // image round trip), so detection latency is low enough for live tracking.
   final FaceDetector _faceDetector = FaceDetector(
@@ -189,8 +204,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// 0 = portrait, 1 = landscape (rotated CW), 2 = upside-down, 3 = landscape (CCW).
   void _startOrientationListener() {
     _accelSub =
-        accelerometerEventStream(samplingPeriod: SensorInterval.gameInterval)
-            .listen((e) {
+        accelerometerEventStream(
+          samplingPeriod: SensorInterval.gameInterval,
+        ).listen((e) {
           // Low-pass the gravity vector → smooth, jitter-free roll/pitch for the
           // gravity-based horizon line. (Raw e.* is still used for orientation.)
           if (!_gravInit) {
@@ -217,7 +233,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             turns = e.y > 0 ? 0 : 2; // portrait up / upside-down
           }
           if (turns != null && turns != _deviceTurns) {
-            setState(() => _deviceTurns = turns!); // rebuild so UI controls rotate
+            setState(
+              () => _deviceTurns = turns!,
+            ); // rebuild so UI controls rotate
           }
 
           // Drive the gravity horizon while Horizon Grid is active.
@@ -594,6 +612,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _focusHideTimer?.cancel();
     _accelSub?.cancel();
     _faceAnim?.dispose();
+    _buildingRepaint.dispose();
     _alignLevel.dispose();
     _horizon.dispose();
     _hzLevel.dispose();
@@ -678,6 +697,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _scheduleFocusHide();
   }
 
+  /// On-screen exposure drag — deliberately gentle: ~2.5 screen-heights of
+  /// travel covers the whole EV range, so one big swipe nudges only about a
+  /// third of the bar. [dyUp] is the upward drag in px (positive = brighter).
+  void _adjustExposureScreen(double dyUp) {
+    final double h = MediaQuery.of(context).size.height;
+    _adjustExposure(dyUp, h * 2.5);
+  }
+
   void _onScaleStart(ScaleStartDetails details) {
     _baseZoom = _currentZoom;
     _swipeStartX = _swipeLastX = details.focalPoint.dx;
@@ -687,13 +714,30 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Future<void> _onScaleUpdate(ScaleUpdateDetails details) async {
     _swipeMaxPointers = math.max(_swipeMaxPointers, details.pointerCount);
+    final double prevX = _swipeLastX;
+    final double prevY = _swipeLastY;
     _swipeLastX = details.focalPoint.dx;
     _swipeLastY = details.focalPoint.dy;
     if (_controller == null || !_controller!.value.isInitialized) return;
-    // Allow pinching down to 0.5× — _setCameraZoom handles the lens boundary.
-    final double newZoom = (_baseZoom * details.scale).clamp(0.5, _maxZoom);
-    if ((newZoom - _currentZoom).abs() < 0.01) return;
-    await _setCameraZoom(newZoom);
+
+    // Two fingers → pinch zoom (down to 0.5×; _setCameraZoom clamps the lens).
+    if (details.pointerCount > 1) {
+      final double newZoom = (_baseZoom * details.scale).clamp(0.5, _maxZoom);
+      if ((newZoom - _currentZoom).abs() < 0.01) return;
+      await _setCameraZoom(newZoom);
+      return;
+    }
+
+    // One finger, while the focus/exposure UI is up (i.e. just after a tap to
+    // focus) → slide vertically anywhere on screen to set exposure. Gated to
+    // mostly-vertical moves so horizontal composition swipes still work.
+    if (_focusShown && _focusPoint != null && _maxExposure > _minExposure) {
+      final double dy = _swipeLastY - prevY;
+      final double dx = _swipeLastX - prevX;
+      if (dy.abs() > dx.abs()) {
+        _adjustExposureScreen(-dy); // drag up = brighter
+      }
+    }
   }
 
   void _onScaleEnd(ScaleEndDetails _) {
@@ -747,8 +791,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         return 'Portraits & fine-art landscapes — subject a touch more central.';
       case CompositionMode.goldenTriangles:
         return 'Scenes with strong diagonals — roads, stairs, reclining poses.';
-      case CompositionMode.spiralSection:
-        return 'A single hero subject — nest it toward the spiral.';
       case CompositionMode.fibonacciSpiral:
         return 'Flowing scenes — rivers, paths, shells. Lead the eye to the centre.';
       case CompositionMode.harmoniousTriangles:
@@ -986,7 +1028,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Caches the physical quarter-turn rotation that finds faces per device-turns.
   final Map<int, int> _qtCache = {};
 
-
   /// Real-time face detection via ML Kit. ML Kit on iOS ignores InputImage
   /// rotation metadata, so to detect faces when the phone is held sideways we
   /// must PHYSICALLY rotate the pixel buffer to upright, detect, then map the
@@ -1093,6 +1134,44 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       dets.addAll(_lastAnimalDets);
     }
 
+    // ── Buildings (None mode only) via Apple Vision rectangle detection.
+    // Throttled ~5 Hz; highlighted directly (separate from the tracking boxes),
+    // and cleared when leaving None so they don't linger under a grid.
+    if (_buildingsEnabled && _compositionMode == CompositionMode.none) {
+      if (nowMs - _lastBuildingMs > 200) {
+        _lastBuildingMs = nowMs;
+        try {
+          final raw = await _cameraChannel.invokeMethod<List>(
+            'detectBuildings',
+            {'bgra': winBytes, 'width': winOw, 'height': winOh},
+          );
+          if (!mounted) return;
+          final tmp = <Map<String, dynamic>>[];
+          _addVisionDets(raw, tmp, qt, 'building');
+          _buildingBoxes
+            ..clear()
+            ..addAll(
+              tmp
+                  .map(
+                    (d) => Rect.fromLTWH(
+                      d['x'] as double,
+                      d['y'] as double,
+                      d['w'] as double,
+                      d['h'] as double,
+                    ),
+                  )
+                  // Keep only large rectangles — drop the small windows / keyboard
+                  // keys / signage the rectangle detector also finds.
+                  .where((r) => r.shortestSide >= 0.22),
+            );
+          _buildingRepaint.value++;
+        } catch (_) {}
+      }
+    } else if (_buildingBoxes.isNotEmpty) {
+      _buildingBoxes.clear();
+      _buildingRepaint.value++;
+    }
+
     _updateFaceTargets(dets); // ticker animates the displayed boxes
   }
 
@@ -1125,8 +1204,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final double half = _vFovHalfRad > 0 ? _vFovHalfRad : (33 * math.pi / 180);
     final double vHalfEff = math.atan(math.tan(half) / _currentZoom);
     final double ay =
-        (0.5 - _hzPosGain * 0.5 * math.tan(pitch) / math.tan(vHalfEff))
-            .clamp(-0.3, 1.3);
+        (0.5 - _hzPosGain * 0.5 * math.tan(pitch) / math.tan(vHalfEff)).clamp(
+          -0.3,
+          1.3,
+        );
 
     _hzTAngle = ang;
     _hzTAx = 0.5; // centre anchor; the line spans the full width
@@ -1383,7 +1464,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         if (_bandW <= 0 || _bandH <= 0) return null; // band not measured yet
         final eye = _goldenSpiralEyePx(
           Size(_bandW, _bandH),
-          _spiralTurns,
+          _spiralTurnsEffective,
           CompositionPainter._goldenSpiralFill,
         );
         return [
@@ -1812,9 +1893,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                             width: 72,
                             height: 72,
                             child: CustomPaint(
-                              painter: _FocusBracketPainter(
-                                gold: Color(0xFFE5C158),
-                              ),
+                              painter: _FocusBracketPainter(gold: kGold),
                             ),
                           ),
                           if (_aeAfLocked) ...[
@@ -1822,7 +1901,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                             const Text(
                               'AE/AF LOCK',
                               style: TextStyle(
-                                color: Color(0xFFE5C158),
+                                color: kGold,
                                 fontSize: 8.5,
                                 fontWeight: FontWeight.w400,
                                 letterSpacing: 2.0,
@@ -1848,8 +1927,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 _topInset + 8,
                 MediaQuery.of(context).size.height - 220,
               ),
+              // Readout only — adjustment happens by sliding on the screen, so
+              // any drag here passes through to the preview's gesture handler.
               child: IgnorePointer(
-                ignoring: !_focusShown,
                 child: AnimatedOpacity(
                   opacity: _focusShown ? 1.0 : 0.0,
                   duration: const Duration(milliseconds: 240),
@@ -1876,10 +1956,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                       powerGlow: _powerGlow,
                       topInset: _topInset,
                       bottomInset: _bottomInset,
-                      spiralTurns: _spiralTurns,
+                      spiralTurns: _spiralTurnsEffective,
                       aspect: _aspectRatios[_aspectIndex].ratio,
                       horizon: _horizon,
-                      repaint: Listenable.merge([_faceAnim, _horizon]),
+                      buildingBoxes: _buildingBoxes,
+                      repaint: Listenable.merge([
+                        _faceAnim,
+                        _horizon,
+                        _buildingRepaint,
+                      ]),
                     ),
                   ),
                 ),
@@ -1929,7 +2014,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     child: Text(
                       '${_currentZoom.toStringAsFixed(1)}×',
                       style: const TextStyle(
-                        color: Color(0xFFE5C158),
+                        color: kGold,
                         fontSize: 11,
                         fontWeight: FontWeight.w300,
                         letterSpacing: 0.8,
@@ -2121,7 +2206,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           Text(
                             '$m:$s',
                             style: const TextStyle(
-                              color: Color(0xFFE5C158),
+                              color: kGold,
                               fontSize: 13,
                               fontWeight: FontWeight.w300,
                               letterSpacing: 3.0,
@@ -2161,7 +2246,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 final radius = ui.lerpDouble(20, 8, fly)!;
 
                 // Quick pop-in, then dissolve into the thumbnail at the end.
-                final appear = (_bounceController!.value / 0.12).clamp(0.0, 1.0);
+                final appear = (_bounceController!.value / 0.12).clamp(
+                  0.0,
+                  1.0,
+                );
                 final tail = ((fly - 0.82) / 0.18).clamp(0.0, 1.0);
                 final opacity = (Curves.easeOut.transform(appear) * (1 - tail))
                     .clamp(0.0, 1.0);
@@ -2304,7 +2392,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Widget _buildTipBubble() {
     final tip = _compositionTip;
     final bool visible = _showTip && tip != null && !_isRecording;
-    const gold = Color(0xFFE5C158);
+    const gold = kGold;
     return IgnorePointer(
       ignoring: !visible,
       child: AnimatedSwitcher(
@@ -2446,7 +2534,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     bool emphasis = false,
     bool breathe = false,
   }) {
-    const gold = Color(0xFFE5C158);
+    const gold = kGold;
     Widget build(double pulse) {
       final Color textColor = emphasis
           ? gold
@@ -2485,7 +2573,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           children: [
             Icon(
               icon,
-              color: emphasis ? gold.withValues(alpha: 0.75 + 0.25 * pulse) : gold,
+              color: emphasis
+                  ? gold.withValues(alpha: 0.75 + 0.25 * pulse)
+                  : gold,
               size: 14,
             ),
             const SizedBox(width: 8),
@@ -2553,10 +2643,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         Icons.straighten_rounded,
         'Line your horizon up with the gold line',
       ),
-      _ => (
-        Icons.grid_3x3_rounded,
-        'Place your subject on an intersection',
-      ),
+      _ => (Icons.grid_3x3_rounded, 'Place your subject on an intersection'),
     };
     return _glassPill(
       key: const ValueKey('hint-instruction'),
@@ -2605,7 +2692,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             Text(
               _aspectRatios[_aspectIndex].label,
               style: const TextStyle(
-                color: Color(0xFFE5C158),
+                color: kGold,
                 fontSize: 13,
                 fontWeight: FontWeight.w400,
                 letterSpacing: 0.4,
@@ -2640,7 +2727,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         child: _rotated(
           const Icon(
             Icons.rotate_90_degrees_cw_rounded,
-            color: Color(0xFFE5C158),
+            color: kGold,
             size: 24,
           ),
         ),
@@ -2807,7 +2894,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Frosted-glass toggle that dims the composition overlay for a clean frame
   /// (gold + lit when shown, muted with a struck-through grid when hidden).
   Widget _buildGridToggle() {
-    const gold = Color(0xFFE5C158);
+    const gold = kGold;
     final on = _gridVisible;
     return GestureDetector(
       onTap: () {
@@ -2844,64 +2931,53 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   /// Vertical exposure (EV) slider with a draggable sun knob. Drag up = brighter.
   Widget _buildExposureSlider(double h) {
-    const gold = Color(0xFFE5C158);
+    const gold = kGold;
     final range = _maxExposure - _minExposure;
     final frac = range > 0
         ? ((_exposureOffset - _minExposure) / range).clamp(0.0, 1.0)
         : 0.5;
     const knob = 24.0;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onVerticalDragUpdate: (d) => _adjustExposure(-d.delta.dy, h),
-      child: SizedBox(
-        width: 34,
-        height: h,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // Track.
-            Container(
-              width: 2,
-              height: h,
+    return SizedBox(
+      width: 34,
+      height: h,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Track.
+          Container(
+            width: 2,
+            height: h,
+            decoration: BoxDecoration(
+              color: gold.withValues(alpha: 0.4),
+              borderRadius: BorderRadius.circular(1),
+              boxShadow: const [
+                BoxShadow(color: Colors.black54, blurRadius: 3),
+              ],
+            ),
+          ),
+          // Sun knob.
+          Positioned(
+            bottom: frac * (h - knob),
+            child: Container(
+              width: knob,
+              height: knob,
               decoration: BoxDecoration(
-                color: gold.withValues(alpha: 0.4),
-                borderRadius: BorderRadius.circular(1),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black54, blurRadius: 3),
+                shape: BoxShape.circle,
+                color: Colors.black.withValues(alpha: 0.35),
+                boxShadow: [
+                  BoxShadow(color: gold.withValues(alpha: 0.4), blurRadius: 8),
                 ],
               ),
+              child: const Icon(Icons.wb_sunny_rounded, color: gold, size: 16),
             ),
-            // Sun knob.
-            Positioned(
-              bottom: frac * (h - knob),
-              child: Container(
-                width: knob,
-                height: knob,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.black.withValues(alpha: 0.35),
-                  boxShadow: [
-                    BoxShadow(
-                      color: gold.withValues(alpha: 0.4),
-                      blurRadius: 8,
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.wb_sunny_rounded,
-                  color: gold,
-                  size: 16,
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildTopSettingsPanel() {
-    const Color gold = Color(0xFFE5C158);
+    const Color gold = kGold;
     return Container(
       key: _topPanelKey,
       padding: EdgeInsets.only(
@@ -2983,7 +3059,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                       'FLASH',
                       style: TextStyle(
                         color: isIconActive
-                            ? const Color(0xFFE5C158)
+                            ? kGold
                             : Colors.white.withValues(alpha: 0.42),
                         fontSize: 7.5,
                         fontWeight: FontWeight.w300,
@@ -3007,7 +3083,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Widget _buildCompositionButton(String type, {bool isSelected = false}) {
-    const Color gold = Color(0xFFE5C158);
+    const Color gold = kGold;
     return isSelected
         ? ClipRRect(
             borderRadius: BorderRadius.circular(18),
@@ -3032,7 +3108,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     type.toUpperCase(),
                     textAlign: TextAlign.center,
                     style: const TextStyle(
-                      color: Color(0xFFE5C158),
+                      color: kGold,
                       fontSize: 9,
                       fontWeight: FontWeight.w300,
                       letterSpacing: 1.2,
@@ -3219,7 +3295,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         Text(
           '${clampedZoom < 1 ? clampedZoom.toStringAsFixed(1) : clampedZoom.toStringAsFixed(1)}×',
           style: const TextStyle(
-            color: Color(0xFFE5C158),
+            color: kGold,
             fontSize: 13,
             fontWeight: FontWeight.w300,
             letterSpacing: 1.4,
@@ -3341,1690 +3417,4 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       child: CameraPreview(_controller!),
     );
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Focus bracket painter — corner-bracket focus indicator
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _FocusBracketPainter extends CustomPainter {
-  final Color gold;
-  const _FocusBracketPainter({required this.gold});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = gold
-      ..strokeWidth = 1.5
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.square
-      ..isAntiAlias = true;
-
-    const double arm = 14.0;
-    final double w = size.width;
-    final double h = size.height;
-
-    // Top-left corner
-    canvas.drawLine(Offset(0, arm), const Offset(0, 0), paint);
-    canvas.drawLine(const Offset(0, 0), Offset(arm, 0), paint);
-    // Top-right corner
-    canvas.drawLine(Offset(w - arm, 0), Offset(w, 0), paint);
-    canvas.drawLine(Offset(w, 0), Offset(w, arm), paint);
-    // Bottom-right corner
-    canvas.drawLine(Offset(w, h - arm), Offset(w, h), paint);
-    canvas.drawLine(Offset(w, h), Offset(w - arm, h), paint);
-    // Bottom-left corner
-    canvas.drawLine(Offset(arm, h), Offset(0, h), paint);
-    canvas.drawLine(Offset(0, h), Offset(0, h - arm), paint);
-
-    // Center focus dot
-    canvas.drawCircle(
-      Offset(w / 2, h / 2),
-      1.5,
-      paint
-        ..style = PaintingStyle.fill
-        ..color = gold.withValues(alpha: 0.70),
-    );
-  }
-
-  @override
-  bool shouldRepaint(_FocusBracketPainter old) => old.gold != gold;
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Zoom meter painter — hairline tick wheel
-// ────────────────────────────────────────────────────────────────────────────
-
-// ────────────────────────────────────────────────────────────────────────────
-// Native seamless zoom bridge
-// Communicates with AVCaptureDevice.videoZoomFactor directly via MethodChannel,
-// bypassing Flutter’s own CameraController zoom path. This is what makes
-// lens switching truly seamless — the device’s active session is never torn
-// down; iOS handles physical lens selection internally.
-// ────────────────────────────────────────────────────────────────────────────
-
-class _CameraZoomChannel {
-  static const MethodChannel _ch = MethodChannel('com.phily.camera/zoom');
-  static final instance = _CameraZoomChannel._();
-  _CameraZoomChannel._();
-
-  /// Immediate zoom — for continuous drag input.
-  /// Writes AVCaptureDevice.videoZoomFactor directly; reflects on next frame.
-  Future<void> setZoom(double factor) =>
-      _ch.invokeMethod('setZoom', {'factor': factor});
-
-  /// Hardware-animated zoom ramp — for discrete level taps.
-  /// Uses AVCaptureDevice.ramp(toVideoZoomFactor:withRate:) which is
-  /// frame-accurate and cancels any previous ramp atomically.
-  Future<void> rampZoom(double factor, {double rate = 5.0}) =>
-      _ch.invokeMethod('rampZoom', {'factor': factor, 'rate': rate});
-
-  /// Returns {min, max, current, switchoverFactors} from the native device.
-  /// switchoverFactors contains the exact zoom levels where iOS transitions
-  /// between physical lenses (e.g. [2.0, 6.0] on iPhone 14 Pro).
-  Future<Map<String, dynamic>?> getZoomInfo() async {
-    final raw = await _ch.invokeMethod<Map>('getZoomInfo');
-    if (raw == null) return null;
-    return raw.map((k, v) => MapEntry(k.toString(), v));
-  }
-}
-
-class _ZoomMeterPainter extends CustomPainter {
-  final double zoom; // current logical zoom level
-  final double maxZoom; // software upper bound (25.0)
-  final double pxPerUnit; // logical pixels per 1×
-  final List<double> switchoverFactors; // hardware lens-switch boundaries
-
-  const _ZoomMeterPainter({
-    required this.zoom,
-    required this.maxZoom,
-    required this.pxPerUnit,
-    this.switchoverFactors = const [],
-  });
-
-  static const Color _white = Color(0xFFFFFFFF);
-  static const Color _gold = Color(0xFFE5C158);
-
-  // Major tick labels shown on the wheel.
-  static const List<double> _major = [0.5, 1, 2, 5, 10, 15, 20, 25];
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final double cx = size.width / 2;
-    final double cy = size.height;
-
-    // How many zoom units are visible on each side of centre.
-    final double visibleUnits = (size.width / 2) / pxPerUnit;
-
-    final double lo = (zoom - visibleUnits - 1).floorToDouble().clamp(
-      0.5,
-      maxZoom,
-    );
-    final double hi = (zoom + visibleUnits + 1).ceilToDouble().clamp(
-      0.5,
-      maxZoom,
-    );
-
-    // Draw minor ticks every 0.1×, major ticks at the _major values.
-    final Paint tickPaint = Paint()
-      ..color = _white.withValues(alpha: 0.28)
-      ..strokeWidth = 0.8
-      ..strokeCap = StrokeCap.butt;
-
-    final Paint majorPaint = Paint()
-      ..color = _white.withValues(alpha: 0.55)
-      ..strokeWidth = 1.0
-      ..strokeCap = StrokeCap.butt;
-
-    // Centre indicator line (gold)
-    final Paint centrePaint = Paint()
-      ..color = _gold
-      ..strokeWidth = 1.5
-      ..strokeCap = StrokeCap.butt;
-
-    final TextPainter tp = TextPainter(
-      textDirection: TextDirection.ltr,
-      textAlign: TextAlign.center,
-    );
-
-    // Iterate every 0.1× step in the visible range.
-    double v = (lo * 10).round() / 10;
-    while (v <= hi + 0.05) {
-      final double x = cx + (v - zoom) * pxPerUnit;
-      if (x < 0 || x > size.width) {
-        v = (v * 10).round() / 10 + 0.1;
-        continue;
-      }
-
-      // A tick is a hardware lens-switchover boundary if it matches one of the
-      // virtualDeviceSwitchOverVideoZoomFactors reported by iOS. These get a
-      // gold accent tick (like the native Camera app's 0.5×/1×/2× indicators).
-      final bool isSwitchover = switchoverFactors.any(
-        (s) => (v - s).abs() < 0.08,
-      );
-      final bool isMajor =
-          _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
-      final double tickH = isSwitchover ? 20.0 : (isMajor ? 16.0 : 8.0);
-      final Paint p = isSwitchover
-          ? (Paint()
-              ..color = _gold.withValues(alpha: 0.75)
-              ..strokeWidth = 1.2
-              ..strokeCap = StrokeCap.butt)
-          : (isMajor ? majorPaint : tickPaint);
-
-      canvas.drawLine(Offset(x, cy - tickH), Offset(x, cy), p);
-
-      if (isMajor) {
-        final String label = v < 1
-            ? v.toStringAsFixed(1)
-            : v.toInt().toString();
-        tp.text = TextSpan(
-          text: label,
-          style: TextStyle(
-            color: isSwitchover
-                ? _gold.withValues(alpha: 0.80)
-                : _white.withValues(alpha: 0.55),
-            fontSize: 8,
-            fontWeight: isSwitchover ? FontWeight.w400 : FontWeight.w300,
-            letterSpacing: 0.5,
-          ),
-        );
-        tp.layout();
-        tp.paint(canvas, Offset(x - tp.width / 2, cy - tickH - tp.height - 2));
-      }
-
-      v = ((v * 10).round() / 10) + 0.1;
-      v = double.parse(v.toStringAsFixed(1)); // avoid float drift
-    }
-
-    // Centre indicator
-    canvas.drawLine(Offset(cx, cy - 22), Offset(cx, cy), centrePaint);
-  }
-
-  @override
-  bool shouldRepaint(_ZoomMeterPainter old) =>
-      old.zoom != zoom || old.switchoverFactors != switchoverFactors;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Semicircle clipper — clips a rectangle to the left half of a circle whose
-// centre sits at the right edge. Creates the "popping out from the right" shape.
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _SemicircleFromRightClipper extends CustomClipper<Path> {
-  @override
-  Path getClip(Size size) {
-    final path = Path();
-    // Arc centre is at the right edge, vertically centred.
-    // Sweeping 180° counterclockwise from top traces the left semicircle.
-    path.addArc(
-      Rect.fromCenter(
-        center: Offset(size.width, size.height / 2),
-        width: size.height, // diameter = height → radius = height/2
-        height: size.height,
-      ),
-      -math.pi / 2, // start at top  (12 o'clock)
-      -math.pi, // sweep 180° CCW → through 9 o'clock to 6 o'clock
-    );
-    path.close(); // straight line back along the right edge
-    return path;
-  }
-
-  @override
-  bool shouldReclip(_SemicircleFromRightClipper _) => false;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Vertical zoom meter painter — like _ZoomMeterPainter but rotated 90°.
-// Ticks are horizontal lines emanating from the right edge.
-// Drag up = zoom in, drag down = zoom out.
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _VerticalZoomMeterPainter extends CustomPainter {
-  final double zoom;
-  final double maxZoom;
-  final double pxPerUnit;
-  final List<double> switchoverFactors;
-
-  const _VerticalZoomMeterPainter({
-    required this.zoom,
-    required this.maxZoom,
-    required this.pxPerUnit,
-    this.switchoverFactors = const [],
-  });
-
-  static const Color _white = Color(0xFFFFFFFF);
-  static const Color _gold = Color(0xFFE5C158);
-  static const List<double> _major = [0.5, 1, 2, 5, 10, 15, 20, 25];
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final double cy = size.height / 2;
-    final double rx = size.width; // right edge — tick origin
-
-    final double visibleUnits = (size.height / 2) / pxPerUnit;
-    final double lo = (zoom - visibleUnits - 1).floorToDouble().clamp(
-      0.5,
-      maxZoom,
-    );
-    final double hi = (zoom + visibleUnits + 1).ceilToDouble().clamp(
-      0.5,
-      maxZoom,
-    );
-
-    final Paint tickPaint = Paint()
-      ..color = _white.withValues(alpha: 0.28)
-      ..strokeWidth = 0.8;
-    final Paint majorPaint = Paint()
-      ..color = _white.withValues(alpha: 0.55)
-      ..strokeWidth = 1.0;
-    final Paint centrePaint = Paint()
-      ..color = _gold
-      ..strokeWidth = 1.5;
-
-    final TextPainter tp = TextPainter(
-      textDirection: TextDirection.ltr,
-      textAlign: TextAlign.right,
-    );
-
-    double v = (lo * 10).round() / 10;
-    while (v <= hi + 0.05) {
-      final double y = cy + (v - zoom) * pxPerUnit;
-      if (y < 0 || y > size.height) {
-        v = double.parse(((v * 10).round() / 10 + 0.1).toStringAsFixed(1));
-        continue;
-      }
-
-      final bool isSwitchover = switchoverFactors.any(
-        (s) => (v - s).abs() < 0.08,
-      );
-      final bool isMajor =
-          _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
-      final double tickLen = isSwitchover ? 22.0 : (isMajor ? 16.0 : 7.0);
-
-      final Paint p = isSwitchover
-          ? (Paint()
-              ..color = _gold.withValues(alpha: 0.75)
-              ..strokeWidth = 1.2)
-          : (isMajor ? majorPaint : tickPaint);
-
-      // Horizontal tick from right edge going left
-      canvas.drawLine(Offset(rx - tickLen, y), Offset(rx, y), p);
-
-      if (isMajor) {
-        final String label = v < 1
-            ? v.toStringAsFixed(1)
-            : v.toInt().toString();
-        tp.text = TextSpan(
-          text: label,
-          style: TextStyle(
-            color: isSwitchover
-                ? _gold.withValues(alpha: 0.85)
-                : _white.withValues(alpha: 0.55),
-            fontSize: 8,
-            fontWeight: isSwitchover ? FontWeight.w400 : FontWeight.w300,
-            letterSpacing: 0.4,
-          ),
-        );
-        tp.layout();
-        // Label sits just to the left of the tick, vertically centred on it
-        tp.paint(
-          canvas,
-          Offset(rx - tickLen - tp.width - 3, y - tp.height / 2),
-        );
-      }
-
-      v = double.parse(((v * 10).round() / 10 + 0.1).toStringAsFixed(1));
-    }
-
-    // Centre indicator — gold horizontal line at current zoom position
-    canvas.drawLine(Offset(rx - 26, cy), Offset(rx, cy), centrePaint);
-
-    // Current zoom label centred on the indicator
-    final String zLabel =
-        '${zoom < 1 ? zoom.toStringAsFixed(1) : zoom.toStringAsFixed(1)}×';
-    tp.text = TextSpan(
-      text: zLabel,
-      style: const TextStyle(
-        color: _gold,
-        fontSize: 11,
-        fontWeight: FontWeight.w300,
-        letterSpacing: 1.0,
-      ),
-    );
-    tp.layout();
-    tp.paint(
-      canvas,
-      Offset(rx - tickLen(zoom) - tp.width - 6, cy - tp.height / 2),
-    );
-  }
-
-  double tickLen(double v) {
-    final isSwitchover = switchoverFactors.any((s) => (v - s).abs() < 0.08);
-    final isMajor = _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
-    return isSwitchover ? 22.0 : (isMajor ? 16.0 : 7.0);
-  }
-
-  @override
-  bool shouldRepaint(_VerticalZoomMeterPainter old) =>
-      old.zoom != zoom || old.switchoverFactors != switchoverFactors;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Composition mode enum
-// ─────────────────────────────────────────────────────────────────────────────
-
-enum CompositionMode {
-  none,
-  horizonGrid,
-  ruleOfThirds,
-  goldenSection,
-  goldenTriangles,
-  spiralSection,
-  fibonacciSpiral,
-  harmoniousTriangles,
-  cross,
-  focalMass,
-  vArrangement,
-  diagonal,
-  radial,
-  lArrangement,
-  compoundCurve,
-  pyramid,
-  circular,
-  symmetry,
-  aspectRatio;
-
-  String get label {
-    switch (this) {
-      case CompositionMode.none:
-        return 'None';
-      case CompositionMode.horizonGrid:
-        return 'Horizon Grid';
-      case CompositionMode.ruleOfThirds:
-        return 'Rule of Thirds';
-      case CompositionMode.goldenSection:
-        return 'Phi Grid';
-      case CompositionMode.goldenTriangles:
-        return 'Golden Triangles';
-      case CompositionMode.spiralSection:
-        return 'Spiral Section';
-      case CompositionMode.fibonacciSpiral:
-        return 'Fibonacci Spiral';
-      case CompositionMode.harmoniousTriangles:
-        return 'Harmonious Triangles';
-      case CompositionMode.cross:
-        return 'Cross';
-      case CompositionMode.focalMass:
-        return 'Focal Mass';
-      case CompositionMode.vArrangement:
-        return 'V Arrangement';
-      case CompositionMode.diagonal:
-        return 'Diagonal';
-      case CompositionMode.radial:
-        return 'Radial';
-      case CompositionMode.lArrangement:
-        return 'L Arrangement';
-      case CompositionMode.compoundCurve:
-        return 'Compound Curve';
-      case CompositionMode.pyramid:
-        return 'Pyramid';
-      case CompositionMode.circular:
-        return 'Circular';
-      case CompositionMode.symmetry:
-        return 'Symmetry';
-      case CompositionMode.aspectRatio:
-        return 'Aspect Ratio';
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Single painter that dispatches to the correct drawing routine
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Glow segment — a normalised grid-line coordinate with per-frame intensity
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Coordinates are normalised to [0,1]. Intensity fades in/out each analysis frame.
-class _GlowSeg {
-  double x1, y1, x2, y2;
-  double intensity;
-  _GlowSeg(this.x1, this.y1, this.x2, this.y2, this.intensity);
-}
-
-/// An animated face indicator. Holds the current (eased) box and the latest
-/// detection target, plus opacity/appearance so it can fade and ease smoothly
-/// at display framerate, decoupled from the slower detection rate.
-class _FaceBox {
-  // Current animated values (normalised screen space, centre + size).
-  double cx, cy, w, h;
-  // Latest detection target.
-  double tcx, tcy, tw, th;
-  double opacity; // 0..1, fades in on appear / out on loss
-  double appear; // 0..1, drives a subtle scale-in
-  bool matched; // matched in the most recent detection cycle
-  int lastSeenMs; // last time it was matched — grace window before fading
-  int
-  intersection; // index 0..3 of the rule-of-thirds power point it's on, -1 none
-  bool perfect; // true when that point sits near the box centre
-  double alignGlow; // 0..1 animated alignment-glow strength
-  _FaceBox(this.cx, this.cy, this.w, this.h, this.lastSeenMs)
-    : tcx = cx,
-      tcy = cy,
-      tw = w,
-      th = h,
-      opacity = 0,
-      appear = 0,
-      matched = true,
-      intersection = -1,
-      perfect = false,
-      alignGlow = 0;
-}
-
-/// Lightweight on-screen FPS meter (testing). Counts vsync ticks via a Ticker
-/// and reports the actual rendered frame rate, updating ~twice a second.
-class _FpsOverlay extends StatefulWidget {
-  const _FpsOverlay();
-  @override
-  State<_FpsOverlay> createState() => _FpsOverlayState();
-}
-
-class _FpsOverlayState extends State<_FpsOverlay>
-    with SingleTickerProviderStateMixin {
-  late final Ticker _ticker;
-  int _frames = 0;
-  int _lastMs = DateTime.now().millisecondsSinceEpoch;
-  double _fps = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _ticker = createTicker((_) {
-      _frames++;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final dt = now - _lastMs;
-      if (dt >= 500) {
-        setState(() => _fps = _frames * 1000 / dt);
-        _frames = 0;
-        _lastMs = now;
-      }
-    })..start();
-  }
-
-  @override
-  void dispose() {
-    _ticker.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final Color color = _fps >= 55
-        ? const Color(0xFF4CD964) // green
-        : _fps >= 30
-        ? const Color(0xFFE5C158) // gold
-        : const Color(0xFFFF3B30); // red
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.45),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        '${_fps.toStringAsFixed(0)} FPS',
-        style: TextStyle(
-          color: color,
-          fontSize: 12,
-          fontWeight: FontWeight.w500,
-          fontFeatures: const [FontFeature.tabularFigures()],
-          letterSpacing: 0.5,
-        ),
-      ),
-    );
-  }
-}
-
-/// Pixel position (in [size] space) of the Fibonacci-spiral "eye" — the point
-/// the arcs converge to — for [turns] 90° clockwise rotations and [fill] frame
-/// fraction. Mirrors `_drawGoldenSpiral`'s geometry exactly so the alignment
-/// target and the dot the user sees always coincide. Shared by the painter and
-/// the alignment logic.
-Offset _goldenSpiralEyePx(Size size, int turns, double fill) {
-  const double phi = 1.6180339887;
-  final int t = turns & 3;
-  final bool swap = t.isOdd;
-  final double fw = swap ? size.height : size.width;
-  final double fh = swap ? size.width : size.height;
-  final double maxW = fw * fill, maxH = fh * fill;
-  double w = maxW, h = w / phi;
-  if (h > maxH) {
-    h = maxH;
-    w = h * phi;
-  }
-  Rect rect = Rect.fromLTWH((fw - w) / 2, (fh - h) / 2, w, h);
-  int dir = 0;
-  // Cut squares until the remaining rect collapses onto the eye (sub-pixel).
-  for (int i = 0; i < 20; i++) {
-    final double sq = math.min(rect.width, rect.height);
-    switch (dir) {
-      case 0:
-        rect = Rect.fromLTRB(rect.left, rect.top, rect.right - sq, rect.bottom);
-        break;
-      case 1:
-        rect = Rect.fromLTRB(rect.left, rect.top, rect.right, rect.bottom - sq);
-        break;
-      case 2:
-        rect = Rect.fromLTRB(rect.left + sq, rect.top, rect.right, rect.bottom);
-        break;
-      default:
-        rect = Rect.fromLTRB(rect.left, rect.top + sq, rect.right, rect.bottom);
-    }
-    dir = (dir + 1) % 4;
-  }
-  final Offset local = rect.center;
-  // Same transform the painter applies: about the band centre, rotate t·90°,
-  // with the (fw × fh) frame centred there.
-  final double a = t * (math.pi / 2);
-  final double dx = local.dx - fw / 2, dy = local.dy - fh / 2;
-  final double rx = dx * math.cos(a) - dy * math.sin(a);
-  final double ry = dx * math.sin(a) + dy * math.cos(a);
-  return Offset(size.width / 2 + rx, size.height / 2 + ry);
-}
-
-class CompositionPainter extends CustomPainter {
-  final CompositionMode mode;
-
-  /// Lines from the active grid that are currently edge-aligned.
-  final List<_GlowSeg> glowSegs;
-
-  /// Animated face indicators (drawn as corner brackets).
-  final List<_FaceBox> faceBoxes;
-
-  /// Per-power-point glow strength (0..1) for Rule-of-Thirds alignment.
-  final List<double> powerGlow;
-
-  /// Heights (px) of the top/bottom UI panels. The composition grid is drawn
-  /// only within the camera-visible band `[topInset, height − bottomInset]`,
-  /// so guide lines stop at the panel edges instead of sliding under them.
-  final double topInset;
-  final double bottomInset;
-
-  /// Fibonacci-spiral orientation in 90° clockwise turns (0..3).
-  final int spiralTurns;
-
-  /// Selected crop ratio (W/H) for the Aspect Ratio mode.
-  final double aspect;
-
-  /// Detected horizon (preview space): roll angle + an anchor point on the line
-  /// (full-screen normalised) + fade opacity + alignment-with-guide [0..1], or
-  /// null. Drawn in Horizon Grid mode.
-  final ValueNotifier<
-    ({double angle, double ax, double ay, double op, double aligned})?
-  >?
-  horizon;
-  CompositionPainter(
-    this.mode, {
-    List<_GlowSeg>? glowSegs,
-    List<_FaceBox>? faceBoxes,
-    List<double>? powerGlow,
-    this.topInset = 0,
-    this.bottomInset = 0,
-    this.spiralTurns = 0,
-    this.aspect = 1.0,
-    this.horizon,
-    Listenable? repaint,
-  }) : glowSegs = glowSegs ?? const [],
-       faceBoxes = faceBoxes ?? const [],
-       powerGlow = powerGlow ?? const [0, 0, 0, 0],
-       super(repaint: repaint);
-
-  static const Color _gold = Color(0xFFFFFFFF);
-  static const double _sw = 0.8;
-
-  /// Fraction of the frame the golden-spiral rectangle fills (1.0 = edge-to-
-  /// edge like the reference; lower for more breathing room).
-  static const double _goldenSpiralFill = 1.0;
-
-  /// Where the Horizon Grid's guide line sits, as a fraction of the camera band
-  /// from the top. 0.618 = the golden-section "low horizon" — the line falls in
-  /// the lower part of the frame, leaving ~62% sky above, which landscape
-  /// research finds the most balanced default (sky-forward, not centred/static).
-  /// Foreground-heavy scenes suit the upper golden line (0.382) instead.
-  static const double _horizonGuideRatio = 0.6180339887;
-
-  /// Normal white hairline paint used by all draw methods.
-  Paint _gp({StrokeCap cap = StrokeCap.butt}) => Paint()
-    ..color = _gold.withValues(alpha: 0.45)
-    ..strokeWidth = _sw
-    ..style = PaintingStyle.stroke
-    ..strokeCap = cap
-    ..strokeJoin = StrokeJoin.round
-    ..isAntiAlias = true;
-
-  Paint get _p => _gp(cap: StrokeCap.round);
-
-  /// Draws one rounded L-shaped corner bracket. [sx]/[sy] are ±1 indicating the
-  /// direction the arms extend from the corner [c]; [arm] is arm length, [r] the
-  /// rounding radius at the corner.
-  void _corner(
-    Canvas canvas,
-    Offset c,
-    int sx,
-    int sy,
-    double arm,
-    double r,
-    Paint p,
-  ) {
-    final path = Path()
-      ..moveTo(c.dx + sx * arm, c.dy)
-      ..lineTo(c.dx + sx * r, c.dy)
-      ..quadraticBezierTo(c.dx, c.dy, c.dx, c.dy + sy * r)
-      ..lineTo(c.dx, c.dy + sy * arm);
-    canvas.drawPath(path, p);
-  }
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Composition grids are confined to the camera-visible band *between* the
-    // top/bottom UI panels: translate to the band top, clip to its height, and
-    // hand every draw method a band-sized canvas. Guide lines (and the Rule-of-
-    // Thirds power points) therefore stop at the panel edges instead of sliding
-    // underneath them. Face brackets (drawn afterwards) stay full-screen so they
-    // keep tracking subjects anywhere on the preview, even over the panels.
-    final double bandH = size.height - topInset - bottomInset;
-    final bool banded = bandH > 1;
-    final Size grid = banded ? Size(size.width, bandH) : size;
-
-    canvas.save();
-    if (banded) {
-      canvas.translate(0, topInset);
-      canvas.clipRect(Rect.fromLTWH(0, 0, grid.width, grid.height));
-    }
-    switch (mode) {
-      case CompositionMode.none:
-        break;
-      case CompositionMode.horizonGrid:
-        // Guide line + detected horizon are drawn after restore() (full-screen,
-        // like the face boxes), so nothing to draw inside the banded clip.
-        break;
-      case CompositionMode.ruleOfThirds:
-        _drawRuleOfThirds(canvas, grid);
-        break;
-      case CompositionMode.goldenSection:
-        _drawGoldenSection(canvas, grid);
-        break;
-      case CompositionMode.goldenTriangles:
-        _drawGoldenTriangles(canvas, grid);
-        break;
-      case CompositionMode.spiralSection:
-        _drawSpiralSection(canvas, grid);
-        break;
-      case CompositionMode.fibonacciSpiral:
-        _drawGoldenSpiral(canvas, grid);
-        break;
-      case CompositionMode.harmoniousTriangles:
-        _drawHarmoniousTriangles(canvas, grid);
-        break;
-      case CompositionMode.cross:
-        _drawCross(canvas, grid);
-        break;
-      case CompositionMode.focalMass:
-        _drawFocalMass(canvas, grid);
-        break;
-      case CompositionMode.vArrangement:
-        _drawVArrangement(canvas, grid);
-        break;
-      case CompositionMode.diagonal:
-        _drawDiagonal(canvas, grid);
-        break;
-      case CompositionMode.radial:
-        _drawRadial(canvas, grid);
-        break;
-      case CompositionMode.lArrangement:
-        _drawLArrangement(canvas, grid);
-        break;
-      case CompositionMode.compoundCurve:
-        _drawCompoundCurve(canvas, grid);
-        break;
-      case CompositionMode.pyramid:
-        _drawPyramid(canvas, grid);
-        break;
-      case CompositionMode.circular:
-        _drawCircular(canvas, grid);
-        break;
-      case CompositionMode.symmetry:
-        _drawSymmetry(canvas, grid);
-        break;
-      case CompositionMode.aspectRatio:
-        _drawAspectRatio(canvas, grid);
-        break;
-    }
-
-    // ── Target points (glow when a subject lands on them) ──────────────────────
-    // Rule of Thirds uses the 1/3 intersections; Phi Grid uses the golden-
-    // section intersections at 1/φ² ≈ 0.382 and 1/φ ≈ 0.618; Fibonacci Spiral
-    // uses a single point — the spiral's eye.
-    final List<List<double>>? pts = switch (mode) {
-      CompositionMode.ruleOfThirds => const [
-        [1 / 3, 1 / 3],
-        [2 / 3, 1 / 3],
-        [1 / 3, 2 / 3],
-        [2 / 3, 2 / 3],
-      ],
-      CompositionMode.goldenSection => const [
-        [0.3819660113, 0.3819660113],
-        [0.6180339887, 0.3819660113],
-        [0.3819660113, 0.6180339887],
-        [0.6180339887, 0.6180339887],
-      ],
-      CompositionMode.fibonacciSpiral => () {
-        final eye = _goldenSpiralEyePx(grid, spiralTurns, _goldenSpiralFill);
-        return [
-          [eye.dx / grid.width, eye.dy / grid.height],
-        ];
-      }(),
-      _ => null,
-    };
-    if (pts != null) {
-      const gold = Color(0xFFE5C158);
-      for (var i = 0; i < pts.length; i++) {
-        final c = Offset(pts[i][0] * grid.width, pts[i][1] * grid.height);
-        final g = (i < powerGlow.length ? powerGlow[i] : 0.0).clamp(0.0, 1.0);
-        // Faint dot always; blooms into a soft glowing ring when aligned.
-        canvas.drawCircle(
-          c,
-          2.0,
-          Paint()..color = gold.withValues(alpha: 0.25 + 0.55 * g),
-        );
-        if (g > 0.01) {
-          canvas.drawCircle(
-            c,
-            6.0 + 10.0 * g,
-            Paint()
-              ..color = gold.withValues(alpha: 0.45 * g)
-              ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4.0 + 6.0 * g),
-          );
-          canvas.drawCircle(
-            c,
-            5.0 + 4.0 * g,
-            Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.5
-              ..color = gold.withValues(alpha: 0.8 * g),
-          );
-        }
-      }
-    }
-    canvas.restore();
-
-    // ── Horizon Grid: a golden guide line marking the ideal horizon placement,
-    // plus the live detected horizon that glows gold as it lands on the guide. ──
-    if (mode == CompositionMode.horizonGrid) {
-      const gold = Color(0xFFE5C158);
-      final double bandSpan = size.height - topInset - bottomInset;
-      final double guideY = topInset + bandSpan * _horizonGuideRatio;
-      final hz = horizon?.value;
-      // Alignment with the guide is computed once in the ticker (single source
-      // of truth — also drives the message bubble + haptic). Labels live in the
-      // shared top message bubble, not on the line.
-      final double aligned = hz?.aligned ?? 0;
-
-      // Guide line: dashed gold, always visible; blooms when aligned.
-      if (aligned > 0.02) {
-        canvas.drawLine(
-          Offset(0, guideY),
-          Offset(size.width, guideY),
-          Paint()
-            ..color = gold.withValues(alpha: 0.55 * aligned)
-            ..strokeWidth = 4.0
-            ..strokeCap = StrokeCap.round
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0),
-        );
-      }
-      _drawDashedLine(
-        canvas,
-        Offset(0, guideY),
-        Offset(size.width, guideY),
-        Paint()
-          ..color = gold.withValues(alpha: (0.42 + 0.5 * aligned).clamp(0.0, 1.0))
-          ..strokeWidth = 1.2
-          ..strokeCap = StrokeCap.butt,
-        dash: 9,
-        gap: 7,
-      );
-      // Guide tag, on the right so it never collides with the TRUE HORIZON tag
-      // (which sits on the left). Always visible; brightens as the line nears.
-      _drawHzLabel(
-        canvas,
-        'BEST SPOT',
-        Offset(size.width * 0.76, guideY - 13),
-        (0.72 + 0.28 * aligned).clamp(0.0, 1.0),
-      );
-
-      // Detected horizon line (fades with op). Clipped to the camera-visible
-      // band so a tilted line never bleeds into the top/bottom panels.
-      if (hz != null && hz.op > 0.01) {
-        final double op = hz.op;
-        final Offset c = Offset(hz.ax * size.width, hz.ay * size.height);
-        final double L = size.width * 1.6; // extend well past both edges
-        final Offset dir = Offset(math.cos(hz.angle), math.sin(hz.angle));
-        final p1 = c - dir * L;
-        final p2 = c + dir * L;
-        // Level cue: gold intensifies as the line approaches horizontal.
-        final level = (1 - (hz.angle.abs() / 0.20)).clamp(0.0, 1.0);
-        canvas.save();
-        canvas.clipRect(
-          Rect.fromLTWH(0, topInset, size.width, bandSpan),
-        );
-        canvas.drawLine(
-          p1,
-          p2,
-          Paint()
-            ..color = gold.withValues(alpha: (0.25 + 0.35 * level) * op)
-            ..strokeWidth = 3.5
-            ..strokeCap = StrokeCap.round
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0),
-        );
-        canvas.drawLine(
-          p1,
-          p2,
-          Paint()
-            ..color = gold.withValues(alpha: 0.85 * op)
-            ..strokeWidth = 1.6
-            ..strokeCap = StrokeCap.round
-            ..isAntiAlias = true,
-        );
-        // Plain-English tag so anyone knows what the line is — a small pill
-        // riding just above the line, toward the left so it clears the subject.
-        final double slope = dir.dx.abs() < 0.05 ? 0.0 : dir.dy / dir.dx;
-        final double xLabel = size.width * 0.24;
-        final double yLabel = c.dy + (xLabel - c.dx) * slope;
-        _drawHzLabel(canvas, 'TRUE HORIZON', Offset(xLabel, yLabel - 13), op);
-        canvas.restore();
-      }
-    }
-
-    _paintFaceBoxes(canvas, size);
-
-    // Selective glow pass — redraw only the lines that have edge support,
-    // using a gold blur paint so they illuminate without affecting other lines.
-    if (glowSegs.isNotEmpty) {
-      final glowPaint = Paint()
-        ..strokeWidth = _sw + 2.5
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round
-        ..isAntiAlias = true
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.5);
-      for (final seg in glowSegs) {
-        if (seg.intensity <= 0) continue;
-        glowPaint.color = const Color(
-          0xFFE5C158,
-        ).withValues(alpha: (0.65 * seg.intensity).clamp(0.0, 1.0));
-        canvas.drawLine(
-          Offset(seg.x1 * size.width, seg.y1 * size.height),
-          Offset(seg.x2 * size.width, seg.y2 * size.height),
-          glowPaint,
-        );
-      }
-    }
-  }
-
-  /// Full-screen face/animal corner brackets (camera AF style). Drawn on its own
-  /// full-screen layer so boxes track faces anywhere, even over the UI panels.
-  void _paintFaceBoxes(Canvas canvas, Size size) {
-    for (final b in faceBoxes) {
-      if (b.opacity <= 0.01) continue;
-      // Subtle scale-in: start 8% smaller and settle to full size on appear.
-      final scale = 0.92 + 0.08 * b.appear;
-      final w = b.w * size.width * scale;
-      final h = b.h * size.height * scale;
-      final cx = b.cx * size.width;
-      final cy = b.cy * size.height;
-      final rect = Rect.fromCenter(center: Offset(cx, cy), width: w, height: h);
-
-      final a = b.opacity.clamp(0.0, 1.0);
-      final align = b.alignGlow.clamp(0.0, 1.0);
-      const gold = Color(0xFFE5C158); // composition-text gold (aligned)
-      const grid = Color(0xFFFFFFFF); // grid-line white (not aligned)
-      final arm = (math.min(rect.width, rect.height) * 0.26).clamp(8.0, 26.0);
-      final r = math.min(8.0, arm * 0.6);
-
-      // colorT: 0 = grid white (no alignment), 1 = full gold (point inside box).
-      // align ramps 0 → 0.45 ("Almost") → 1.0 ("Perfect"), so reaching ~0.45
-      // already gives full gold; the glow keeps intensifying toward Perfect.
-      final colorT = (align / 0.45).clamp(0.0, 1.0);
-      final Color lineColor = Color.lerp(grid, gold, colorT)!;
-
-      // Blurred glow is the expensive part — only for boxes on a point (align>0),
-      // light for "Almost", heavy for "Perfect". Other faces are cheap strokes.
-      if (align > 0.02) {
-        final glow = Paint()
-          ..color = gold.withValues(alpha: (0.18 + 0.5 * align) * a)
-          ..strokeWidth = 4.0 + 4.0 * align
-          ..style = PaintingStyle.stroke
-          ..strokeCap = StrokeCap.round
-          ..strokeJoin = StrokeJoin.round
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 2.5 + 4.0 * align);
-        _corner(canvas, rect.topLeft, 1, 1, arm, r, glow);
-        _corner(canvas, rect.topRight, -1, 1, arm, r, glow);
-        _corner(canvas, rect.bottomRight, -1, -1, arm, r, glow);
-        _corner(canvas, rect.bottomLeft, 1, -1, arm, r, glow);
-      }
-
-      // Thin grid-white when not aligned; thicker gold when on a point.
-      final stroke = Paint()
-        ..color = lineColor.withValues(alpha: (0.42 + 0.5 * colorT) * a)
-        ..strokeWidth = 1.2 + 1.8 * align
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..isAntiAlias = true;
-      _corner(canvas, rect.topLeft, 1, 1, arm, r, stroke);
-      _corner(canvas, rect.topRight, -1, 1, arm, r, stroke);
-      _corner(canvas, rect.bottomRight, -1, -1, arm, r, stroke);
-      _corner(canvas, rect.bottomLeft, 1, -1, arm, r, stroke);
-    }
-  }
-
-  /// Small frosted gold pill label riding the horizon line. Fades with [op].
-  void _drawHzLabel(Canvas canvas, String text, Offset center, double op) {
-    if (op <= 0.02) return;
-    const gold = Color(0xFFE5C158);
-    final tp = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          color: gold.withValues(alpha: (0.95 * op).clamp(0.0, 1.0)),
-          fontSize: 9.5,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 1.8,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final Rect r = Rect.fromCenter(
-      center: center,
-      width: tp.width + 18,
-      height: tp.height + 9,
-    );
-    final RRect pill = RRect.fromRectAndRadius(r, const Radius.circular(20));
-    canvas.drawRRect(
-      pill,
-      Paint()
-        ..color = const Color(0xFF000000).withValues(
-          alpha: (0.34 * op).clamp(0.0, 1.0),
-        ),
-    );
-    canvas.drawRRect(
-      pill,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 0.8
-        ..color = gold.withValues(alpha: (0.4 * op).clamp(0.0, 1.0)),
-    );
-    tp.paint(
-      canvas,
-      Offset(r.center.dx - tp.width / 2, r.center.dy - tp.height / 2),
-    );
-  }
-
-  /// Draws a dashed line from [a] to [b] (used by the Horizon Grid guide line).
-  void _drawDashedLine(
-    Canvas canvas,
-    Offset a,
-    Offset b,
-    Paint paint, {
-    double dash = 8,
-    double gap = 6,
-  }) {
-    final double total = (b - a).distance;
-    if (total <= 0) return;
-    final Offset dir = (b - a) / total;
-    double d = 0;
-    while (d < total) {
-      final double end = math.min(d + dash, total);
-      canvas.drawLine(a + dir * d, a + dir * end, paint);
-      d = end + gap;
-    }
-  }
-
-  // ── Rule of Thirds ──────────────────────────────────────────────────────────
-  // Two equally spaced verticals + two equally spaced horizontals → 9 equal cells.
-  // StrokeCap.butt ensures lines stay strictly within the frame boundaries.
-  void _drawRuleOfThirds(Canvas canvas, Size s) {
-    final p = _gp();
-
-    final double col1 = s.width / 3;
-    final double col2 = s.width * 2 / 3;
-    final double row1 = s.height / 3;
-    final double row2 = s.height * 2 / 3;
-
-    // Vertical lines — from top edge to bottom edge
-    canvas.drawLine(Offset(col1, 0), Offset(col1, s.height), p);
-    canvas.drawLine(Offset(col2, 0), Offset(col2, s.height), p);
-
-    // Horizontal lines — from left edge to right edge
-    canvas.drawLine(Offset(0, row1), Offset(s.width, row1), p);
-    canvas.drawLine(Offset(0, row2), Offset(s.width, row2), p);
-  }
-
-  // ── Golden Section ──────────────────────────────────────────────────────────
-  // Divides width and height by the golden ratio φ ≈ 1.618.
-  // Each dimension is split at (1/φ) ≈ 0.618 from one edge
-  // and at (1/φ²) ≈ 0.382 from the other, giving two lines per axis.
-  void _drawGoldenSection(Canvas canvas, Size s) {
-    final p = _gp();
-
-    const double phi = 1.6180339887;
-    // Smaller division: 1/φ² ≈ 0.382 from one edge
-    // Larger division: 1/φ  ≈ 0.618 from the same edge (= 1 − 0.382)
-    final double wSmall = s.width / (phi * phi); // ≈ 0.382 × W
-    final double wLarge = s.width / phi; // ≈ 0.618 × W
-    final double hSmall = s.height / (phi * phi);
-    final double hLarge = s.height / phi;
-
-    // Vertical lines — span full height, flush to top and bottom edges
-    canvas.drawLine(Offset(wSmall, 0), Offset(wSmall, s.height), p);
-    canvas.drawLine(Offset(wLarge, 0), Offset(wLarge, s.height), p);
-
-    // Horizontal lines — span full width, flush to left and right edges
-    canvas.drawLine(Offset(0, hSmall), Offset(s.width, hSmall), p);
-    canvas.drawLine(Offset(0, hLarge), Offset(s.width, hLarge), p);
-  }
-
-  // ── Golden Triangles ────────────────────────────────────────────────────────
-  // One main diagonal (TL→BR) plus a perpendicular dropped from each of the
-  // two remaining corners (TR and BL) onto that diagonal.
-  // Result: 3 unique lines, 4 non-overlapping triangles, all within the frame.
-  void _drawGoldenTriangles(Canvas canvas, Size s) {
-    final p = _gp();
-
-    final double w = s.width;
-    final double h = s.height;
-    final double d2 = w * w + h * h; // |diagonal|²
-
-    // 1. Main diagonal: top-left → bottom-right
-    canvas.drawLine(Offset(0, 0), Offset(w, h), p);
-
-    // 2. Perpendicular from top-right corner (w, 0) to main diagonal
-    //    Foot: t = (w·w + 0·h) / d2
-    final double t2 = (w * w) / d2;
-    canvas.drawLine(Offset(w, 0), Offset(t2 * w, t2 * h), p);
-
-    // 3. Perpendicular from bottom-left corner (0, h) to main diagonal
-    //    Foot: t = (0·w + h·h) / d2
-    final double t3 = (h * h) / d2;
-    canvas.drawLine(Offset(0, h), Offset(t3 * w, t3 * h), p);
-  }
-
-  // ── Spiral Section ──────────────────────────────────────────────────────────
-  // Outer frame border + 6 phi-ratio dividing lines spiraling inward from the
-  // top-left corner. Each line spans only the current sub-rectangle so there
-  // are no overlapping edges and no lines outside the frame.
-  void _drawSpiralSection(Canvas canvas, Size s) {
-    final p = _gp();
-
-    const double phi = 1.6180339887;
-
-    // Outer frame border — the first (largest) nested rectangle.
-    canvas.drawRect(Rect.fromLTWH(0, 0, s.width, s.height), p);
-
-    double x = 0, y = 0, w = s.width, h = s.height;
-
-    // At each step, divide the current rectangle at the golden section (1/φ of
-    // the relevant dimension), draw the dividing line, then draw the resulting
-    // nested rectangle border. The cut direction rotates through all four sides
-    // so the rectangles spiral clockwise from the top edge toward an interior
-    // "eye" — the same convergence point as the Fibonacci spiral arc.
-    //
-    // Cut sequence:  bottom → left → top → right  (repeat)
-    //   case 0: horizontal line at y + h/φ        → keep top   h/φ strip
-    //   case 1: vertical   line at x + w − w/φ    → keep right w/φ strip
-    //   case 2: horizontal line at y + h − h/φ    → keep bottom h/φ strip
-    //   case 3: vertical   line at x + w/φ        → keep left  w/φ strip
-    for (int i = 0; i < 8; i++) {
-      if (w < 2 || h < 2) break;
-      switch (i % 4) {
-        case 0:
-          final double keepH = h / phi;
-          canvas.drawLine(Offset(x, y + keepH), Offset(x + w, y + keepH), p);
-          h = keepH;
-          break;
-        case 1:
-          final double keepW = w / phi;
-          final double removeW = w - keepW; // = w / φ²
-          canvas.drawLine(
-            Offset(x + removeW, y),
-            Offset(x + removeW, y + h),
-            p,
-          );
-          x += removeW;
-          w = keepW;
-          break;
-        case 2:
-          final double keepH = h / phi;
-          final double removeH = h - keepH; // = h / φ²
-          canvas.drawLine(
-            Offset(x, y + removeH),
-            Offset(x + w, y + removeH),
-            p,
-          );
-          y += removeH;
-          h = keepH;
-          break;
-        case 3:
-          final double keepW = w / phi;
-          canvas.drawLine(Offset(x + keepW, y), Offset(x + keepW, y + h), p);
-          w = keepW;
-          break;
-      }
-      // Draw the nested rectangle produced by this iteration.
-      canvas.drawRect(Rect.fromLTWH(x, y, w, h), p);
-    }
-  }
-
-  // ── Golden Spiral ───────────────────────────────────────────────────────────
-  // Parametric logarithmic golden spiral: r = a·exp(b·θ), where
-  // b = ln(φ)/(π/2) so the radius grows by φ every quarter-turn.
-  // Eye at the golden-section intersection (upper-right region); outermost
-  // arm aims toward the bottom-left corner, spiralling 1.5 full turns.
-  // void _drawGoldenSpiral(Canvas canvas, Size s) {
-  //   final p = Paint()
-  //     ..color = _gold.withValues(alpha: 0.70)
-  //     ..strokeWidth = _sw
-  //     ..style = PaintingStyle.stroke
-  //     ..strokeCap = StrokeCap.round
-  //     ..isAntiAlias = true;
-
-  //   const double phi = 1.6180339887;
-  //   // Growth rate: radius multiplies by φ every π/2 radians
-  //   final double b = math.log(phi) / (math.pi / 2);
-
-  //   // Eye at golden-section intersection (upper-right area)
-  //   final double cx = s.width / phi;          // ≈ 0.618 × W
-  //   final double cy = s.height / (phi * phi); // ≈ 0.382 × H
-
-  //   // Outermost arm aims toward the bottom-left corner of the frame
-  //   final double thetaEnd   = math.atan2(s.height - cy, -cx);
-  //   const double totalTheta = 3.0 * math.pi; // 1.5 full turns inward
-  //   final double thetaStart = thetaEnd - totalTheta;
-
-  //   // Scale so r = rMax at thetaEnd (arm reaches the farthest frame corner)
-  //   double rMax = 0.0;
-  //   for (final c in [
-  //     Offset(0, 0), Offset(s.width, 0),
-  //     Offset(0, s.height), Offset(s.width, s.height),
-  //   ]) {
-  //     final d = (c - Offset(cx, cy)).distance;
-  //     if (d > rMax) rMax = d;
-  //   }
-  //   final double a = rMax * math.exp(-b * thetaEnd);
-
-  //   final path = Path();
-  //   const int steps = 400;
-  //   for (int i = 0; i <= steps; i++) {
-  //     final double theta = thetaStart + totalTheta * i / steps;
-  //     final double r     = a * math.exp(b * theta);
-  //     final double px    = cx + r * math.cos(theta);
-  //     final double py    = cy + r * math.sin(theta);
-  //     i == 0 ? path.moveTo(px, py) : path.lineTo(px, py);
-  //   }
-  //   canvas.drawPath(path, p);
-  // }
-
-  void _drawGoldenSpiral(Canvas canvas, Size s) {
-    final p = _p;
-    const double phi = 1.6180339887;
-
-    // 90°-per-step rotation lets the user aim the spiral's eye at any corner.
-    // Odd steps stand the spiral on its long edge, so we fit the golden rectangle
-    // into a frame with width/height swapped, then rotate the whole drawing about
-    // the band centre to drop it back into place (still fitting the band).
-    final int turns = spiralTurns & 3;
-    final bool swap = turns.isOdd;
-    final double fw = swap ? s.height : s.width;
-    final double fh = swap ? s.width : s.height;
-
-    // Largest *landscape* golden rectangle (φ:1, wider than tall) that fits the
-    // (possibly swapped) frame, centred — the classic golden-spiral framing.
-    final double maxW = fw * _goldenSpiralFill;
-    final double maxH = fh * _goldenSpiralFill;
-    double w = maxW;
-    double h = w / phi;
-    if (h > maxH) {
-      h = maxH;
-      w = h * phi;
-    }
-    Rect rect = Rect.fromLTWH((fw - w) / 2, (fh - h) / 2, w, h);
-
-    canvas.save();
-    // Rotate the drawing frame about the band centre; the (fw × fh) frame is
-    // centred there so the rotated rectangle lands back inside the band.
-    canvas.translate(s.width / 2, s.height / 2);
-    canvas.rotate(turns * (math.pi / 2));
-    canvas.translate(-fw / 2, -fh / 2);
-
-    // Outer golden-rectangle border (the largest nested square's frame).
-    canvas.drawRect(rect, p);
-
-    // Start by cutting the right square so the spiral winds inward toward the
-    // left, the eye settling near the lower-left golden-section point.
-    int dir = 0;
-    final path = Path();
-    bool isFirst = true;
-
-    // Cut squares, drawing the golden-section dividing line for each (the lines
-    // overlaid in the reference) plus a continuous quarter-arc through it. 12
-    // iterations reach the sub-pixel "eye".
-    for (int i = 0; i < 12; i++) {
-      final double sqSize = math.min(rect.width, rect.height);
-      Offset center;
-      double startAngle;
-      const double sweepAngle = math.pi / 2;
-
-      if (dir == 0) {
-        // Cut Right Square — divider is its left edge (vertical, full height).
-        center = Offset(rect.right - sqSize, rect.top);
-        startAngle = 0;
-        canvas.drawLine(
-          Offset(rect.right - sqSize, rect.top),
-          Offset(rect.right - sqSize, rect.bottom),
-          p,
-        );
-        rect = Rect.fromLTRB(
-          rect.left,
-          rect.top,
-          rect.right - sqSize,
-          rect.bottom,
-        );
-      } else if (dir == 1) {
-        // Cut Bottom Square — divider is its top edge (horizontal, full width).
-        center = Offset(rect.right, rect.bottom - sqSize);
-        startAngle = math.pi / 2;
-        canvas.drawLine(
-          Offset(rect.left, rect.bottom - sqSize),
-          Offset(rect.right, rect.bottom - sqSize),
-          p,
-        );
-        rect = Rect.fromLTRB(
-          rect.left,
-          rect.top,
-          rect.right,
-          rect.bottom - sqSize,
-        );
-      } else if (dir == 2) {
-        // Cut Left Square — divider is its right edge (vertical, full height).
-        center = Offset(rect.left + sqSize, rect.bottom);
-        startAngle = math.pi;
-        canvas.drawLine(
-          Offset(rect.left + sqSize, rect.top),
-          Offset(rect.left + sqSize, rect.bottom),
-          p,
-        );
-        rect = Rect.fromLTRB(
-          rect.left + sqSize,
-          rect.top,
-          rect.right,
-          rect.bottom,
-        );
-      } else {
-        // Cut Top Square — divider is its bottom edge (horizontal, full width).
-        center = Offset(rect.left, rect.top + sqSize);
-        startAngle = -math.pi / 2;
-        canvas.drawLine(
-          Offset(rect.left, rect.top + sqSize),
-          Offset(rect.right, rect.top + sqSize),
-          p,
-        );
-        rect = Rect.fromLTRB(
-          rect.left,
-          rect.top + sqSize,
-          rect.right,
-          rect.bottom,
-        );
-      }
-
-      final arcRect = Rect.fromCircle(center: center, radius: sqSize);
-      path.arcTo(arcRect, startAngle, sweepAngle, isFirst);
-      isFirst = false;
-      dir = (dir + 1) % 4;
-    }
-
-    canvas.drawPath(path, p);
-    canvas.restore();
-  }
-
-  // ── Harmonious Triangles ────────────────────────────────────────────────────
-  // Both diagonals, each with its two perpendiculars from the opposite corners.
-  // TL→BR set (Golden Triangles) + TR→BL set (its mirror) = 6 lines, 8 triangles.
-  void _drawHarmoniousTriangles(Canvas canvas, Size s) {
-    // Golden Triangles flipped horizontally: x → (w − x).
-    // Original uses TL→BR diagonal; flipped uses TR→BL diagonal,
-    // with perpendiculars from TL and BR to that diagonal.
-    final p = _gp();
-
-    final double w = s.width;
-    final double h = s.height;
-    final double d2 = w * w + h * h;
-
-    // 1. Main diagonal: top-right → bottom-left  (mirror of TL→BR)
-    canvas.drawLine(Offset(w, 0), Offset(0, h), p);
-
-    // 2. Perpendicular from top-left corner (0, 0) to TR→BL diagonal.
-    //    TR→BL direction vector: (−w, h).
-    //    t = [(0−w)·(−w) + (0−0)·h] / d2 = w²/d2
-    final double t2 = (w * w) / d2;
-    canvas.drawLine(Offset(0, 0), Offset(w - t2 * w, t2 * h), p);
-
-    // 3. Perpendicular from bottom-right corner (w, h) to TR→BL diagonal.
-    //    t = [(w−w)·(−w) + (h−0)·h] / d2 = h²/d2
-    final double t3 = (h * h) / d2;
-    canvas.drawLine(Offset(w, h), Offset(w - t3 * w, t3 * h), p);
-  }
-
-  // ── Cross ───────────────────────────────────────────────────────────────────
-  void _drawCross(Canvas canvas, Size s) {
-    final p = _p;
-
-    // Christian cross — centered horizontally, positioned in the upper portion
-    // of the frame. The vertical arm is longer below the crossbar than above.
-    final double cx = s.width * 0.50;
-    final double cy = s.height * 0.38; // crossbar sits at upper-center
-
-    // Vertical arm: short above the crossbar, long below — classic cross ratio.
-    final double armUp = s.height * 0.10;
-    final double armDown = s.height * 0.30;
-
-    // Horizontal crossbar: symmetric, does not reach screen edges.
-    final double armLeft = s.width * 0.18;
-    final double armRight = s.width * 0.18;
-
-    // Vertical line
-    canvas.drawLine(Offset(cx, cy - armUp), Offset(cx, cy + armDown), p);
-    // Horizontal crossbar
-    canvas.drawLine(Offset(cx - armLeft, cy), Offset(cx + armRight, cy), p);
-  }
-
-  // ── Focal Mass ──────────────────────────────────────────────────────────────
-  // Scattered dot cluster in the upper-center (like reference image)
-  void _drawFocalMass(Canvas canvas, Size s) {
-    // Landscape-oriented focal mass: wide horizontal spread, tight vertical.
-    // Dense cluster of dots left-of-centre that thins and scatters rightward,
-    // matching the reference composition diagram.
-    final double cx = s.width * 0.42; // cluster sits left of centre
-    final double cy = s.height * 0.50; // vertical centre
-
-    // Wide horizontal, narrow vertical — the defining trait of this composition.
-    const double scatterX = 120.0; // broad horizontal half-width
-    const double scatterY = 32.0; // tight vertical half-height
-    const int count = 220;
-
-    final rng = math.Random(7);
-    final dotPaint = Paint()..style = PaintingStyle.fill;
-
-    for (int i = 0; i < count; i++) {
-      final double u1 = rng.nextDouble().clamp(1e-9, 1.0);
-      final double u2 = rng.nextDouble();
-      final double n1 =
-          math.sqrt(-2.0 * math.log(u1)) * math.cos(2 * math.pi * u2);
-      final double n2 =
-          math.sqrt(-2.0 * math.log(u1)) * math.sin(2 * math.pi * u2);
-
-      final double dx = n1 * scatterX;
-      final double dy = n2 * scatterY;
-
-      // Anisotropic distance — core = 0, edge of scatter ellipse = 1.
-      final double distNorm = math
-          .sqrt(math.pow(dx / scatterX, 2) + math.pow(dy / scatterY, 2))
-          .clamp(0.0, 1.0);
-
-      // Steeper falloff so density drops sharply away from the core mass.
-      final double coreInfluence = math.exp(-distNorm * distNorm * 5.5);
-
-      final double radius = 0.8 + 1.4 * coreInfluence;
-      final double alpha = 0.12 + 0.58 * coreInfluence;
-
-      dotPaint.color = _gold.withValues(alpha: alpha);
-      canvas.drawCircle(Offset(cx + dx, cy + dy), radius, dotPaint);
-    }
-
-    // Dense core cluster — extra tight dots at the focal centre.
-    const double coreScatterX = 28.0;
-    const double coreScatterY = 9.0;
-    const int coreCount = 110;
-    final rngCore = math.Random(31);
-    for (int i = 0; i < coreCount; i++) {
-      final double u1 = rngCore.nextDouble().clamp(1e-9, 1.0);
-      final double u2 = rngCore.nextDouble();
-      final double n1 =
-          math.sqrt(-2.0 * math.log(u1)) * math.cos(2 * math.pi * u2);
-      final double n2 =
-          math.sqrt(-2.0 * math.log(u1)) * math.sin(2 * math.pi * u2);
-      final double dx = n1 * coreScatterX;
-      final double dy = n2 * coreScatterY;
-      final double distNorm = math
-          .sqrt(math.pow(dx / coreScatterX, 2) + math.pow(dy / coreScatterY, 2))
-          .clamp(0.0, 1.0);
-      final double influence = math.exp(-distNorm * distNorm * 5.0);
-      final double radius = 0.6 + 2.0 * influence;
-      final double alpha = 0.32 + 0.48 * influence;
-      dotPaint.color = _gold.withValues(alpha: alpha);
-      canvas.drawCircle(Offset(cx + dx, cy + dy), radius, dotPaint);
-    }
-  }
-
-  // ── V Arrangement ───────────────────────────────────────────────────────────
-  // V shape opening upward, vertex at bottom-center
-  void _drawVArrangement(Canvas canvas, Size s) {
-    final p = _p;
-
-    // Vertex at lower-center; arms rise symmetrically to the upper corners
-    // of a contained region — fully visible, no clipping at edges.
-    final double vx = s.width * 0.50; // horizontal center
-    final double vy = s.height * 0.78; // vertex near bottom
-
-    // Arm endpoints — symmetric, inset from frame edges.
-    final double topY = s.height * 0.12;
-    final double topLeftX = s.width * 0.08;
-    final double topRightX = s.width * 0.92;
-
-    // Left arm: vertex → upper-left
-    canvas.drawLine(Offset(vx, vy), Offset(topLeftX, topY), p);
-    // Right arm: vertex → upper-right (mirror)
-    canvas.drawLine(Offset(vx, vy), Offset(topRightX, topY), p);
-  }
-
-  // ── Diagonal ────────────────────────────────────────────────────────────────
-  // Two strong diagonals plus two parallel helpers — like the reference
-  void _drawDiagonal(Canvas canvas, Size s) {
-    final p = _p;
-
-    // Both lines share a single origin at the top-right corner.
-    // They fan toward the bottom-left corner, ending ~2 cm apart
-    // (~85 logical px each side of the BL corner — distance ≈ 120 px).
-    final Offset origin = Offset(s.width, 0);
-
-    // Line 1 — ends on the left edge, 85px above the bottom-left corner.
-    final Offset end1 = Offset(0, s.height - 85);
-
-    // Line 2 — ends on the bottom edge, 85px right of the bottom-left corner.
-    final Offset end2 = Offset(85, s.height);
-
-    canvas.drawLine(origin, end1, p);
-    canvas.drawLine(origin, end2, p);
-  }
-
-  // ── Radial ──────────────────────────────────────────────────────────────────
-  // Lines radiating from center like a star
-  void _drawRadial(Canvas canvas, Size s) {
-    final p = _p;
-    final Offset center = Offset(s.width / 2, s.height / 2);
-
-    // Fixed arm length: 40% of the shorter screen dimension so all 8 lines
-    // are equal length, stay well clear of the edges, and never overlap.
-    final double armLength = math.min(s.width, s.height) * 0.40;
-
-    // 8 lines = 16 arms evenly spaced at 360°/8 = 45° apart.
-    const int count = 8;
-    for (int i = 0; i < count; i++) {
-      final double angle = i * 2 * math.pi / count;
-      final double cos = math.cos(angle);
-      final double sin = math.sin(angle);
-      canvas.drawLine(
-        Offset(center.dx - cos * armLength, center.dy - sin * armLength),
-        Offset(center.dx + cos * armLength, center.dy + sin * armLength),
-        p,
-      );
-    }
-  }
-
-  // ── L Arrangement ───────────────────────────────────────────────────────────
-  void _drawLArrangement(Canvas canvas, Size s) {
-    final p = _p;
-    // Flipped both vertically (y→h−y) and horizontally (x→w−x).
-    // Vertical bar on the LEFT ~32%.
-    final double vx = s.width * 0.32;
-    canvas.drawLine(
-      Offset(vx, s.height * 0.20),
-      Offset(vx, s.height * 0.82),
-      p,
-    );
-    // Horizontal bar at the TOP, extending to the RIGHT.
-    canvas.drawLine(
-      Offset(vx, s.height * 0.20),
-      Offset(s.width * 0.80, s.height * 0.20),
-      p,
-    );
-  }
-
-  // ── Compound Curve ──────────────────────────────────────────────────────────
-  // S-curve through center using two cubic bezier segments
-  void _drawCompoundCurve(Canvas canvas, Size s) {
-    final p = _p;
-    final path = Path();
-
-    // S-curve flowing top→bottom across the full frame height (portrait).
-    // Start: top edge at horizontal center.
-    // End:   bottom edge at horizontal center.
-    // Two cubic segments share a smooth join at the frame center,
-    // with control points that pull each half in opposite horizontal
-    // directions to form a balanced vertical S.
-    //
-    //  Top half:    bows right (CP1 right-upper, CP2 right-lower of center)
-    //  Bottom half: bows left  (CP1 left-upper,  CP2 left-lower  of center)
-
-    final double cx = s.width * 0.50;
-    final double cy = s.height * 0.50;
-    final double bow = s.width * 0.28; // horizontal amplitude of each arc
-
-    // Segment 1: top-edge mid → frame center
-    path.moveTo(cx, 0);
-    path.cubicTo(
-      cx + bow,
-      s.height * 0.20, // CP1 — bows right
-      cx + bow,
-      s.height * 0.40, // CP2 — stays right before center
-      cx,
-      cy, // end at frame center
-    );
-
-    // Segment 2: frame center → bottom-edge mid (mirrors segment 1)
-    path.cubicTo(
-      cx - bow,
-      s.height * 0.60, // CP1 — bows left
-      cx - bow,
-      s.height * 0.80, // CP2 — stays left before bottom
-      cx,
-      s.height, // end at bottom-edge mid
-    );
-
-    canvas.drawPath(path, p);
-  }
-
-  // ── Pyramid ─────────────────────────────────────────────────────────────────
-  void _drawPyramid(Canvas canvas, Size s) {
-    final p = _p;
-    final Offset apex = Offset(s.width * 0.5, s.height * 0.22);
-    final Offset baseL = Offset(s.width * 0.12, s.height * 0.80);
-    final Offset baseR = Offset(s.width * 0.88, s.height * 0.80);
-    final path = Path()
-      ..moveTo(apex.dx, apex.dy)
-      ..lineTo(baseL.dx, baseL.dy)
-      ..lineTo(baseR.dx, baseR.dy)
-      ..close();
-    canvas.drawPath(path, p);
-  }
-
-  // ── Circular ────────────────────────────────────────────────────────────────
-  void _drawCircular(Canvas canvas, Size s) {
-    final p = _p;
-    final Offset center = Offset(s.width / 2, s.height / 2);
-    final double radius = math.min(s.width, s.height) * 0.36;
-    canvas.drawCircle(center, radius, p);
-  }
-
-  // ── Symmetry ──────────────────────────────────────────────────────────────
-  // A single crisp vertical mirror axis down the centre (with a faint horizontal
-  // for reference). Place the subject on the line so the two halves balance.
-  void _drawSymmetry(Canvas canvas, Size s) {
-    final p = _p;
-    final double cx = s.width / 2;
-    // Vertical mirror axis — full height, the primary guide.
-    canvas.drawLine(Offset(cx, 0), Offset(cx, s.height), p);
-    // Faint horizontal reference at the vertical centre.
-    final faint = Paint()
-      ..color = _gold.withValues(alpha: 0.18)
-      ..strokeWidth = _sw
-      ..style = PaintingStyle.stroke
-      ..isAntiAlias = true;
-    canvas.drawLine(
-      Offset(0, s.height / 2),
-      Offset(s.width, s.height / 2),
-      faint,
-    );
-  }
-
-  // ── Aspect Ratio ────────────────────────────────────────────────────────────
-  // Crop framing guide for the selected ratio ([aspect] = W/H). Draws the largest
-  // crop of that ratio centred in the band and dims everything outside it, so the
-  // user can frame for 1:1 / 4:5 / 16:9 social or print output.
-  void _drawAspectRatio(Canvas canvas, Size s) {
-    final double r = aspect <= 0 ? 1.0 : aspect;
-    double w, h;
-    if (s.width / s.height > r) {
-      h = s.height;
-      w = h * r;
-    } else {
-      w = s.width;
-      h = w / r;
-    }
-    final Rect crop = Rect.fromCenter(
-      center: Offset(s.width / 2, s.height / 2),
-      width: w,
-      height: h,
-    );
-
-    // Dim outside the crop using an even-odd path (band rect with the crop as a
-    // hole).
-    final dim = Path()
-      ..addRect(Rect.fromLTWH(0, 0, s.width, s.height))
-      ..addRect(crop)
-      ..fillType = PathFillType.evenOdd;
-    canvas.drawPath(dim, Paint()..color = Colors.black.withValues(alpha: 0.38));
-
-    // Crop border.
-    canvas.drawRect(crop, _gp());
-  }
-
-  @override
-  bool shouldRepaint(CompositionPainter old) =>
-      old.mode != mode ||
-      old.glowSegs != glowSegs ||
-      old.faceBoxes != faceBoxes ||
-      old.topInset != topInset ||
-      old.bottomInset != bottomInset ||
-      old.spiralTurns != spiralTurns ||
-      old.aspect != aspect;
 }

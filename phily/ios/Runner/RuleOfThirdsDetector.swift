@@ -493,3 +493,62 @@ enum HorizonDetector {
     ]
   }
 }
+
+// MARK: - BuildingDetector
+//
+// Model-free "building" highlighting for the None composition mode. Uses Vision's
+// built-in VNDetectRectanglesRequest to find rectangular structures — facades,
+// windows, doors, signage — a fast, on-device proxy for architecture with no
+// bundled model (a real upgrade would be a DeepLab/M-LSD Core ML model). Input is
+// the already-upright, tightly-packed BGRA buffer prepared in Dart; results are
+// normalised [0,1] with a top-left origin, matching AnimalDetector.
+
+@available(iOS 13.0, *)
+enum BuildingDetector {
+
+  static func detect(bgra: Data, width: Int, height: Int) -> [[String: Any]] {
+    guard let image = makeColorImage(from: bgra, width: width, height: height) else {
+      return []
+    }
+    let req = VNDetectRectanglesRequest()
+    req.maximumObservations = 8      // default is 1 — raise to find several
+    req.minimumConfidence = 0.4
+    req.minimumAspectRatio = 0.3     // moderate elongation
+    req.maximumAspectRatio = 1.0
+    req.minimumSize = 0.3            // only large rects — skips windows/keys/etc.
+    req.quadratureTolerance = 30     // tolerate perspective skew
+
+    guard (try? VNImageRequestHandler(cgImage: image, orientation: .up, options: [:])
+            .perform([req])) != nil,
+          let results = req.results as? [VNRectangleObservation]
+    else { return [] }
+
+    var out: [[String: Any]] = []
+    for r in results {
+      let b = r.boundingBox          // normalised, bottom-left origin
+      out.append([
+        "x": Double(b.minX),
+        "y": Double(1.0 - b.maxY),   // flip Y → top-left origin
+        "w": Double(b.width),
+        "h": Double(b.height),
+        "label": "building",
+        "confidence": Double(r.confidence),
+      ])
+    }
+    return out
+  }
+
+  private static func makeColorImage(from data: Data, width: Int, height: Int) -> CGImage? {
+    guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+    let bitmapInfo = CGBitmapInfo(rawValue:
+      CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+    return CGImage(
+      width: width, height: height,
+      bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+      space: CGColorSpaceCreateDeviceRGB(),
+      bitmapInfo: bitmapInfo,
+      provider: provider, decode: nil,
+      shouldInterpolate: false, intent: .defaultIntent
+    )
+  }
+}

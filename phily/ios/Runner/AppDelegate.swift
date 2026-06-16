@@ -41,6 +41,7 @@ private extension Comparable {
       case "getFieldOfView":          self?.handleGetFieldOfView(result: result)
       case "analyzeRuleOfThirds":     self?.handleAnalyzeRuleOfThirds(call: call, result: result)
       case "detectAnimals":           self?.handleDetectAnimals(call: call, result: result)
+      case "detectBuildings":         self?.handleDetectBuildings(call: call, result: result)
       case "detectHorizon":           self?.handleDetectHorizon(call: call, result: result)
       default: result(FlutterMethodNotImplemented)
       }
@@ -238,6 +239,29 @@ private extension Comparable {
         animals = AnimalDetector.detect(bgra: data, width: width, height: height)
       }
       DispatchQueue.main.async { result(animals) }
+    }
+  }
+
+  // MARK: - detectBuildings (architectural rectangles via Vision)
+
+  private func handleDetectBuildings(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard
+      let args   = call.arguments as? [String: Any],
+      let typed  = args["bgra"] as? FlutterStandardTypedData,
+      let width  = args["width"]  as? Int,
+      let height = args["height"] as? Int
+    else {
+      result(FlutterError(code: "INVALID_ARGS", message: "bgra, width, height required", details: nil))
+      return
+    }
+
+    let data = typed.data
+    DispatchQueue.global(qos: .userInitiated).async {
+      var buildings: [[String: Any]] = []
+      if #available(iOS 13.0, *) {
+        buildings = BuildingDetector.detect(bgra: data, width: width, height: height)
+      }
+      DispatchQueue.main.async { result(buildings) }
     }
   }
 
