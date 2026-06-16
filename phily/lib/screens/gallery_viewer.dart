@@ -1,3 +1,4 @@
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -43,10 +44,9 @@ class _FrostBar extends StatelessWidget {
   }
 }
 
-/// Pretty floating glass delete button: a frosted circle with a sheen, hairline
-/// ring, soft shadow, and a clean trash glyph.
-/// Frosted glass circle button (bin + share actions in the pager). Springs down
-/// on press and pops back on release for tactile feedback.
+/// Floating frosted-glass action button (share / bin in the pager): a real
+/// BackdropFilter disc with a top sheen, hairline rim and soft shadow. Springs
+/// down on press; on tap it fires a haptic, a quick icon pop, and a ripple ring.
 class _GlassCircleButton extends StatefulWidget {
   final IconData icon;
   final double iconSize;
@@ -62,8 +62,32 @@ class _GlassCircleButton extends StatefulWidget {
   State<_GlassCircleButton> createState() => _GlassCircleButtonState();
 }
 
-class _GlassCircleButtonState extends State<_GlassCircleButton> {
+class _GlassCircleButtonState extends State<_GlassCircleButton>
+    with SingleTickerProviderStateMixin {
+  static const double _d = 54;
   bool _pressed = false;
+  late final AnimationController _tap;
+
+  @override
+  void initState() {
+    super.initState();
+    _tap = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 440),
+    );
+  }
+
+  @override
+  void dispose() {
+    _tap.dispose();
+    super.dispose();
+  }
+
+  void _onTap() {
+    HapticFeedback.lightImpact();
+    _tap.forward(from: 0);
+    widget.onTap();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -71,39 +95,135 @@ class _GlassCircleButtonState extends State<_GlassCircleButton> {
       onTapDown: (_) => setState(() => _pressed = true),
       onTapUp: (_) => setState(() => _pressed = false),
       onTapCancel: () => setState(() => _pressed = false),
-      onTap: widget.onTap,
+      onTap: _onTap,
       child: AnimatedScale(
-        scale: _pressed ? 0.84 : 1.0,
-        duration: const Duration(milliseconds: 120),
+        scale: _pressed ? 0.88 : 1.0,
+        duration: const Duration(milliseconds: 130),
         curve: Curves.easeOut,
-        // Faux-glass (gradient, no BackdropFilter) — a real blur here janks the
-        // zoom. Darker base keeps the white icon readable over any photo.
-        child: Container(
-          width: 52,
-          height: 52,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(alpha: _pressed ? 0.34 : 0.26),
-                Colors.black.withValues(alpha: 0.28),
+        child: AnimatedBuilder(
+          animation: _tap,
+          builder: (context, _) {
+            final t = _tap.value;
+            final ripple = Curves.easeOut.transform(t);
+            // Triangle 0→1→0 → a quick scale-up-and-back pop of the glyph.
+            final tri = (1 - (2 * t - 1).abs()).clamp(0.0, 1.0);
+            final pop = 1 + 0.26 * Curves.easeOut.transform(tri);
+            return Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                // Tap ripple — a ring that expands past the button and fades.
+                if (t > 0 && t < 1)
+                  Transform.scale(
+                    scale: 0.85 + 0.7 * ripple,
+                    child: Container(
+                      width: _d,
+                      height: _d,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.7 * (1 - t)),
+                          width: 2,
+                        ),
+                      ),
+                    ),
+                  ),
+                // Soft drop shadow (cast by this circle, behind the clipped glass).
+                Container(
+                  width: _d,
+                  height: _d,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.2),
+                        blurRadius: 14,
+                        offset: const Offset(0, 5),
+                      ),
+                    ],
+                  ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // Frosted glass — clipped with a save layer so the blur
+                      // fills cleanly to the very edge (no unblurred sliver/tip).
+                      ClipOval(
+                        clipBehavior: Clip.antiAliasWithSaveLayer,
+                        child: BackdropFilter(
+                          filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              // Very light, mostly-transparent tint so the blurred
+                              // photo (its colour) shows through — clear glass.
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  Colors.white.withValues(alpha: 0.16),
+                                  Colors.white.withValues(alpha: 0.04),
+                                ],
+                              ),
+                            ),
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                // Glass reflection: a soft sheen brightest at the
+                                // top edge, fading out by mid-height. Fills right
+                                // to the top (clipped to the circle) — no gap, no
+                                // floating pill.
+                                Positioned.fill(
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        begin: Alignment.topCenter,
+                                        end: Alignment.bottomCenter,
+                                        colors: [
+                                          Colors.white.withValues(alpha: 0.42),
+                                          Colors.white.withValues(alpha: 0.10),
+                                          Colors.white.withValues(alpha: 0.0),
+                                        ],
+                                        stops: const [0.0, 0.3, 0.55],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                Transform.scale(
+                                  scale: pop,
+                                  child: Icon(
+                                    widget.icon,
+                                    color: Colors.white,
+                                    size: widget.iconSize,
+                                    shadows: const [
+                                      Shadow(
+                                        color: Colors.black38,
+                                        blurRadius: 4,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      // Crisp full rim over the clip seam — never clipped, so it
+                      // reaches the very edge all the way round.
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.6),
+                            width: 1.0,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
-            ),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.35),
-              width: 0.8,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.3),
-                blurRadius: 14,
-                offset: const Offset(0, 5),
-              ),
-            ],
-          ),
-          child: Icon(widget.icon, color: Colors.white, size: widget.iconSize),
+            );
+          },
         ),
       ),
     );
@@ -176,19 +296,60 @@ class _SectionHeaderBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Accent the most recent days in gold to tie in the app's accent.
+    final recent = label == 'Today' || label == 'Yesterday';
     return Container(
-      height: 40,
+      height: 42,
       color: Colors.black,
       alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.only(left: 12, top: 10, bottom: 6),
+      padding: const EdgeInsets.only(left: 14, top: 12, bottom: 6),
       child: Text(
         label,
-        style: const TextStyle(
-          color: Colors.white,
+        style: TextStyle(
+          color: recent ? _gold : Colors.white,
           fontSize: 15,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.2,
         ),
+      ),
+    );
+  }
+}
+
+/// Calm empty state when the library has no photos/videos yet.
+class _EmptyGallery extends StatelessWidget {
+  const _EmptyGallery();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.photo_library_outlined,
+            color: Colors.white.withValues(alpha: 0.28),
+            size: 54,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'No photos yet',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.7),
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+              letterSpacing: 0.3,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Photos you capture will appear here',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.4),
+              fontSize: 13,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -606,6 +767,8 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
         children: [
           if (_loading)
             const BrandedLoader()
+          else if (_items.isEmpty)
+            const _EmptyGallery()
           else
             // Inset below the bar so pinned date headers sit under it, not behind.
             Padding(
@@ -625,13 +788,13 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
                       SliverStickyHeader(
                         header: _SectionHeaderBar(s.label),
                         sliver: SliverPadding(
-                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          padding: const EdgeInsets.symmetric(horizontal: 3),
                           sliver: SliverGrid(
                             gridDelegate:
                                 const SliverGridDelegateWithFixedCrossAxisCount(
                                   crossAxisCount: 3,
-                                  mainAxisSpacing: 2,
-                                  crossAxisSpacing: 2,
+                                  mainAxisSpacing: 3,
+                                  crossAxisSpacing: 3,
                                 ),
                             delegate: SliverChildBuilderDelegate(
                               (_, j) => _cell(s.indices[j]),
@@ -812,8 +975,14 @@ class _GridThumbState extends State<_GridThumb> {
   @override
   Widget build(BuildContext context) {
     final bytes = _bytes;
+    const radius = BorderRadius.all(Radius.circular(8));
     if (bytes == null) {
-      return Container(color: Colors.white.withValues(alpha: 0.06));
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.06),
+          borderRadius: radius,
+        ),
+      );
     }
     final isVideo = widget.asset.type == AssetType.video;
     // Gentle fade-in as each thumbnail loads (instead of popping in).
@@ -830,43 +999,56 @@ class _GridThumbState extends State<_GridThumb> {
             scale: widget.selected ? 0.86 : 1.0,
             duration: const Duration(milliseconds: 140),
             curve: Curves.easeOut,
-            child: Image.memory(
-              bytes,
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
+            child: ClipRRect(
+              borderRadius: radius,
+              child: Image.memory(
+                bytes,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+              ),
             ),
           ),
           if (isVideo)
             Positioned(
               right: 5,
-              bottom: 4,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.play_arrow_rounded,
-                    color: Colors.white,
-                    size: 15,
-                  ),
-                  const SizedBox(width: 1),
-                  Text(
-                    _fmtDuration(widget.asset.videoDuration),
-                    style: const TextStyle(
+              bottom: 5,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 5,
+                  vertical: 1.5,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.42),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.play_arrow_rounded,
                       color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      shadows: [Shadow(color: Colors.black54, blurRadius: 3)],
+                      size: 13,
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 1),
+                    Text(
+                      _fmtDuration(widget.asset.videoDuration),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           // Selection check (multi-select mode): gold filled when selected,
           // hollow white otherwise.
           if (widget.selecting)
             Positioned(
-              right: 5,
-              top: 5,
+              right: 6,
+              top: 6,
               child: Container(
                 width: 22,
                 height: 22,
@@ -876,6 +1058,14 @@ class _GridThumbState extends State<_GridThumb> {
                       ? _gold
                       : Colors.black.withValues(alpha: 0.3),
                   border: Border.all(color: Colors.white, width: 1.5),
+                  boxShadow: widget.selected
+                      ? [
+                          BoxShadow(
+                            color: _gold.withValues(alpha: 0.5),
+                            blurRadius: 6,
+                          ),
+                        ]
+                      : null,
                 ),
                 child: widget.selected
                     ? const Icon(
@@ -1111,54 +1301,39 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                       child: _FrostBar(
                         child: Padding(
                           padding: EdgeInsets.only(
-                            top: MediaQuery.of(context).padding.top + 4,
-                            bottom: 8,
-                            left: 6,
-                            right: 6,
+                            top: MediaQuery.of(context).padding.top + 2,
+                            bottom: 5,
+                            left: 16,
+                            right: 16,
                           ),
-                          child: Row(
-                            children: [
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.close_rounded,
-                                  color: Colors.white,
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  _dateLabel(
+                                    widget.assets[_index].createDateTime,
+                                  ),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                    letterSpacing: 0.3,
+                                  ),
                                 ),
-                                onPressed: () => Navigator.of(context).pop(),
-                              ),
-                              Expanded(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      _dateLabel(
-                                        widget.assets[_index].createDateTime,
-                                      ),
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 14.5,
-                                        fontWeight: FontWeight.w500,
-                                        letterSpacing: 0.3,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 1),
-                                    Text(
-                                      _timeLabel(
-                                        widget.assets[_index].createDateTime,
-                                      ),
-                                      style: TextStyle(
-                                        color: Colors.white.withValues(
-                                          alpha: 0.6,
-                                        ),
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w400,
-                                        letterSpacing: 0.4,
-                                      ),
-                                    ),
-                                  ],
+                                Text(
+                                  _timeLabel(
+                                    widget.assets[_index].createDateTime,
+                                  ),
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.6),
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w400,
+                                    letterSpacing: 0.4,
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(width: 48),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       ),
