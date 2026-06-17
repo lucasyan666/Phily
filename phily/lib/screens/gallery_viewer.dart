@@ -1,5 +1,5 @@
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
@@ -128,97 +128,25 @@ class _GlassCircleButtonState extends State<_GlassCircleButton>
                       ),
                     ),
                   ),
-                // Soft drop shadow (cast by this circle, behind the clipped glass).
-                Container(
-                  width: _d,
-                  height: _d,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.2),
-                        blurRadius: 14,
-                        offset: const Offset(0, 5),
-                      ),
-                    ],
-                  ),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      // Frosted glass — clipped with a save layer so the blur
-                      // fills cleanly to the very edge (no unblurred sliver/tip).
-                      ClipOval(
-                        clipBehavior: Clip.antiAliasWithSaveLayer,
-                        child: BackdropFilter(
-                          filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              // Very light, mostly-transparent tint so the blurred
-                              // photo (its colour) shows through — clear glass.
-                              gradient: LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Colors.white.withValues(alpha: 0.16),
-                                  Colors.white.withValues(alpha: 0.04),
-                                ],
-                              ),
-                            ),
-                            child: Stack(
-                              alignment: Alignment.center,
-                              children: [
-                                // Glass reflection: a soft sheen brightest at the
-                                // top edge, fading out by mid-height. Fills right
-                                // to the top (clipped to the circle) — no gap, no
-                                // floating pill.
-                                Positioned.fill(
-                                  child: DecoratedBox(
-                                    decoration: BoxDecoration(
-                                      gradient: LinearGradient(
-                                        begin: Alignment.topCenter,
-                                        end: Alignment.bottomCenter,
-                                        colors: [
-                                          Colors.white.withValues(alpha: 0.42),
-                                          Colors.white.withValues(alpha: 0.10),
-                                          Colors.white.withValues(alpha: 0.0),
-                                        ],
-                                        stops: const [0.0, 0.3, 0.55],
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                Transform.scale(
-                                  scale: pop,
-                                  child: Icon(
-                                    widget.icon,
-                                    color: Colors.white,
-                                    size: widget.iconSize,
-                                    shadows: const [
-                                      Shadow(
-                                        color: Colors.black38,
-                                        blurRadius: 4,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                // Shared liquid-glass disc (blur + sheen + rim + shadow).
+                GlassSurface(
+                  borderRadius: BorderRadius.circular(_d / 2),
+                  child: SizedBox(
+                    width: _d,
+                    height: _d,
+                    child: Center(
+                      child: Transform.scale(
+                        scale: pop,
+                        child: Icon(
+                          widget.icon,
+                          color: Colors.white,
+                          size: widget.iconSize,
+                          shadows: const [
+                            Shadow(color: Colors.black38, blurRadius: 4),
+                          ],
                         ),
                       ),
-                      // Crisp full rim over the clip seam — never clipped, so it
-                      // reaches the very edge all the way round.
-                      DecoratedBox(
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.6),
-                            width: 1.0,
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ],
@@ -975,7 +903,7 @@ class _GridThumbState extends State<_GridThumb> {
   @override
   Widget build(BuildContext context) {
     final bytes = _bytes;
-    const radius = BorderRadius.all(Radius.circular(8));
+    const radius = BorderRadius.all(Radius.circular(kRadiusSm));
     if (bytes == null) {
       return DecoratedBox(
         decoration: BoxDecoration(
@@ -1019,7 +947,7 @@ class _GridThumbState extends State<_GridThumb> {
                 ),
                 decoration: BoxDecoration(
                   color: Colors.black.withValues(alpha: 0.42),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(kRadiusSm),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -1290,50 +1218,48 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                   ),
                 ),
 
-                // Frosted top bar: close + timestamp.
+                // Floating glass date bubble — the same glossy material as the
+                // action buttons, instead of a full-width top panel.
                 Positioned(
-                  top: 0,
+                  top: MediaQuery.of(context).padding.top + 10,
                   left: 0,
                   right: 0,
                   child: _chrome(
                     Opacity(
                       opacity: chrome,
-                      child: _FrostBar(
-                        child: Padding(
-                          padding: EdgeInsets.only(
-                            top: MediaQuery.of(context).padding.top + 2,
-                            bottom: 5,
-                            left: 16,
-                            right: 16,
+                      child: Center(
+                        child: GlassSurface(
+                          borderRadius: BorderRadius.circular(kRadiusLg),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 6,
                           ),
-                          child: Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _dateLabel(
-                                    widget.assets[_index].createDateTime,
-                                  ),
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w500,
-                                    letterSpacing: 0.3,
-                                  ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _dateLabel(
+                                  widget.assets[_index].createDateTime,
                                 ),
-                                Text(
-                                  _timeLabel(
-                                    widget.assets[_index].createDateTime,
-                                  ),
-                                  style: TextStyle(
-                                    color: Colors.white.withValues(alpha: 0.6),
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w400,
-                                    letterSpacing: 0.4,
-                                  ),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.3,
                                 ),
-                              ],
-                            ),
+                              ),
+                              Text(
+                                _timeLabel(
+                                  widget.assets[_index].createDateTime,
+                                ),
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.7),
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w400,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -1678,88 +1604,116 @@ class _VideoPageState extends State<_VideoPage> {
 
 /// A slim, minimalist video scrubber: gold played track, faint rail, a small
 /// round knob, with monospaced time labels either side. Tap or drag to seek.
-class _Scrubber extends StatelessWidget {
+class _Scrubber extends StatefulWidget {
   final VideoPlayerController controller;
   const _Scrubber({required this.controller});
 
   @override
+  State<_Scrubber> createState() => _ScrubberState();
+}
+
+class _ScrubberState extends State<_Scrubber>
+    with SingleTickerProviderStateMixin {
+  late final Ticker _ticker;
+  // The controller only reports `position` a few times a second, so the bar is
+  // driven instead by an estimate ticked every frame: the last reported position
+  // plus the wall-clock elapsed (× speed) since that report. _watch measures that
+  // elapsed; each controller update resyncs both. Result: a true 60fps playhead.
+  final Stopwatch _watch = Stopwatch();
+  Duration _lastPos = Duration.zero;
+  int _durMs = 0;
+  double _speed = 1.0;
+  bool _playing = false;
+  bool _dragging = false; // the finger owns the bar while scrubbing
+  final ValueNotifier<double> _frac = ValueNotifier(0);
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = createTicker(_onTick);
+    _onValue();
+    widget.controller.addListener(_onValue);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onValue);
+    _ticker.dispose();
+    _frac.dispose();
+    super.dispose();
+  }
+
+  // Resync to a fresh controller report; start/stop the per-frame ticker so it
+  // only runs while playing.
+  void _onValue() {
+    final v = widget.controller.value;
+    _durMs = v.duration.inMilliseconds;
+    _speed = v.playbackSpeed <= 0 ? 1.0 : v.playbackSpeed;
+    _lastPos = v.position;
+    _watch
+      ..reset()
+      ..start();
+    _playing = v.isPlaying;
+    if (_playing && !_ticker.isActive) {
+      _ticker.start();
+    } else if (!_playing && _ticker.isActive) {
+      _ticker.stop();
+    }
+    if (!_playing && !_dragging) _emit(_lastPos.inMilliseconds.toDouble());
+  }
+
+  void _onTick(Duration _) {
+    if (_dragging) return;
+    double ms = _lastPos.inMilliseconds.toDouble();
+    if (_playing) ms += _watch.elapsedMilliseconds * _speed;
+    _emit(ms);
+  }
+
+  void _emit(double ms) {
+    final frac = _durMs > 0 ? (ms / _durMs).clamp(0.0, 1.0) : 0.0;
+    if ((_frac.value - frac).abs() > 0.0005) _frac.value = frac;
+  }
+
+  void _seek(double frac) {
+    frac = frac.clamp(0.0, 1.0);
+    _frac.value = frac;
+    widget.controller.seekTo(Duration(milliseconds: (frac * _durMs).round()));
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<VideoPlayerValue>(
-      valueListenable: controller,
-      builder: (context, v, _) {
-        final durMs = v.duration.inMilliseconds;
-        final posMs = v.position.inMilliseconds.clamp(
-          0,
-          durMs == 0 ? 1 : durMs,
-        );
-        final frac = durMs > 0 ? posMs / durMs : 0.0;
-        const timeStyle = TextStyle(
-          color: Colors.white,
-          fontSize: 11,
-          fontWeight: FontWeight.w400,
-          letterSpacing: 0.3,
-          fontFeatures: [FontFeature.tabularFigures()],
-        );
+    const timeStyle = TextStyle(
+      color: Colors.white,
+      fontSize: 11,
+      fontWeight: FontWeight.w400,
+      letterSpacing: 0.3,
+      fontFeatures: [FontFeature.tabularFigures()],
+    );
+    return ValueListenableBuilder<double>(
+      valueListenable: _frac,
+      builder: (context, frac, _) {
+        final posMs = (frac * _durMs).round();
         return Row(
           children: [
-            Text(_fmtDuration(v.position), style: timeStyle),
+            Text(_fmtDuration(Duration(milliseconds: posMs)), style: timeStyle),
             const SizedBox(width: 10),
             Expanded(
               child: LayoutBuilder(
                 builder: (context, c) {
                   final w = c.maxWidth;
-                  void seek(double dx) {
-                    final f = (dx / w).clamp(0.0, 1.0);
-                    controller.seekTo(
-                      Duration(milliseconds: (f * durMs).round()),
-                    );
-                  }
-
                   return GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTapDown: (d) => seek(d.localPosition.dx),
-                    onHorizontalDragUpdate: (d) => seek(d.localPosition.dx),
+                    onTapDown: (d) => _seek(d.localPosition.dx / w),
+                    onHorizontalDragStart: (_) => _dragging = true,
+                    onHorizontalDragUpdate: (d) =>
+                        _seek(d.localPosition.dx / w),
+                    onHorizontalDragEnd: (_) => _dragging = false,
+                    onHorizontalDragCancel: () => _dragging = false,
                     child: SizedBox(
-                      height: 22,
-                      child: Stack(
-                        alignment: Alignment.centerLeft,
-                        children: [
-                          Container(
-                            height: 2.5,
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.22),
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
-                          FractionallySizedBox(
-                            alignment: Alignment.centerLeft,
-                            widthFactor: frac,
-                            child: Container(
-                              height: 2.5,
-                              decoration: BoxDecoration(
-                                color: _gold,
-                                borderRadius: BorderRadius.circular(2),
-                              ),
-                            ),
-                          ),
-                          Align(
-                            alignment: Alignment(frac * 2 - 1, 0),
-                            child: Container(
-                              width: 11,
-                              height: 11,
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: 0.3),
-                                    blurRadius: 4,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
+                      height: 24,
+                      child: CustomPaint(
+                        size: Size(w, 24),
+                        painter: _GlassTubePainter(frac),
                       ),
                     ),
                   );
@@ -1768,7 +1722,7 @@ class _Scrubber extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             Text(
-              _fmtDuration(v.duration),
+              _fmtDuration(Duration(milliseconds: _durMs)),
               style: timeStyle.copyWith(
                 color: Colors.white.withValues(alpha: 0.6),
               ),
@@ -1778,4 +1732,120 @@ class _Scrubber extends StatelessWidget {
       },
     );
   }
+}
+
+/// A 3D glass-tube progress bar: a translucent capsule "tube" with cylinder
+/// shading (bright top edge, dark body, faint bottom reflection) that fills with
+/// glowing molten-gold liquid, topped by a lit glass bead playhead.
+class _GlassTubePainter extends CustomPainter {
+  final double frac;
+  const _GlassTubePainter(this.frac);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    const th = 9.0; // tube thickness
+    const r = th / 2;
+    if (w <= th) return; // too narrow to draw a sane tube
+    final cy = size.height / 2;
+    final tubeRect = Rect.fromLTWH(0, cy - r, w, th);
+    final tube = RRect.fromRectAndRadius(tubeRect, const Radius.circular(r));
+
+    // 1) Empty tube — cylinder shading: specular top, dark glass body, faint
+    //    bottom reflection.
+    canvas.drawRRect(
+      tube,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0x40FFFFFF), Color(0x73000000), Color(0x1AFFFFFF)],
+          stops: [0.0, 0.55, 1.0],
+        ).createShader(tubeRect),
+    );
+
+    // 2) Molten-gold liquid, clipped to the tube and the filled fraction.
+    final fw = (w * frac).clamp(0.0, w);
+    if (fw > 0.5) {
+      canvas.save();
+      canvas.clipRRect(tube);
+      final fillRect = Rect.fromLTWH(0, cy - r, fw, th);
+      final fillRRect = RRect.fromRectAndRadius(
+        fillRect,
+        const Radius.circular(r),
+      );
+      // Soft glow beneath the liquid.
+      canvas.drawRRect(
+        fillRRect,
+        Paint()
+          ..color = kGold.withValues(alpha: 0.5)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+      );
+      // Liquid body — pale-gold sheen → gold → deep amber.
+      canvas.drawRRect(
+        fillRRect,
+        Paint()
+          ..shader = const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFFFFF1C9), kGold, Color(0xFFB07E22)],
+            stops: [0.0, 0.5, 1.0],
+          ).createShader(fillRect),
+      );
+      // Specular streak along the top of the liquid.
+      final specW = fw - th;
+      if (specW > 0) {
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(r * 0.6, cy - r + 1.4, specW, th * 0.24),
+            const Radius.circular(2),
+          ),
+          Paint()..color = Colors.white.withValues(alpha: 0.55),
+        );
+      }
+      canvas.restore();
+    }
+
+    // 3) Glass rim around the tube.
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(tubeRect.deflate(0.4), const Radius.circular(r)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8
+        ..color = Colors.white.withValues(alpha: 0.22),
+    );
+
+    // 4) Playhead — a lit glass bead with a gold halo.
+    final px = fw.clamp(r, w - r);
+    final center = Offset(px, cy);
+    canvas.drawCircle(
+      center,
+      9,
+      Paint()
+        ..color = kGold.withValues(alpha: 0.45)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+    canvas.drawCircle(
+      center,
+      7.5,
+      Paint()
+        ..shader = const RadialGradient(
+          center: Alignment(-0.4, -0.5),
+          radius: 1.1,
+          colors: [Colors.white, Color(0xFFFDEFC2), kGold],
+          stops: [0.0, 0.45, 1.0],
+        ).createShader(Rect.fromCircle(center: center, radius: 7.5)),
+    );
+    canvas.drawCircle(
+      center,
+      7.5,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = Colors.white.withValues(alpha: 0.7),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_GlassTubePainter old) => old.frac != frac;
 }
