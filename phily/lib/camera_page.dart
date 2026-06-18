@@ -51,6 +51,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // in the rotated (landscape) orientation by default; the rotate button cycles
   // from there. Used for both the painter and the alignment eye so they match.
   int get _spiralTurnsEffective => (_spiralTurns + 1) & 3;
+  // Golden Triangles: flip the set across the vertical axis (TL→BR ↔ TR→BL) —
+  // the old "Harmonious Triangles" mode is just this mirror. Toggled by a button.
+  bool _trianglesFlipped = false;
   // Aspect Ratio mode: selected crop ratio. Cycled by a button in that mode.
   static const List<({String label, double ratio})> _aspectRatios = [
     (label: '1:1', ratio: 1.0),
@@ -105,6 +108,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // preview). Kept separate from pinch-zoom via the max-pointer-count check.
   double _swipeStartX = 0, _swipeStartY = 0, _swipeLastX = 0, _swipeLastY = 0;
   int _swipeMaxPointers = 0;
+  // Cached "All" album + count so the gallery opens instantly on swipe/tap — no
+  // async query between the gesture and the slide-up. Pre-warmed by
+  // _loadLatestThumbnail (and refreshed each time we return from the gallery).
+  AssetPathEntity? _galleryAlbum;
+  int _galleryCount = 0;
   // Zoom meter drag state
   static const double _zoomMax = 25.0;
   double _meterDragStart = 0.0;
@@ -155,13 +163,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   int _lastAnimalMs = 0;
   List<Map<String, dynamic>> _lastAnimalDets = const [];
 
-  // Experimental: highlight buildings in None mode via Apple Vision rectangle
-  // detection (architectural rects — facades/windows). Throttled native call;
-  // results are normalised preview-space rects the painter highlights.
-  static const bool _buildingsEnabled = true;
-  int _lastBuildingMs = 0;
-  final List<Rect> _buildingBoxes = [];
-  final ValueNotifier<int> _buildingRepaint = ValueNotifier(0);
+  // Experimental (None mode): show detected eye landmarks, to validate eye
+  // tracking before wiring it into the subject modes. Preview-normalised points.
+  final List<Offset> _eyePoints = [];
+  final ValueNotifier<int> _eyeRepaint = ValueNotifier(0);
 
   // ML Kit face detector — runs on the CameraImage directly (no method-channel
   // image round trip), so detection latency is low enough for live tracking.
@@ -169,7 +174,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     options: FaceDetectorOptions(
       performanceMode: FaceDetectorMode.fast,
       enableContours: false,
-      enableLandmarks: false,
+      enableLandmarks: true, // eyes (for the eye-placement key point)
       enableClassification: false,
       minFaceSize: 0.1,
     ),
@@ -478,8 +483,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           _isInitialized = true;
         });
       }
-      // Begin streaming frames for composition alignment detection.
-      await _startImageStream();
+      // Begin streaming frames for composition detection — but only after the
+      // first UI frames have painted. Starting the CPU-heavy per-frame detection
+      // (pixel-rotation loop + ML Kit + Vision) while the launch frames (camera
+      // preview + glass chrome) are still warming up their GPU pipelines is the
+      // main source of first-launch jank, so let the UI settle first.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future.delayed(const Duration(milliseconds: 400), () {
+          if (mounted) _startImageStream();
+        });
+      });
     } catch (e) {
       setState(() {
         _error = 'Camera initialization failed: $e';
@@ -569,6 +582,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // Get the most recent asset from the "All" album
       final recentAlbum = albums.first;
       final assetCount = await recentAlbum.assetCountAsync;
+      // Cache so the gallery can open instantly (no query between swipe + slide).
+      _galleryAlbum = recentAlbum;
+      _galleryCount = assetCount;
       debugPrint('Album "${recentAlbum.name}" has $assetCount assets');
 
       if (assetCount == 0) {
@@ -612,7 +628,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _focusHideTimer?.cancel();
     _accelSub?.cancel();
     _faceAnim?.dispose();
-    _buildingRepaint.dispose();
+    _eyeRepaint.dispose();
     _alignLevel.dispose();
     _horizon.dispose();
     _hzLevel.dispose();
@@ -741,10 +757,21 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   void _onScaleEnd(ScaleEndDetails _) {
-    // Only a single-finger gesture counts as a composition swipe (never a pinch).
+    // Only a single-finger gesture counts as a swipe (never a pinch).
     if (_swipeMaxPointers > 1) return;
     final double dx = _swipeLastX - _swipeStartX;
     final double dy = _swipeLastY - _swipeStartY;
+    // Clear vertical swipe up → open the gallery, sliding up (the mirror of the
+    // grid's swipe-down-to-close). Not while recording or adjusting exposure
+    // (the focus UI owns vertical drags then).
+    if (dy < -70 &&
+        dy.abs() > dx.abs() * 1.5 &&
+        !_isRecording &&
+        !_focusShown) {
+      HapticFeedback.selectionClick();
+      _openGalleryViewer();
+      return;
+    }
     // Require a clearly horizontal swipe past a threshold.
     if (dx.abs() > 60 && dx.abs() > dy.abs() * 1.5) {
       _changeCompositionBy(dx < 0 ? 1 : -1); // swipe left → next, right → prev
@@ -784,7 +811,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       case CompositionMode.none:
         return null;
       case CompositionMode.horizonGrid:
-        return 'Landscapes & seascapes — level the horizon onto the golden line for a balanced, sky-forward frame.';
+        return 'Landscapes & seascapes — a true gravity level. Hold your phone completely straight to level the horizon.';
       case CompositionMode.ruleOfThirds:
         return 'Everyday shots — people, landscapes, street. Put your subject on a dot.';
       case CompositionMode.goldenSection:
@@ -793,8 +820,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         return 'Scenes with strong diagonals — roads, stairs, reclining poses.';
       case CompositionMode.fibonacciSpiral:
         return 'Flowing scenes — rivers, paths, shells. Lead the eye to the centre.';
-      case CompositionMode.harmoniousTriangles:
-        return 'Balancing complex scenes & architecture.';
       case CompositionMode.cross:
         return 'Symmetrical, centred subjects — reflections, formal architecture.';
       case CompositionMode.focalMass:
@@ -1016,6 +1041,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           await _analyzeDetections(image);
           break;
         default:
+          // These modes don't detect — fade out any face/animal boxes and clear
+          // the eye rings left from the previous mode so they don't freeze and
+          // carry over on screen.
+          if (_faceBoxes.isNotEmpty) _updateFaceTargets(const []);
+          if (_eyePoints.isNotEmpty) {
+            _eyePoints.clear();
+            _eyeRepaint.value++;
+          }
           break;
       }
     } catch (e) {
@@ -1093,6 +1126,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // Map ML Kit boxes (normalised in the upright image) back to portrait buffer
     // space via the inverse rotation, then apply the preview's horizontal stretch.
     final dets = <Map<String, dynamic>>[];
+    final bool wantEyes = _compositionMode == CompositionMode.none;
+    final eyePts = <Offset>[];
     for (final f in faces) {
       final r = f.boundingBox;
       final c1 = _invRotNorm(r.left / ow, r.top / oh, qt);
@@ -1111,6 +1146,26 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         'label': 'face',
         'confidence': 1.0,
       });
+      // Eye landmarks (None-mode test) — mapped back like the box corners.
+      if (wantEyes) {
+        for (final lm in [
+          f.landmarks[FaceLandmarkType.leftEye],
+          f.landmarks[FaceLandmarkType.rightEye],
+        ]) {
+          if (lm == null) continue;
+          final e = _invRotNorm(lm.position.x / ow, lm.position.y / oh, qt);
+          eyePts.add(Offset((e.$1 - 0.5) * _previewStretchX + 0.5, e.$2));
+        }
+      }
+    }
+    if (wantEyes) {
+      _eyePoints
+        ..clear()
+        ..addAll(eyePts);
+      _eyeRepaint.value++;
+    } else if (_eyePoints.isNotEmpty) {
+      _eyePoints.clear();
+      _eyeRepaint.value++;
     }
 
     // ── Animals (cats/dogs) via Apple Vision — throttled (~7 Hz). The box's
@@ -1132,44 +1187,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         } catch (_) {}
       }
       dets.addAll(_lastAnimalDets);
-    }
-
-    // ── Buildings (None mode only) via Apple Vision rectangle detection.
-    // Throttled ~5 Hz; highlighted directly (separate from the tracking boxes),
-    // and cleared when leaving None so they don't linger under a grid.
-    if (_buildingsEnabled && _compositionMode == CompositionMode.none) {
-      if (nowMs - _lastBuildingMs > 200) {
-        _lastBuildingMs = nowMs;
-        try {
-          final raw = await _cameraChannel.invokeMethod<List>(
-            'detectBuildings',
-            {'bgra': winBytes, 'width': winOw, 'height': winOh},
-          );
-          if (!mounted) return;
-          final tmp = <Map<String, dynamic>>[];
-          _addVisionDets(raw, tmp, qt, 'building');
-          _buildingBoxes
-            ..clear()
-            ..addAll(
-              tmp
-                  .map(
-                    (d) => Rect.fromLTWH(
-                      d['x'] as double,
-                      d['y'] as double,
-                      d['w'] as double,
-                      d['h'] as double,
-                    ),
-                  )
-                  // Keep only large rectangles — drop the small windows / keyboard
-                  // keys / signage the rectangle detector also finds.
-                  .where((r) => r.shortestSide >= 0.22),
-            );
-          _buildingRepaint.value++;
-        } catch (_) {}
-      }
-    } else if (_buildingBoxes.isNotEmpty) {
-      _buildingBoxes.clear();
-      _buildingRepaint.value++;
     }
 
     _updateFaceTargets(dets); // ticker animates the displayed boxes
@@ -1396,7 +1413,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // The 60fps face ticker eases the *displayed* values toward the confident
   // *target* (gated below) — smooth motion + fade independent of detection rate.
   final ValueNotifier<
-    ({double angle, double ax, double ay, double op, double aligned})?
+    ({
+      double angle,
+      double ax,
+      double ay,
+      double op,
+      double aligned,
+      double dy,
+    })?
   >
   _horizon = ValueNotifier(null);
   // Horizon message-bubble level: 0 = guide only, 1 = detected (not level),
@@ -1678,6 +1702,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         ay: _hzDAy,
         op: _hzDOp.clamp(0.0, 1.0),
         aligned: aligned,
+        // Signed offset of the true horizon from the best-spot guide (normalised):
+        // < 0 → true horizon is above the guide (nudge the phone up); > 0 → below.
+        dy: _hzDAy - guideYn,
       );
     } else {
       if (_horizon.value != null) _horizon.value = null;
@@ -1724,16 +1751,27 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Detection is paused while it's on top, then resumed on return.
   Future<void> _openGalleryViewer() async {
     try {
-      if (!await _ensurePhotoPermission()) return;
-      final albums = await PhotoManager.getAssetPathList(
-        type: RequestType.common, // photos + videos
-        hasAll: true,
-        onlyAll: true,
-      );
-      if (albums.isEmpty) return;
-      final album = albums.first;
-      final count = await album.assetCountAsync;
+      // Fast path: the album is pre-warmed (by _loadLatestThumbnail), so push
+      // immediately — no async query between the swipe/tap and the slide-up.
+      var album = _galleryAlbum;
+      var count = _galleryCount;
+      if (album == null) {
+        // Cold path (first open before the prewarm landed): resolve once.
+        if (!await _ensurePhotoPermission()) return;
+        final albums = await PhotoManager.getAssetPathList(
+          type: RequestType.common, // photos + videos
+          hasAll: true,
+          onlyAll: true,
+        );
+        if (albums.isEmpty || !mounted) return;
+        album = albums.first;
+        count = await album.assetCountAsync;
+        _galleryAlbum = album;
+        _galleryCount = count;
+      }
       if (count == 0 || !mounted) return;
+      final theAlbum = album; // non-null after the block above
+      final theCount = count;
 
       _stopImageStream(); // no need to detect while the gallery covers the screen
       await Navigator.of(context).push(
@@ -1742,7 +1780,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           // behind the whole gallery (that was tanking the frame rate).
           transitionDuration: const Duration(milliseconds: 320),
           reverseTransitionDuration: const Duration(milliseconds: 260),
-          pageBuilder: (_, _, _) => GalleryGridPage(album: album, count: count),
+          pageBuilder: (_, _, _) =>
+              GalleryGridPage(album: theAlbum, count: theCount),
           transitionsBuilder: (_, anim, _, child) => SlideTransition(
             position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
                 .animate(
@@ -1957,13 +1996,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                       topInset: _topInset,
                       bottomInset: _bottomInset,
                       spiralTurns: _spiralTurnsEffective,
+                      trianglesFlipped: _trianglesFlipped,
                       aspect: _aspectRatios[_aspectIndex].ratio,
                       horizon: _horizon,
-                      buildingBoxes: _buildingBoxes,
+                      eyePoints: _eyePoints,
                       repaint: Listenable.merge([
                         _faceAnim,
                         _horizon,
-                        _buildingRepaint,
+                        _eyeRepaint,
                       ]),
                     ),
                   ),
@@ -2641,7 +2681,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       ),
       CompositionMode.horizonGrid => (
         Icons.straighten_rounded,
-        'Line your horizon up with the gold line',
+        'Hold your phone completely straight',
       ),
       _ => (Icons.grid_3x3_rounded, 'Place your subject on an intersection'),
     };
@@ -2659,6 +2699,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     switch (_compositionMode) {
       case CompositionMode.fibonacciSpiral:
         return _buildSpiralRotateButton();
+      case CompositionMode.goldenTriangles:
+        return _buildTrianglesFlipButton();
       case CompositionMode.aspectRatio:
         return _buildAspectRatioButton();
       default:
@@ -2731,6 +2773,30 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             size: 24,
           ),
         ),
+      ),
+    );
+  }
+
+  /// Flip control shown while Golden Triangles is active — mirrors the triangle
+  /// set across the vertical axis (TL→BR diagonal ↔ TR→BL diagonal).
+  Widget _buildTrianglesFlipButton() {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() => _trianglesFlipped = !_trianglesFlipped);
+      },
+      child: Container(
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.30),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.28),
+            width: 1.0,
+          ),
+        ),
+        child: _rotated(const Icon(Icons.flip_rounded, color: kGold, size: 24)),
       ),
     );
   }

@@ -487,14 +487,44 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   final ScrollController _scrollCtrl = ScrollController();
   final ValueNotifier<double> _scrollFrac = ValueNotifier(0);
 
+  // Defer the first asset load until the slide-up transition finishes (see
+  // didChangeDependencies), so the heavy first grid build doesn't jank the open.
+  bool _loadStarted = false;
+  Animation<double>? _enterAnim;
+
   @override
   void initState() {
     super.initState();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_loadStarted || _enterAnim != null) return;
+    final anim = ModalRoute.of(context)?.animation;
+    if (anim == null || anim.isCompleted) {
+      _startLoad();
+    } else {
+      _enterAnim = anim..addStatusListener(_onEnter);
+    }
+  }
+
+  void _onEnter(AnimationStatus s) {
+    if (s != AnimationStatus.completed) return;
+    _enterAnim?.removeStatusListener(_onEnter);
+    _enterAnim = null;
+    _startLoad();
+  }
+
+  void _startLoad() {
+    if (_loadStarted) return;
+    _loadStarted = true;
     _load();
   }
 
   @override
   void dispose() {
+    _enterAnim?.removeStatusListener(_onEnter);
     _pull.dispose();
     _scrollCtrl.dispose();
     _scrollFrac.dispose();
@@ -1612,9 +1642,14 @@ class _Scrubber extends StatefulWidget {
   State<_Scrubber> createState() => _ScrubberState();
 }
 
-class _ScrubberState extends State<_Scrubber>
-    with SingleTickerProviderStateMixin {
+class _ScrubberState extends State<_Scrubber> with TickerProviderStateMixin {
   late final Ticker _ticker;
+  // Press/drag "swell": the tube thickens + brightens while actively scrubbing.
+  late final AnimationController _press;
+  // Pulsing glow while the bar is selected (scrubbing).
+  late final AnimationController _glow;
+  bool _engaged = false;
+  int _lastTick = -1; // detented haptic ticks while dragging
   // The controller only reports `position` a few times a second, so the bar is
   // driven instead by an estimate ticked every frame: the last reported position
   // plus the wall-clock elapsed (× speed) since that report. _watch measures that
@@ -1631,6 +1666,14 @@ class _ScrubberState extends State<_Scrubber>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick);
+    _press = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 180),
+    );
+    _glow = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 850),
+    );
     _onValue();
     widget.controller.addListener(_onValue);
   }
@@ -1639,6 +1682,8 @@ class _ScrubberState extends State<_Scrubber>
   void dispose() {
     widget.controller.removeListener(_onValue);
     _ticker.dispose();
+    _press.dispose();
+    _glow.dispose();
     _frac.dispose();
     super.dispose();
   }
@@ -1674,10 +1719,40 @@ class _ScrubberState extends State<_Scrubber>
     if ((_frac.value - frac).abs() > 0.0005) _frac.value = frac;
   }
 
-  void _seek(double frac) {
+  void _seek(double frac, {bool tick = false}) {
     frac = frac.clamp(0.0, 1.0);
     _frac.value = frac;
+    if (tick) {
+      // Detented haptic ticks as the fluid passes ~28 notches across the bar.
+      final t = (frac * 28).round();
+      if (t != _lastTick) {
+        _lastTick = t;
+        HapticFeedback.selectionClick();
+      }
+    }
     widget.controller.seekTo(Duration(milliseconds: (frac * _durMs).round()));
+  }
+
+  // Begin scrubbing: pause the interpolation, swell the tube, give a press tick.
+  void _engage() {
+    _dragging = true;
+    _lastTick = (_frac.value * 28).round();
+    if (!_engaged) {
+      _engaged = true;
+      HapticFeedback.mediumImpact();
+    }
+    _press.forward();
+    if (!_glow.isAnimating) _glow.repeat(reverse: true); // breathe while held
+  }
+
+  void _release() {
+    _dragging = false;
+    if (_engaged) {
+      _engaged = false;
+      HapticFeedback.lightImpact();
+    }
+    _press.reverse();
+    _glow.stop(); // the fading swell carries the glow out
   }
 
   @override
@@ -1689,9 +1764,14 @@ class _ScrubberState extends State<_Scrubber>
       letterSpacing: 0.3,
       fontFeatures: [FontFeature.tabularFigures()],
     );
-    return ValueListenableBuilder<double>(
-      valueListenable: _frac,
-      builder: (context, frac, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([_frac, _press, _glow]),
+      builder: (context, _) {
+        final frac = _frac.value;
+        final active = Curves.easeOut.transform(_press.value);
+        // Pulsing glow while selected: breathes between ~0.55 and 1, faded by
+        // the swell so it eases out on release.
+        final glow = active * (0.55 + 0.45 * _glow.value);
         final posMs = (frac * _durMs).round();
         return Row(
           children: [
@@ -1703,17 +1783,24 @@ class _ScrubberState extends State<_Scrubber>
                   final w = c.maxWidth;
                   return GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTapDown: (d) => _seek(d.localPosition.dx / w),
-                    onHorizontalDragStart: (_) => _dragging = true,
+                    onTapDown: (d) {
+                      _engage();
+                      _seek(d.localPosition.dx / w);
+                    },
+                    onTapUp: (_) => _release(),
+                    onHorizontalDragStart: (d) {
+                      _engage();
+                      _seek(d.localPosition.dx / w);
+                    },
                     onHorizontalDragUpdate: (d) =>
-                        _seek(d.localPosition.dx / w),
-                    onHorizontalDragEnd: (_) => _dragging = false,
-                    onHorizontalDragCancel: () => _dragging = false,
+                        _seek(d.localPosition.dx / w, tick: true),
+                    onHorizontalDragEnd: (_) => _release(),
+                    onHorizontalDragCancel: _release,
                     child: SizedBox(
-                      height: 24,
+                      height: 32,
                       child: CustomPaint(
-                        size: Size(w, 24),
-                        painter: _GlassTubePainter(frac),
+                        size: Size(w, 32),
+                        painter: _GlassTubePainter(frac, active, glow),
                       ),
                     ),
                   );
@@ -1736,23 +1823,41 @@ class _ScrubberState extends State<_Scrubber>
 
 /// A 3D glass-tube progress bar: a translucent capsule "tube" with cylinder
 /// shading (bright top edge, dark body, faint bottom reflection) that fills with
-/// glowing molten-gold liquid, topped by a lit glass bead playhead.
+/// glowing molten-gold liquid. While you scrub ([active] → 1) the tube swells and
+/// the fluid brightens, and a soft meniscus glow appears at the liquid's leading
+/// edge (the "wet" front you drag). No knob.
 class _GlassTubePainter extends CustomPainter {
   final double frac;
-  const _GlassTubePainter(this.frac);
+  final double active; // 0 resting → 1 actively scrubbing
+  final double glow; // 0..1 pulsing halo while the bar is selected
+  const _GlassTubePainter(this.frac, this.active, this.glow);
 
   @override
   void paint(Canvas canvas, Size size) {
     final w = size.width;
-    const th = 9.0; // tube thickness
-    const r = th / 2;
+    final a = active.clamp(0.0, 1.0);
+    final th = 9.0 + 5.0 * a; // tube swells while scrubbing
+    final r = th / 2;
     if (w <= th) return; // too narrow to draw a sane tube
     final cy = size.height / 2;
     final tubeRect = Rect.fromLTWH(0, cy - r, w, th);
-    final tube = RRect.fromRectAndRadius(tubeRect, const Radius.circular(r));
+    final tube = RRect.fromRectAndRadius(tubeRect, Radius.circular(r));
 
-    // 1) Empty tube — cylinder shading: specular top, dark glass body, faint
-    //    bottom reflection.
+    // 0) Pulsing halo around the filled liquid while the bar is selected.
+    final gw = (w * frac).clamp(0.0, w);
+    if (glow > 0.01 && gw > 0.5) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(0, cy - r, gw, th).inflate(2),
+          Radius.circular(r + 2),
+        ),
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.5 * glow)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 7 + 6 * glow),
+      );
+    }
+
+    // 1) Empty tube — cylinder shading: specular top, dark body, faint reflection.
     canvas.drawRRect(
       tube,
       Paint()
@@ -1770,37 +1875,46 @@ class _GlassTubePainter extends CustomPainter {
       canvas.save();
       canvas.clipRRect(tube);
       final fillRect = Rect.fromLTWH(0, cy - r, fw, th);
-      final fillRRect = RRect.fromRectAndRadius(
-        fillRect,
-        const Radius.circular(r),
-      );
-      // Soft glow beneath the liquid.
+      final fillRRect = RRect.fromRectAndRadius(fillRect, Radius.circular(r));
+      // Luminous halo beneath the liquid — the soft "angelic" glow, brighter
+      // while scrubbing.
       canvas.drawRRect(
         fillRRect,
         Paint()
-          ..color = kGold.withValues(alpha: 0.5)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+          ..color = Colors.white.withValues(alpha: 0.5 + 0.35 * a)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6 + 5 * a),
       );
-      // Liquid body — pale-gold sheen → gold → deep amber.
+      // Liquid body — pure white sheen → cool near-white → pale, kept luminous
+      // (no grey) for an angelic look.
       canvas.drawRRect(
         fillRRect,
         Paint()
           ..shader = const LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFFFFF1C9), kGold, Color(0xFFB07E22)],
-            stops: [0.0, 0.5, 1.0],
+            colors: [Color(0xFFFFFFFF), Color(0xFFF3F7FF), Color(0xFFDCE6F6)],
+            stops: [0.0, 0.55, 1.0],
           ).createShader(fillRect),
       );
-      // Specular streak along the top of the liquid.
+      // Glossy "wet" reflections — a bright highlight along the top + a faint
+      // lower one, so it reads as flowing liquid rather than a flat fill.
       final specW = fw - th;
       if (specW > 0) {
         canvas.drawRRect(
           RRect.fromRectAndRadius(
-            Rect.fromLTWH(r * 0.6, cy - r + 1.4, specW, th * 0.24),
-            const Radius.circular(2),
+            Rect.fromLTWH(r * 0.55, cy - r + 1.1, specW, th * 0.30),
+            Radius.circular(th * 0.18),
           ),
-          Paint()..color = Colors.white.withValues(alpha: 0.55),
+          Paint()
+            ..color = Colors.white.withValues(alpha: 0.85)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 0.6),
+        );
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(r * 0.55, cy + r * 0.4, specW, th * 0.16),
+            Radius.circular(th * 0.1),
+          ),
+          Paint()..color = Colors.white.withValues(alpha: 0.22),
         );
       }
       canvas.restore();
@@ -1808,44 +1922,28 @@ class _GlassTubePainter extends CustomPainter {
 
     // 3) Glass rim around the tube.
     canvas.drawRRect(
-      RRect.fromRectAndRadius(tubeRect.deflate(0.4), const Radius.circular(r)),
+      RRect.fromRectAndRadius(tubeRect.deflate(0.4), Radius.circular(r)),
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 0.8
-        ..color = Colors.white.withValues(alpha: 0.22),
+        ..color = Colors.white.withValues(alpha: 0.22 + 0.18 * a),
     );
 
-    // 4) Playhead — a lit glass bead with a gold halo.
-    final px = fw.clamp(r, w - r);
-    final center = Offset(px, cy);
-    canvas.drawCircle(
-      center,
-      9,
-      Paint()
-        ..color = kGold.withValues(alpha: 0.45)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
-    );
-    canvas.drawCircle(
-      center,
-      7.5,
-      Paint()
-        ..shader = const RadialGradient(
-          center: Alignment(-0.4, -0.5),
-          radius: 1.1,
-          colors: [Colors.white, Color(0xFFFDEFC2), kGold],
-          stops: [0.0, 0.45, 1.0],
-        ).createShader(Rect.fromCircle(center: center, radius: 7.5)),
-    );
-    canvas.drawCircle(
-      center,
-      7.5,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1
-        ..color = Colors.white.withValues(alpha: 0.7),
-    );
+    // 4) Meniscus — a soft glow at the liquid's leading edge, only while you're
+    //    scrubbing (no resting knob).
+    if (fw > 0.5 && a > 0.01) {
+      final ex = fw.clamp(r, w - r);
+      canvas.drawCircle(
+        Offset(ex, cy),
+        r * (0.85 + 0.6 * a),
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.7 * a)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 3 + 5 * a),
+      );
+    }
   }
 
   @override
-  bool shouldRepaint(_GlassTubePainter old) => old.frac != frac;
+  bool shouldRepaint(_GlassTubePainter old) =>
+      old.frac != frac || old.active != active || old.glow != glow;
 }

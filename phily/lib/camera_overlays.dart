@@ -378,7 +378,6 @@ enum CompositionMode {
   goldenSection,
   goldenTriangles,
   fibonacciSpiral,
-  harmoniousTriangles,
   cross,
   focalMass,
   vArrangement,
@@ -405,8 +404,6 @@ enum CompositionMode {
         return 'Golden Triangles';
       case CompositionMode.fibonacciSpiral:
         return 'Fibonacci Spiral';
-      case CompositionMode.harmoniousTriangles:
-        return 'Harmonious Triangles';
       case CompositionMode.cross:
         return 'Cross';
       case CompositionMode.focalMass:
@@ -608,6 +605,13 @@ class CompositionPainter extends CustomPainter {
   /// Fibonacci-spiral orientation in 90° clockwise turns (0..3).
   final int spiralTurns;
 
+  /// Golden Triangles: mirror the set across the vertical axis (TL→BR ↔ TR→BL).
+  final bool trianglesFlipped;
+
+  /// Detected eye landmarks (preview-normalised) — shown in None mode while
+  /// validating eye tracking.
+  final List<Offset> eyePoints;
+
   /// Selected crop ratio (W/H) for the Aspect Ratio mode.
   final double aspect;
 
@@ -615,13 +619,16 @@ class CompositionPainter extends CustomPainter {
   /// (full-screen normalised) + fade opacity + alignment-with-guide [0..1], or
   /// null. Drawn in Horizon Grid mode.
   final ValueNotifier<
-    ({double angle, double ax, double ay, double op, double aligned})?
+    ({
+      double angle,
+      double ax,
+      double ay,
+      double op,
+      double aligned,
+      double dy,
+    })?
   >?
   horizon;
-
-  /// Normalised preview-space rects (top-left) highlighted in None mode — an
-  /// experimental building/architecture detector (Vision rectangles).
-  final List<Rect> buildingBoxes;
 
   CompositionPainter(
     this.mode, {
@@ -631,14 +638,15 @@ class CompositionPainter extends CustomPainter {
     this.topInset = 0,
     this.bottomInset = 0,
     this.spiralTurns = 0,
+    this.trianglesFlipped = false,
     this.aspect = 1.0,
     this.horizon,
-    List<Rect>? buildingBoxes,
+    List<Offset>? eyePoints,
     Listenable? repaint,
   }) : glowSegs = glowSegs ?? const [],
        faceBoxes = faceBoxes ?? const [],
        powerGlow = powerGlow ?? const [0, 0, 0, 0],
-       buildingBoxes = buildingBoxes ?? const [],
+       eyePoints = eyePoints ?? const [],
        super(repaint: repaint);
 
   static const Color _gold = Color(0xFFFFFFFF);
@@ -717,13 +725,20 @@ class CompositionPainter extends CustomPainter {
         _drawGoldenSection(canvas, grid);
         break;
       case CompositionMode.goldenTriangles:
-        _drawGoldenTriangles(canvas, grid);
+        // One set of golden triangles; the flip button mirrors it across the
+        // vertical axis (TL→BR diagonal ↔ TR→BL diagonal).
+        if (trianglesFlipped) {
+          canvas.save();
+          canvas.translate(grid.width, 0);
+          canvas.scale(-1, 1);
+          _drawGoldenTriangles(canvas, grid);
+          canvas.restore();
+        } else {
+          _drawGoldenTriangles(canvas, grid);
+        }
         break;
       case CompositionMode.fibonacciSpiral:
         _drawGoldenSpiral(canvas, grid);
-        break;
-      case CompositionMode.harmoniousTriangles:
-        _drawHarmoniousTriangles(canvas, grid);
         break;
       case CompositionMode.cross:
         _drawCross(canvas, grid);
@@ -902,10 +917,16 @@ class CompositionPainter extends CustomPainter {
         _drawHzLabel(canvas, 'TRUE HORIZON', Offset(xLabel, yLabel - 13), op);
         canvas.restore();
       }
+
+      // Directional nudge: an animated arrow showing which way to move the phone
+      // so the true horizon lands on the best-spot guide.
+      if (hz != null) {
+        _drawHzArrow(canvas, size, hz.dy, hz.op, topInset, bandSpan);
+      }
     }
 
     _paintFaceBoxes(canvas, size);
-    if (mode == CompositionMode.none) _paintBuildingBoxes(canvas, size);
+    if (mode == CompositionMode.none) _paintEyes(canvas, size);
 
     // Selective glow pass — redraw only the lines that have edge support,
     // using a gold blur paint so they illuminate without affecting other lines.
@@ -930,29 +951,28 @@ class CompositionPainter extends CustomPainter {
     }
   }
 
-  /// Experimental building highlight (None mode): a translucent gold-filled,
-  /// gold-bordered rounded rectangle over each detected architectural rectangle.
-  void _paintBuildingBoxes(Canvas canvas, Size size) {
-    if (buildingBoxes.isEmpty) return;
-    final fill = Paint()
-      ..color = kGold.withValues(alpha: 0.12)
-      ..isAntiAlias = true;
-    final border = Paint()
-      ..color = kGold.withValues(alpha: 0.85)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0
-      ..strokeJoin = StrokeJoin.round
-      ..isAntiAlias = true;
-    for (final b in buildingBoxes) {
-      final rect = Rect.fromLTWH(
-        b.left * size.width,
-        b.top * size.height,
-        b.width * size.width,
-        b.height * size.height,
+  /// Experimental (None mode): a gold ring on each detected eye, to validate eye
+  /// tracking before it drives the subject modes.
+  void _paintEyes(Canvas canvas, Size size) {
+    if (eyePoints.isEmpty) return;
+    for (final e in eyePoints) {
+      final c = Offset(e.dx * size.width, e.dy * size.height);
+      canvas.drawCircle(
+        c,
+        8,
+        Paint()
+          ..color = kGold.withValues(alpha: 0.4)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
       );
-      final rr = RRect.fromRectAndRadius(rect, const Radius.circular(6));
-      canvas.drawRRect(rr, fill);
-      canvas.drawRRect(rr, border);
+      canvas.drawCircle(
+        c,
+        5,
+        Paint()
+          ..color = kGold
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2,
+      );
+      canvas.drawCircle(c, 1.6, Paint()..color = Colors.white);
     }
   }
 
@@ -1011,6 +1031,62 @@ class CompositionPainter extends CustomPainter {
       _corner(canvas, rect.bottomRight, -1, -1, arm, r, stroke);
       _corner(canvas, rect.bottomLeft, 1, -1, arm, r, stroke);
     }
+  }
+
+  /// Directional nudge arrow for Horizon Grid: a bobbing gold double-chevron
+  /// pointing the way to move the phone so the true horizon meets the best-spot
+  /// guide. [dy] is the signed true−guide offset (< 0 → nudge up). Fades in with
+  /// the gap and out as the line nears the guide.
+  void _drawHzArrow(
+    Canvas canvas,
+    Size size,
+    double dy,
+    double op,
+    double topInset,
+    double bandSpan,
+  ) {
+    final double mag = dy.abs() - 0.02; // small dead-zone around the guide
+    if (mag <= 0) return;
+    final double aOp = (mag / 0.06).clamp(0.0, 1.0) * op;
+    if (aOp <= 0.02) return;
+
+    final bool up = dy < 0; // true horizon above the guide → nudge phone up
+    final double cx = size.width / 2;
+    final double cy = topInset + bandSpan * 0.5;
+    // Gentle bob in the pointing direction (the painter repaints ~60fps here).
+    final double t = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    final double bob = (math.sin(t * 4.0) * 0.5 + 0.5) * 6.0 * (up ? -1 : 1);
+
+    const double w = 30, h = 12, gap = 12;
+    final glow = Paint()
+      ..color = kGold.withValues(alpha: 0.45 * aOp)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 7
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
+    final stroke = Paint()
+      ..color = kGold.withValues(alpha: 0.95 * aOp)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.5
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    void chevron(double yc) {
+      final double apexY = up ? yc - h / 2 : yc + h / 2;
+      final double endY = up ? yc + h / 2 : yc - h / 2;
+      final path = Path()
+        ..moveTo(cx - w / 2, endY)
+        ..lineTo(cx, apexY)
+        ..lineTo(cx + w / 2, endY);
+      canvas.drawPath(path, glow);
+      canvas.drawPath(path, stroke);
+    }
+
+    final double base = cy + bob;
+    // Two stacked chevrons → a clear directional "move" cue.
+    chevron(base - gap / 2);
+    chevron(base + gap / 2);
   }
 
   /// Small frosted gold pill label riding the horizon line. Fades with [op].
@@ -1145,54 +1221,6 @@ class CompositionPainter extends CustomPainter {
   }
 
   // ── Golden Spiral ───────────────────────────────────────────────────────────
-  // Parametric logarithmic golden spiral: r = a·exp(b·θ), where
-  // b = ln(φ)/(π/2) so the radius grows by φ every quarter-turn.
-  // Eye at the golden-section intersection (upper-right region); outermost
-  // arm aims toward the bottom-left corner, spiralling 1.5 full turns.
-  // void _drawGoldenSpiral(Canvas canvas, Size s) {
-  //   final p = Paint()
-  //     ..color = _gold.withValues(alpha: 0.70)
-  //     ..strokeWidth = _sw
-  //     ..style = PaintingStyle.stroke
-  //     ..strokeCap = StrokeCap.round
-  //     ..isAntiAlias = true;
-
-  //   const double phi = 1.6180339887;
-  //   // Growth rate: radius multiplies by φ every π/2 radians
-  //   final double b = math.log(phi) / (math.pi / 2);
-
-  //   // Eye at golden-section intersection (upper-right area)
-  //   final double cx = s.width / phi;          // ≈ 0.618 × W
-  //   final double cy = s.height / (phi * phi); // ≈ 0.382 × H
-
-  //   // Outermost arm aims toward the bottom-left corner of the frame
-  //   final double thetaEnd   = math.atan2(s.height - cy, -cx);
-  //   const double totalTheta = 3.0 * math.pi; // 1.5 full turns inward
-  //   final double thetaStart = thetaEnd - totalTheta;
-
-  //   // Scale so r = rMax at thetaEnd (arm reaches the farthest frame corner)
-  //   double rMax = 0.0;
-  //   for (final c in [
-  //     Offset(0, 0), Offset(s.width, 0),
-  //     Offset(0, s.height), Offset(s.width, s.height),
-  //   ]) {
-  //     final d = (c - Offset(cx, cy)).distance;
-  //     if (d > rMax) rMax = d;
-  //   }
-  //   final double a = rMax * math.exp(-b * thetaEnd);
-
-  //   final path = Path();
-  //   const int steps = 400;
-  //   for (int i = 0; i <= steps; i++) {
-  //     final double theta = thetaStart + totalTheta * i / steps;
-  //     final double r     = a * math.exp(b * theta);
-  //     final double px    = cx + r * math.cos(theta);
-  //     final double py    = cy + r * math.sin(theta);
-  //     i == 0 ? path.moveTo(px, py) : path.lineTo(px, py);
-  //   }
-  //   canvas.drawPath(path, p);
-  // }
-
   void _drawGoldenSpiral(Canvas canvas, Size s) {
     final p = _p;
     const double phi = 1.6180339887;
@@ -1313,34 +1341,6 @@ class CompositionPainter extends CustomPainter {
 
     canvas.drawPath(path, p);
     canvas.restore();
-  }
-
-  // ── Harmonious Triangles ────────────────────────────────────────────────────
-  // Both diagonals, each with its two perpendiculars from the opposite corners.
-  // TL→BR set (Golden Triangles) + TR→BL set (its mirror) = 6 lines, 8 triangles.
-  void _drawHarmoniousTriangles(Canvas canvas, Size s) {
-    // Golden Triangles flipped horizontally: x → (w − x).
-    // Original uses TL→BR diagonal; flipped uses TR→BL diagonal,
-    // with perpendiculars from TL and BR to that diagonal.
-    final p = _gp();
-
-    final double w = s.width;
-    final double h = s.height;
-    final double d2 = w * w + h * h;
-
-    // 1. Main diagonal: top-right → bottom-left  (mirror of TL→BR)
-    canvas.drawLine(Offset(w, 0), Offset(0, h), p);
-
-    // 2. Perpendicular from top-left corner (0, 0) to TR→BL diagonal.
-    //    TR→BL direction vector: (−w, h).
-    //    t = [(0−w)·(−w) + (0−0)·h] / d2 = w²/d2
-    final double t2 = (w * w) / d2;
-    canvas.drawLine(Offset(0, 0), Offset(w - t2 * w, t2 * h), p);
-
-    // 3. Perpendicular from bottom-right corner (w, h) to TR→BL diagonal.
-    //    t = [(w−w)·(−w) + (h−0)·h] / d2 = h²/d2
-    final double t3 = (h * h) / d2;
-    canvas.drawLine(Offset(w, h), Offset(w - t3 * w, t3 * h), p);
   }
 
   // ── Cross ───────────────────────────────────────────────────────────────────
@@ -1645,6 +1645,7 @@ class CompositionPainter extends CustomPainter {
       old.topInset != topInset ||
       old.bottomInset != bottomInset ||
       old.spiralTurns != spiralTurns ||
+      old.trianglesFlipped != trianglesFlipped ||
       old.aspect != aspect ||
-      old.buildingBoxes != buildingBoxes;
+      old.eyePoints != eyePoints;
 }

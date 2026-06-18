@@ -39,10 +39,7 @@ private extension Comparable {
       case "getUltraWideCameraId":    self?.handleGetUltraWideCameraId(result: result)
       case "getVirtualCameraId":      self?.handleGetVirtualCameraId(result: result)
       case "getFieldOfView":          self?.handleGetFieldOfView(result: result)
-      case "analyzeRuleOfThirds":     self?.handleAnalyzeRuleOfThirds(call: call, result: result)
       case "detectAnimals":           self?.handleDetectAnimals(call: call, result: result)
-      case "detectBuildings":         self?.handleDetectBuildings(call: call, result: result)
-      case "detectHorizon":           self?.handleDetectHorizon(call: call, result: result)
       default: result(FlutterMethodNotImplemented)
       }
     }
@@ -187,38 +184,6 @@ private extension Comparable {
     ])
   }
 
-  // MARK: - analyzeRuleOfThirds
-
-  private func handleAnalyzeRuleOfThirds(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard
-      let args   = call.arguments as? [String: Any],
-      let width  = args["width"]  as? Int,
-      let height = args["height"] as? Int
-    else {
-      result(FlutterError(code: "INVALID_ARGS", message: "width, height required", details: nil))
-      return
-    }
-
-    let format = (args["format"] as? String) ?? "gray"
-    let typed  = (args["bgra"] as? FlutterStandardTypedData)
-              ?? (args["yPlane"] as? FlutterStandardTypedData)
-    guard let typed else {
-      result(FlutterError(code: "INVALID_ARGS", message: "bgra or yPlane required", details: nil))
-      return
-    }
-
-    let data = typed.data
-    DispatchQueue.global(qos: .userInitiated).async {
-      var analysis: [String: Any] = ["aligned": false, "haptic": false]
-      if #available(iOS 14.0, *) {
-        analysis = RuleOfThirdsDetector.shared.analyze(
-          pixels: data, width: width, height: height, format: format
-        )
-      }
-      DispatchQueue.main.async { result(analysis) }
-    }
-  }
-
   // MARK: - detectAnimals (cats/dogs via Vision)
 
   private func handleDetectAnimals(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -239,60 +204,6 @@ private extension Comparable {
         animals = AnimalDetector.detect(bgra: data, width: width, height: height)
       }
       DispatchQueue.main.async { result(animals) }
-    }
-  }
-
-  // MARK: - detectBuildings (architectural rectangles via Vision)
-
-  private func handleDetectBuildings(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard
-      let args   = call.arguments as? [String: Any],
-      let typed  = args["bgra"] as? FlutterStandardTypedData,
-      let width  = args["width"]  as? Int,
-      let height = args["height"] as? Int
-    else {
-      result(FlutterError(code: "INVALID_ARGS", message: "bgra, width, height required", details: nil))
-      return
-    }
-
-    let data = typed.data
-    DispatchQueue.global(qos: .userInitiated).async {
-      var buildings: [[String: Any]] = []
-      if #available(iOS 13.0, *) {
-        buildings = BuildingDetector.detect(bgra: data, width: width, height: height)
-      }
-      DispatchQueue.main.async { result(buildings) }
-    }
-  }
-
-  // MARK: - detectHorizon (scene horizon angle via Vision)
-
-  private func handleDetectHorizon(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard
-      let args   = call.arguments as? [String: Any],
-      let typed  = args["bgra"] as? FlutterStandardTypedData,
-      let width  = args["width"]  as? Int,
-      let height = args["height"] as? Int
-    else {
-      result(FlutterError(code: "INVALID_ARGS", message: "bgra, width, height required", details: nil))
-      return
-    }
-
-    let data = typed.data
-    // Optional crop (normalised) limiting analysis to the camera-visible band.
-    let cx0 = (args["cropX0"] as? Double) ?? 0
-    let cy0 = (args["cropY0"] as? Double) ?? 0
-    let cx1 = (args["cropX1"] as? Double) ?? 1
-    let cy1 = (args["cropY1"] as? Double) ?? 1
-    DispatchQueue.global(qos: .userInitiated).async {
-      var horizon: [String: Any]? = nil
-      if #available(iOS 13.0, *) {
-        horizon = HorizonDetector.detect(
-          bgra: data, width: width, height: height,
-          cropX0: cx0, cropY0: cy0, cropX1: cx1, cropY1: cy1
-        )
-      }
-      DispatchQueue.main.async { result(horizon) } // nil when none found
     }
   }
 
