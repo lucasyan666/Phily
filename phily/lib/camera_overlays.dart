@@ -461,6 +461,14 @@ class _FaceBox {
   intersection; // index 0..3 of the rule-of-thirds power point it's on, -1 none
   bool perfect; // true when that point sits near the box centre
   double alignGlow; // 0..1 animated alignment-glow strength
+  // Alignment key point as an offset from the box centre — the eye midpoint for
+  // faces (the portrait rule aligns the eyes, not the box), 0 otherwise.
+  double keyOffX = 0, keyOffY = 0;
+  // Eye-level state: the vertical spread between the eyes, whether both eyes were
+  // seen this frame, and whether both currently sit on the top grid line.
+  double eyeSpanY = 0;
+  bool hasEyes = false;
+  bool eyeLevel = false;
   _FaceBox(this.cx, this.cy, this.w, this.h, this.lastSeenMs)
     : tcx = cx,
       tcy = cy,
@@ -926,7 +934,7 @@ class CompositionPainter extends CustomPainter {
     }
 
     _paintFaceBoxes(canvas, size);
-    if (mode == CompositionMode.none) _paintEyes(canvas, size);
+    _paintEyes(canvas, size); // gold rings on detected eyes (when populated)
 
     // Selective glow pass — redraw only the lines that have edge support,
     // using a gold blur paint so they illuminate without affecting other lines.
@@ -951,28 +959,34 @@ class CompositionPainter extends CustomPainter {
     }
   }
 
-  /// Experimental (None mode): a gold ring on each detected eye, to validate eye
-  /// tracking before it drives the subject modes.
+  /// A subtle gold hairline ring on each detected eye, with a soft glow that
+  /// gently breathes — in keeping with the app's calm gold accents.
   void _paintEyes(Canvas canvas, Size size) {
     if (eyePoints.isEmpty) return;
+    // Slow, gentle breath (~0.4 Hz) — the painter repaints continuously while a
+    // face is tracked, so this animates smoothly.
+    final double t = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    final double breathe = 0.5 + 0.5 * math.sin(t * 2.4);
     for (final e in eyePoints) {
       final c = Offset(e.dx * size.width, e.dy * size.height);
+      // Soft, low-opacity glow that breathes.
       canvas.drawCircle(
         c,
-        8,
+        4.5 + 1.0 * breathe,
         Paint()
-          ..color = kGold.withValues(alpha: 0.4)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+          ..color = kGold.withValues(alpha: 0.14 + 0.10 * breathe)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
       );
+      // Thin gold hairline ring.
       canvas.drawCircle(
         c,
-        5,
+        3.5,
         Paint()
-          ..color = kGold
+          ..color = kGold.withValues(alpha: 0.7)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 2,
+          ..strokeWidth = 1.2
+          ..isAntiAlias = true,
       );
-      canvas.drawCircle(c, 1.6, Paint()..color = Colors.white);
     }
   }
 

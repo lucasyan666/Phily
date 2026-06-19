@@ -1126,8 +1126,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // Map ML Kit boxes (normalised in the upright image) back to portrait buffer
     // space via the inverse rotation, then apply the preview's horizontal stretch.
     final dets = <Map<String, dynamic>>[];
-    final bool wantEyes = _compositionMode == CompositionMode.none;
+    // Show eye markers in None (the test) and the subject modes that align on
+    // the eyes (Rule of Thirds / Phi Grid / Spiral — those have power points).
+    final bool wantEyes =
+        _compositionMode == CompositionMode.none || _modePowerPoints != null;
     final eyePts = <Offset>[];
+    // Map an eye landmark (upright-image pixels) into portrait preview space.
+    Offset? mapEye(math.Point<int>? p) {
+      if (p == null) return null;
+      final e = _invRotNorm(p.x / ow, p.y / oh, qt);
+      return Offset((e.$1 - 0.5) * _previewStretchX + 0.5, e.$2);
+    }
+
     for (final f in faces) {
       final r = f.boundingBox;
       final c1 = _invRotNorm(r.left / ow, r.top / oh, qt);
@@ -1138,6 +1148,21 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final nh = (c1.$2 - c2.$2).abs();
       final cx = (nx + nw / 2 - 0.5) * _previewStretchX + 0.5;
       final stretchedW = nw * _previewStretchX;
+
+      // Eye midpoint → alignment key point: the portrait rule places the *eyes*
+      // (not the face box) on the target. Stored as an offset from the box centre;
+      // 0 when both eyes aren't visible (profile) so it falls back to the centre.
+      final lE = mapEye(f.landmarks[FaceLandmarkType.leftEye]?.position);
+      final rE = mapEye(f.landmarks[FaceLandmarkType.rightEye]?.position);
+      double kox = 0, koy = 0, eyeSpanY = 0;
+      final bool hasEyes = lE != null && rE != null;
+      if (lE != null && rE != null) {
+        kox = (lE.dx + rE.dx) / 2 - cx;
+        koy = (lE.dy + rE.dy) / 2 - (ny + nh / 2);
+        eyeSpanY = (lE.dy - rE.dy).abs();
+        if (wantEyes) eyePts.addAll([lE, rE]);
+      }
+
       dets.add({
         'x': cx - stretchedW / 2,
         'y': ny,
@@ -1145,18 +1170,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         'h': nh,
         'label': 'face',
         'confidence': 1.0,
+        'kox': kox,
+        'koy': koy,
+        'eyeSpanY': eyeSpanY,
+        'eyes': hasEyes,
       });
-      // Eye landmarks (None-mode test) — mapped back like the box corners.
-      if (wantEyes) {
-        for (final lm in [
-          f.landmarks[FaceLandmarkType.leftEye],
-          f.landmarks[FaceLandmarkType.rightEye],
-        ]) {
-          if (lm == null) continue;
-          final e = _invRotNorm(lm.position.x / ow, lm.position.y / oh, qt);
-          eyePts.add(Offset((e.$1 - 0.5) * _previewStretchX + 0.5, e.$2));
-        }
-      }
     }
     if (wantEyes) {
       _eyePoints
@@ -1531,6 +1549,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final w = d['w'] as double, h = d['h'] as double;
       final cx = (d['x'] as double) + w / 2;
       final cy = (d['y'] as double) + h / 2;
+      final kox = (d['kox'] as double?) ?? 0;
+      final koy = (d['koy'] as double?) ?? 0;
+      final eyeSpanY = (d['eyeSpanY'] as double?) ?? 0;
+      final hasEyes = (d['eyes'] as bool?) ?? false;
 
       int best = -1;
       double bestDist = matchRadius;
@@ -1553,10 +1575,20 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         b.tcy = cy;
         b.tw = w;
         b.th = h;
+        b.keyOffX = kox;
+        b.keyOffY = koy;
+        b.eyeSpanY = eyeSpanY;
+        b.hasEyes = hasEyes;
         b.matched = true;
         b.lastSeenMs = now;
       } else {
-        _faceBoxes.add(_FaceBox(cx, cy, w, h, now)); // new — fades/scales in
+        final nb =
+            _FaceBox(cx, cy, w, h, now) // new — fades/scales in
+              ..keyOffX = kox
+              ..keyOffY = koy
+              ..eyeSpanY = eyeSpanY
+              ..hasEyes = hasEyes;
+        _faceBoxes.add(nb);
       }
     }
 
@@ -1567,7 +1599,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // Target points remapped into the band the painter draws them in, so the
     // alignment test matches the dots on screen. May be 4 (grids) or 1 (spiral).
     final pp = _bandPowerPoints();
+    // Top grid line's y (upper power-point row) for the eye-level check — only
+    // Rule of Thirds / Phi Grid have a meaningful "eyes on the top line".
+    final bool eyeLineMode =
+        _compositionMode == CompositionMode.ruleOfThirds ||
+        _compositionMode == CompositionMode.goldenSection;
+    final double topLineY = (eyeLineMode && pp.isNotEmpty)
+        ? pp.map((p) => p[1]).reduce(math.min)
+        : -1;
     bool newlyPerfect = false;
+    bool newlyEyeLevel = false;
     for (final b in _faceBoxes) {
       int near = -1;
       bool perfect = false;
@@ -1575,10 +1616,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         final double halfW = b.tw / 2, halfH = b.th / 2;
         final double mx = halfW * (1 + _alignMargin);
         final double my = halfH * (1 + _alignMargin);
+        // Align on the eye key point (box centre + offset) — the portrait rule
+        // places the eyes, not the face box, on the target.
+        final double keyX = b.tcx + b.keyOffX;
+        final double keyY = b.tcy + b.keyOffY;
         double bestD = double.infinity;
         for (var i = 0; i < pp.length; i++) {
-          final dx = pp[i][0] - b.tcx;
-          final dy = pp[i][1] - b.tcy;
+          final dx = pp[i][0] - keyX;
+          final dy = pp[i][1] - keyY;
           // Inside the box (+margin) → counts as "almost".
           if (dx.abs() <= mx && dy.abs() <= my) {
             final d = dx * dx + dy * dy;
@@ -1588,30 +1633,51 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             }
           }
         }
-        // "Perfect" = the chosen point sits near the box centre (within
+        // "Perfect" = the chosen point sits near the eye key point (within
         // _perfectFrac of the box half-size, radially).
         if (near >= 0) {
-          final nx = (pp[near][0] - b.tcx) / (halfW <= 0 ? 1 : halfW);
-          final ny = (pp[near][1] - b.tcy) / (halfH <= 0 ? 1 : halfH);
+          final nx = (pp[near][0] - keyX) / (halfW <= 0 ? 1 : halfW);
+          final ny = (pp[near][1] - keyY) / (halfH <= 0 ? 1 : halfH);
           perfect = (nx * nx + ny * ny) <= _perfectFrac * _perfectFrac;
         }
       }
-      // Haptic only on the transition into a fresh "perfect".
+      // Eyes on the top grid line ("eye level"): both eyes within a thin band of
+      // the line (level head + correct height) — the portrait rule, less strict
+      // than a full on-the-point "Perfect".
+      bool eyeLevel = false;
+      if (eyeLineMode && b.matched && b.hasEyes) {
+        const double tol = 0.018; // ~1.8% of screen height
+        final double eyeY = b.tcy + b.keyOffY;
+        eyeLevel = (eyeY - topLineY).abs() < tol && b.eyeSpanY < tol * 1.6;
+      }
+      // Haptic on the transition into a fresh perfect / eye-level.
       if (perfect && !b.perfect) newlyPerfect = true;
+      if (eyeLevel && !b.eyeLevel) newlyEyeLevel = true;
       b.intersection = near;
       b.perfect = perfect;
+      b.eyeLevel = eyeLevel;
     }
-    if (newlyPerfect) _haptic('alignmentPing', intensity: 1.0);
+    if (newlyPerfect || newlyEyeLevel) {
+      _haptic('alignmentPing', intensity: 1.0);
+    }
 
     // Drive the hint via a notifier — 0 none, 1 almost (in box), 2 perfect
     // (near centre). Only the hint rebuilds, so flip-flops can't hurt FPS.
     int level = 0;
     if (align) {
+      bool anyPerfect = false, anyEyeLevel = false, anyAlmost = false;
       for (final b in _faceBoxes) {
-        if (!b.matched || b.intersection < 0) continue;
-        level = b.perfect ? 2 : math.max(level, 1);
-        if (level == 2) break;
+        if (!b.matched) continue;
+        if (b.perfect) anyPerfect = true;
+        if (b.eyeLevel) anyEyeLevel = true;
+        if (b.intersection >= 0) anyAlmost = true;
       }
+      // Perfect (on a point) > Eye level (on the top line) > Almost.
+      level = anyPerfect
+          ? 2
+          : anyEyeLevel
+          ? 3
+          : (anyAlmost ? 1 : 0);
     }
     _alignLevel.value = level;
 
@@ -2554,6 +2620,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       ),
       child: switch (level) {
         2 => _perfectBadge(),
+        3 => _eyeLevelBadge(),
         1 => _almostBadge(),
         _ => _instructionPill(),
       },
@@ -2656,6 +2723,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       key: const ValueKey('hint-perfect'),
       icon: Icons.check_circle_rounded,
       text: hz ? 'Level' : 'Perfect',
+      emphasis: true,
+      breathe: true,
+    );
+  }
+
+  /// "Eye level perfect" — both eyes sitting on the top grid line (portrait rule).
+  Widget _eyeLevelBadge() {
+    return _glassPill(
+      key: const ValueKey('hint-eyelevel'),
+      icon: Icons.remove_red_eye_rounded,
+      text: 'Eye level perfect',
       emphasis: true,
       breathe: true,
     );
