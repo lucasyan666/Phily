@@ -613,6 +613,14 @@ class CompositionPainter extends CustomPainter {
   /// Fibonacci-spiral orientation in 90° clockwise turns (0..3).
   final int spiralTurns;
 
+  /// Focal Mass orientation in 90° clockwise turns (0..3).
+  final int focalTurns;
+
+  /// Drives the guide-flip transition (spiral + triangles): 0 = settled; sweeps
+  /// 0..1 on a flip, dipping the guide's opacity to a trough at 0.5 that hides
+  /// the swap behind a quick fade.
+  final Animation<double>? gridFlip;
+
   /// Golden Triangles: mirror the set across the vertical axis (TL→BR ↔ TR→BL).
   final bool trianglesFlipped;
 
@@ -638,6 +646,11 @@ class CompositionPainter extends CustomPainter {
   >?
   horizon;
 
+  /// Attitude for the jet-style "hold it level" dial (roll radians; [vert] a
+  /// normalised vertical deflection; [level] the square verdict), or null when
+  /// the active mode doesn't show it. Drawn in Horizon + the people modes.
+  final ValueNotifier<({double roll, double vert, bool level})?>? levelAttitude;
+
   CompositionPainter(
     this.mode, {
     List<_GlowSeg>? glowSegs,
@@ -646,9 +659,12 @@ class CompositionPainter extends CustomPainter {
     this.topInset = 0,
     this.bottomInset = 0,
     this.spiralTurns = 0,
+    this.focalTurns = 0,
+    this.gridFlip,
     this.trianglesFlipped = false,
     this.aspect = 1.0,
     this.horizon,
+    this.levelAttitude,
     List<Offset>? eyePoints,
     Listenable? repaint,
   }) : glowSegs = glowSegs ?? const [],
@@ -681,6 +697,13 @@ class CompositionPainter extends CustomPainter {
     ..isAntiAlias = true;
 
   Paint get _p => _gp(cap: StrokeCap.round);
+
+  /// Guide flip-transition factor: 1 = settled (full), dipping to 0 at the swap
+  /// midpoint so the change hides behind a quick fade.
+  double get _gridDip {
+    final f = gridFlip?.value ?? 0.0;
+    return f == 0 ? 1.0 : 0.5 + 0.5 * math.cos(f * 2 * math.pi);
+  }
 
   /// Draws one rounded L-shaped corner bracket. [sx]/[sy] are ±1 indicating the
   /// direction the arms extend from the corner [c]; [arm] is arm length, [r] the
@@ -810,21 +833,44 @@ class CompositionPainter extends CustomPainter {
     };
     if (pts != null) {
       const gold = kGold;
+      // The spiral's single eye dips with the flip so its corner-to-corner jump
+      // is hidden; grids never flip, so their dots are unaffected.
+      final double markerDip = mode == CompositionMode.fibonacciSpiral
+          ? _gridDip
+          : 1.0;
       for (var i = 0; i < pts.length; i++) {
         final c = Offset(pts[i][0] * grid.width, pts[i][1] * grid.height);
         final g = (i < powerGlow.length ? powerGlow[i] : 0.0).clamp(0.0, 1.0);
+        // The spiral's eye carries an always-on breathing ring so you can see
+        // where to place the subject; it fades out as the align-bloom rises.
+        if (mode == CompositionMode.fibonacciSpiral) {
+          final double t = DateTime.now().millisecondsSinceEpoch / 1000.0;
+          final double breathe = 0.5 + 0.5 * math.sin(t * 2.2);
+          final double m = (1 - g).clamp(0.0, 1.0) * markerDip;
+          // Crisp breathing ring — no mask blur, so it's cheap to draw every
+          // frame while a subject is tracked.
+          canvas.drawCircle(
+            c,
+            6.5 + 1.0 * breathe,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.4
+              ..color = gold.withValues(alpha: (0.5 + 0.25 * breathe) * m),
+          );
+        }
         // Faint dot always; blooms into a soft glowing ring when aligned.
         canvas.drawCircle(
           c,
           2.0,
-          Paint()..color = gold.withValues(alpha: 0.25 + 0.55 * g),
+          Paint()
+            ..color = gold.withValues(alpha: (0.25 + 0.55 * g) * markerDip),
         );
         if (g > 0.01) {
           canvas.drawCircle(
             c,
             6.0 + 10.0 * g,
             Paint()
-              ..color = gold.withValues(alpha: 0.45 * g)
+              ..color = gold.withValues(alpha: 0.45 * g * markerDip)
               ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4.0 + 6.0 * g),
           );
           canvas.drawCircle(
@@ -833,7 +879,7 @@ class CompositionPainter extends CustomPainter {
             Paint()
               ..style = PaintingStyle.stroke
               ..strokeWidth = 1.5
-              ..color = gold.withValues(alpha: 0.8 * g),
+              ..color = gold.withValues(alpha: 0.8 * g * markerDip),
           );
         }
       }
@@ -936,6 +982,22 @@ class CompositionPainter extends CustomPainter {
     _paintFaceBoxes(canvas, size);
     _paintEyes(canvas, size); // gold rings on detected eyes (when populated)
 
+    // "Hold it level" attitude dial — drawn last so it sits above the grid. The
+    // state only populates levelAttitude in Horizon + the people modes, so this
+    // is self-gating. A jet-style artificial horizon at the lower-left.
+    final att = levelAttitude?.value;
+    if (att != null) {
+      _drawLevelDial(
+        canvas,
+        size,
+        att.roll,
+        att.vert,
+        att.level,
+        topInset,
+        bottomInset,
+      );
+    }
+
     // Selective glow pass — redraw only the lines that have edge support,
     // using a gold blur paint so they illuminate without affecting other lines.
     if (glowSegs.isNotEmpty) {
@@ -959,33 +1021,25 @@ class CompositionPainter extends CustomPainter {
     }
   }
 
-  /// A subtle gold hairline ring on each detected eye, with a soft glow that
-  /// gently breathes — in keeping with the app's calm gold accents.
+  /// A subtle gold hairline ring on each detected eye. No blur and one shared
+  /// paint — this runs on every repaint while a face is tracked, so it's kept
+  /// cheap; the breath rides the ring's alpha instead of a (costly) glow.
   void _paintEyes(Canvas canvas, Size size) {
     if (eyePoints.isEmpty) return;
     // Slow, gentle breath (~0.4 Hz) — the painter repaints continuously while a
     // face is tracked, so this animates smoothly.
     final double t = DateTime.now().millisecondsSinceEpoch / 1000.0;
     final double breathe = 0.5 + 0.5 * math.sin(t * 2.4);
+    final ring = Paint()
+      ..color = kGold.withValues(alpha: 0.5 + 0.22 * breathe)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..isAntiAlias = true;
     for (final e in eyePoints) {
-      final c = Offset(e.dx * size.width, e.dy * size.height);
-      // Soft, low-opacity glow that breathes.
       canvas.drawCircle(
-        c,
-        4.5 + 1.0 * breathe,
-        Paint()
-          ..color = kGold.withValues(alpha: 0.14 + 0.10 * breathe)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
-      );
-      // Thin gold hairline ring.
-      canvas.drawCircle(
-        c,
+        Offset(e.dx * size.width, e.dy * size.height),
         3.5,
-        Paint()
-          ..color = kGold.withValues(alpha: 0.7)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.2
-          ..isAntiAlias = true,
+        ring,
       );
     }
   }
@@ -1103,6 +1157,114 @@ class CompositionPainter extends CustomPainter {
     chevron(base + gap / 2);
   }
 
+  /// Jet-style attitude dial ("artificial horizon") at the lower-left: a gold
+  /// horizon line that tilts with the phone roll (exaggerated for clearer
+  /// feedback) and rises/falls with [vert] — the normalised vertical deflection
+  /// (people modes: pitch off plumb; Horizon: offset from the best-spot guide).
+  /// Brightens + glows when [level]. Shown in Horizon and the people modes.
+  void _drawLevelDial(
+    Canvas canvas,
+    Size size,
+    double roll,
+    double vert,
+    bool level,
+    double topInset,
+    double bottomInset,
+  ) {
+    const gold = kGold;
+    const double r = 32, margin = 20;
+    final double cx = margin + r;
+    final double cy = (size.height - bottomInset) - margin - r;
+    final Offset c = Offset(cx, cy);
+
+    // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°).
+    final double rollEx = (roll * 1.8).clamp(-1.3, 1.3);
+    // Vertical deflection → horizon offset inside the dial (clamped to the face).
+    final double pitchPx = (vert * r * 1.2).clamp(-r * 1.4, r * 1.4);
+
+    final double lit = level ? 1.0 : 0.0;
+
+    // Soft outer glow (a hint always; blooms when square).
+    canvas.drawCircle(
+      c,
+      r + 1.5,
+      Paint()
+        ..color = gold.withValues(alpha: 0.10 + 0.40 * lit)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5 + 1.5 * lit
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 3 * lit),
+    );
+    // Dark instrument face.
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()..color = Colors.black.withValues(alpha: 0.40),
+    );
+
+    // ── Interior: the moving horizon (clipped to the dial) ──
+    canvas.save();
+    canvas.clipPath(Path()..addOval(Rect.fromCircle(center: c, radius: r - 1)));
+    canvas.save();
+    canvas.translate(cx, cy);
+    canvas.rotate(rollEx);
+    canvas.translate(0, pitchPx);
+
+    const double L = r * 2.6;
+    canvas.drawLine(
+      const Offset(-L, 0),
+      const Offset(L, 0),
+      Paint()
+        ..color = gold.withValues(alpha: 0.35 + 0.45 * lit)
+        ..strokeWidth = 3.5
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+    canvas.drawLine(
+      const Offset(-L, 0),
+      const Offset(L, 0),
+      Paint()
+        ..color = gold.withValues(alpha: 0.92)
+        ..strokeWidth = 1.6
+        ..strokeCap = StrokeCap.round
+        ..isAntiAlias = true,
+    );
+    // Pitch-ladder ticks (jet feel).
+    final tick = Paint()
+      ..color = gold.withValues(alpha: 0.45)
+      ..strokeWidth = 1.2
+      ..strokeCap = StrokeCap.round;
+    for (final ty in const [-13.0, 13.0]) {
+      canvas.drawLine(Offset(-7, ty), Offset(7, ty), tick);
+    }
+    canvas.restore();
+    canvas.restore();
+
+    // ── Fixed centre "aircraft" symbol (the phone) ──
+    final ref = Paint()
+      ..color = gold.withValues(alpha: 0.95)
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(Offset(cx - 12, cy), Offset(cx - 4, cy), ref);
+    canvas.drawLine(Offset(cx + 4, cy), Offset(cx + 12, cy), ref);
+    canvas.drawCircle(c, 1.8, Paint()..color = gold);
+
+    // ── Bezel ring + fixed top roll index ──
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..color = gold.withValues(alpha: 0.55 + 0.35 * lit)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4,
+    );
+    final idx = Path()
+      ..moveTo(cx - 4, cy - r + 0.5)
+      ..lineTo(cx + 4, cy - r + 0.5)
+      ..lineTo(cx, cy - r + 6)
+      ..close();
+    canvas.drawPath(idx, Paint()..color = gold.withValues(alpha: 0.9));
+  }
+
   /// Small frosted gold pill label riding the horizon line. Fades with [op].
   void _drawHzLabel(Canvas canvas, String text, Offset center, double op) {
     if (op <= 0.02) return;
@@ -1214,7 +1376,7 @@ class CompositionPainter extends CustomPainter {
   // two remaining corners (TR and BL) onto that diagonal.
   // Result: 3 unique lines, 4 non-overlapping triangles, all within the frame.
   void _drawGoldenTriangles(Canvas canvas, Size s) {
-    final p = _gp();
+    final p = _gp()..color = _gold.withValues(alpha: 0.45 * _gridDip);
 
     final double w = s.width;
     final double h = s.height;
@@ -1236,7 +1398,8 @@ class CompositionPainter extends CustomPainter {
 
   // ── Golden Spiral ───────────────────────────────────────────────────────────
   void _drawGoldenSpiral(Canvas canvas, Size s) {
-    final p = _p;
+    final double dip = _gridDip;
+    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
     const double phi = 1.6180339887;
 
     // 90°-per-step rotation lets the user aim the spiral's eye at any corner.
@@ -1383,10 +1546,18 @@ class CompositionPainter extends CustomPainter {
   // ── Focal Mass ──────────────────────────────────────────────────────────────
   // Scattered dot cluster in the upper-center (like reference image)
   void _drawFocalMass(Canvas canvas, Size s) {
+    // Each tap turns the cluster 90° about the band centre, fading out + back in
+    // through the shared grid-flip dip so the swap is hidden.
+    final double dip = _gridDip;
+    canvas.save();
+    canvas.translate(s.width / 2, s.height / 2);
+    canvas.rotate((focalTurns & 3) * (math.pi / 2));
+    canvas.translate(-s.width / 2, -s.height / 2);
+
     // Landscape-oriented focal mass: wide horizontal spread, tight vertical.
     // Dense cluster of dots left-of-centre that thins and scatters rightward,
     // matching the reference composition diagram.
-    final double cx = s.width * 0.42; // cluster sits left of centre
+    final double cx = s.width * 0.38; // cluster sits left of centre
     final double cy = s.height * 0.50; // vertical centre
 
     // Wide horizontal, narrow vertical — the defining trait of this composition.
@@ -1419,7 +1590,7 @@ class CompositionPainter extends CustomPainter {
       final double radius = 0.8 + 1.4 * coreInfluence;
       final double alpha = 0.12 + 0.58 * coreInfluence;
 
-      dotPaint.color = _gold.withValues(alpha: alpha);
+      dotPaint.color = _gold.withValues(alpha: alpha * dip);
       canvas.drawCircle(Offset(cx + dx, cy + dy), radius, dotPaint);
     }
 
@@ -1443,9 +1614,10 @@ class CompositionPainter extends CustomPainter {
       final double influence = math.exp(-distNorm * distNorm * 5.0);
       final double radius = 0.6 + 2.0 * influence;
       final double alpha = 0.32 + 0.48 * influence;
-      dotPaint.color = _gold.withValues(alpha: alpha);
+      dotPaint.color = _gold.withValues(alpha: alpha * dip);
       canvas.drawCircle(Offset(cx + dx, cy + dy), radius, dotPaint);
     }
+    canvas.restore();
   }
 
   // ── V Arrangement ───────────────────────────────────────────────────────────
@@ -1659,6 +1831,7 @@ class CompositionPainter extends CustomPainter {
       old.topInset != topInset ||
       old.bottomInset != bottomInset ||
       old.spiralTurns != spiralTurns ||
+      old.focalTurns != focalTurns ||
       old.trianglesFlipped != trianglesFlipped ||
       old.aspect != aspect ||
       old.eyePoints != eyePoints;

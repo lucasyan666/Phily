@@ -29,6 +29,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
   bool _isRecording = false;
+  // One-shot launch warm-up: paints the guide overlay's heavy draw variants
+  // (grid + power-point / face / level-dial glow blurs) almost-invisibly for the
+  // first ~1.2s, so Impeller compiles those pipelines at launch instead of on the
+  // first guide-mode swipe (which otherwise hitches once).
+  bool _warming = true;
+  late final _FaceBox _warmFace = _FaceBox(0.5, 0.4, 0.25, 0.32, 0)
+    ..opacity = 1.0
+    ..appear = 1.0
+    ..matched = true
+    ..alignGlow = 1.0;
+  final ValueNotifier<({double roll, double vert, bool level})?> _warmAttitude =
+      ValueNotifier((roll: 0.06, vert: 0.12, level: true));
   final Stopwatch _recordingStopwatch = Stopwatch();
   Timer? _recordingTimer;
   Uint8List? _latestThumbnail;
@@ -51,9 +63,20 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // in the rotated (landscape) orientation by default; the rotate button cycles
   // from there. Used for both the painter and the alignment eye so they match.
   int get _spiralTurnsEffective => (_spiralTurns + 1) & 3;
+  // Animates the spiral's 90° orientation flip: a quick opacity + scale dip whose
+  // trough hides the snap. The orientation swaps when the dip bottoms out.
+  // Shared guide-flip transition for the spiral + triangle flip buttons: a quick
+  // fade-out / swap-at-the-trough / fade-in. Only one of those modes is ever
+  // active, so a single controller serves both.
+  AnimationController? _gridFlipController;
+  bool _gridFlipSwapped = false;
+  VoidCallback? _gridFlipSwap; // the state change to apply at the fade's trough
   // Golden Triangles: flip the set across the vertical axis (TL→BR ↔ TR→BL) —
   // the old "Harmonious Triangles" mode is just this mirror. Toggled by a button.
   bool _trianglesFlipped = false;
+  // Focal Mass orientation: 90° clockwise turns (0..3), cycled by its turn
+  // button. Shares the grid-flip fade so the cluster vanishes + rebuilds.
+  int _focalTurns = 0;
   // Aspect Ratio mode: selected crop ratio. Cycled by a button in that mode.
   static const List<({String label, double ratio})> _aspectRatios = [
     (label: '1:1', ratio: 1.0),
@@ -185,6 +208,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // pass, with face proportions preserved. Raise for more FPS, lower (→2) if
   // small/distant faces start getting missed.
   static const int _detScale = 3;
+  // Target long-side (px) of the downsampled detection buffer. For frames larger
+  // than veryHigh (e.g. 48MP/max), the downsample factor is scaled to hit roughly
+  // this size, so detection cost stays ~constant regardless of capture resolution.
+  static const double _kDetTargetLong = 640;
 
   // Also detect cats/dogs (Apple Vision). Adds one native call per frame.
   static const bool _animalsEnabled = true;
@@ -247,6 +274,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           if (_compositionMode == CompositionMode.horizonGrid) {
             _updateHorizonFromMotion();
           }
+          // Drive the "hold it level" attitude dial (Horizon + the people modes).
+          _updateLevelAttitude();
         });
   }
 
@@ -350,6 +379,25 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       vsync: this,
       duration: const Duration(seconds: 1),
     )..addListener(_tickFaceBoxes);
+
+    // Warm the guide-overlay render pipelines during launch, then drop the
+    // (almost-invisible) warm-up overlay.
+    Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _warming = false);
+    });
+
+    // Guide-flip transition (spiral + triangles). The change is applied at the
+    // fade's trough (~halfway), where the guide is invisible, hiding the swap.
+    _gridFlipController =
+        AnimationController(
+          vsync: this,
+          duration: const Duration(milliseconds: 240),
+        )..addListener(() {
+          if (!_gridFlipSwapped && _gridFlipController!.value >= 0.5) {
+            _gridFlipSwapped = true;
+            if (mounted) setState(() => _gridFlipSwap?.call());
+          }
+        });
   }
 
   Future<void> _initializeCamera() async {
@@ -478,6 +526,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         _vFovHalfRad = (fovDeg / 2) * math.pi / 180.0;
       } catch (_) {}
 
+      _recordRefAspect();
       if (mounted) {
         setState(() {
           _isInitialized = true;
@@ -628,10 +677,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _focusHideTimer?.cancel();
     _accelSub?.cancel();
     _faceAnim?.dispose();
+    _gridFlipController?.dispose();
     _eyeRepaint.dispose();
     _alignLevel.dispose();
     _horizon.dispose();
     _hzLevel.dispose();
+    _levelAttitude.dispose();
+    _warmAttitude.dispose();
     _faceDetector.close();
     _stopImageStream();
     _controller?.dispose();
@@ -1071,6 +1123,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final int w = image.width, h = image.height;
     final turns = _deviceTurns;
 
+    // Adaptive downsample: 48MP (max) streams much larger frames than 24MP, so
+    // detect at a *constant* buffer size instead of a fixed factor — the rotation
+    // loop, ML Kit and Vision all scale with this buffer, so this keeps 48MP as
+    // cheap as 24MP. veryHigh keeps the calibrated 3; bigger frames downsample
+    // more. Coords are normalised, so the factor doesn't affect box alignment.
+    final int detScale = _resolution == ResolutionPreset.veryHigh
+        ? _detScale
+        : (math.max(w, h) / _kDetTargetLong).round().clamp(_detScale, 12);
+
     // Build the downsampled+rotated buffer ONCE at the best-known rotation and
     // reuse it for both ML Kit (faces) and Vision (subjects) — one synchronous
     // pixel loop on the UI isolate per frame.
@@ -1081,6 +1142,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       h,
       plane.bytesPerRow,
       qt,
+      scale: detScale,
     );
     List<Face> faces = await _faceDetector.processImage(
       _inputFromBytes(winBytes, winOw, winOh),
@@ -1104,6 +1166,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           h,
           plane.bytesPerRow,
           cand,
+          scale: detScale,
         );
         final found = await _faceDetector.processImage(
           _inputFromBytes(b, ow, oh),
@@ -1215,6 +1278,63 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// to stay level); the on-screen height comes from the camera's pitch +
   /// vertical FOV. Image-independent → works in any light, costs nothing. The
   /// 60fps ticker eases the displayed line toward these targets.
+  /// Updates the attitude (roll + pitch) driving the "hold the camera level"
+  /// dial. Active in Horizon + the people modes (Rule of Thirds / Phi Grid);
+  /// null elsewhere. Small deadzones read as dead-level; pushes on real change.
+  void _updateLevelAttitude() {
+    final m = _compositionMode;
+    final bool want =
+        m == CompositionMode.horizonGrid ||
+        m == CompositionMode.ruleOfThirds ||
+        m == CompositionMode.goldenSection;
+    if (!want) {
+      if (_levelAttitude.value != null) _levelAttitude.value = null;
+      _levelWasLevel = false;
+      return;
+    }
+    double roll = math.atan2(_gravX, _gravY);
+    if (roll.abs() < 0.018)
+      roll = 0.0; // ~1° → reads dead-level (a touch lenient)
+
+    double vert; // normalised vertical deflection for the dial
+    bool isLevel;
+    if (m == CompositionMode.horizonGrid) {
+      // Track the true-horizon's offset from the best-spot guide (the grid's own
+      // value), so "dial centred" means "horizon on the best spot" — not plumb.
+      final double dy = _horizon.value?.dy ?? 0.0; // signed screen fraction
+      vert = (dy / 0.18).clamp(-1.0, 1.0); // ~±18% reaches the dial edge
+      // Lock to the grid's *own* "Level" verdict (computed just above in this
+      // same tick) so the dial and the best-spot bubble can never disagree.
+      isLevel = _hzLevel.value == 2;
+    } else {
+      // People modes: deflection = pitch off plumb (+ = aimed up at the sky).
+      final double pitch = math.atan2(
+        _gravZ,
+        math.sqrt(_gravX * _gravX + _gravY * _gravY),
+      );
+      vert = (pitch / 0.5).clamp(-1.0, 1.0); // ~±28° reaches the dial edge
+      isLevel = roll == 0.0 && pitch.abs() < 0.075; // ~4.3° on pitch
+    }
+
+    final bool hadReading = _levelAttitude.value != null;
+    // Soft confirmation the moment a tilted people-mode shot becomes square —
+    // Horizon already owns its own stricter "Level" haptic.
+    if (isLevel &&
+        !_levelWasLevel &&
+        hadReading &&
+        m != CompositionMode.horizonGrid) {
+      _haptic('alignmentPing', intensity: 0.7);
+    }
+    _levelWasLevel = isLevel;
+    final prev = _levelAttitude.value;
+    if (prev == null ||
+        (prev.roll - roll).abs() > 0.004 ||
+        (prev.vert - vert).abs() > 0.01 ||
+        prev.level != isLevel) {
+      _levelAttitude.value = (roll: roll, vert: vert, level: isLevel);
+    }
+  }
+
   void _updateHorizonFromMotion() {
     final double gx = _gravX, gy = _gravY, gz = _gravZ;
 
@@ -1413,10 +1533,33 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     return a + diff * t;
   }
 
-  // Must match the horizontal stretch applied to the preview in _buildPreview
-  // (Matrix4.diagonal3Values(1.17, 1.0, 1.0)) so detection boxes line up with
-  // faces across the full width, not just the centre.
-  static const double _previewStretchX = 1.17;
+  // Horizontal stretch applied to the preview (the Matrix4 in _buildPreview),
+  // adapted to the live preview's aspect ratio so 24MP (veryHigh, ~16:9) and
+  // 48MP (max, ~4:3) — whose preview streams have *different* aspects — fill the
+  // screen the same way instead of one being squished. Calibrated to
+  // _kBaseStretch at the veryHigh aspect; detection coords read this same getter
+  // so boxes stay aligned across the full width.
+  static const double _kBaseStretch = 1.17;
+  double? _refAspectRatio; // veryHigh preview aspect (where the base is tuned)
+  double get _previewStretchX {
+    final c = _controller;
+    final ref = _refAspectRatio;
+    if (c == null || !c.value.isInitialized || ref == null)
+      return _kBaseStretch;
+    final double ar = c.value.aspectRatio;
+    return ar > 0 ? _kBaseStretch * (ref / ar) : _kBaseStretch;
+  }
+
+  /// Records the veryHigh (24MP) preview aspect — the reference the base stretch
+  /// is calibrated for. Called after each (re)initialisation at that resolution.
+  void _recordRefAspect() {
+    final c = _controller;
+    if (c != null &&
+        c.value.isInitialized &&
+        _resolution == ResolutionPreset.veryHigh) {
+      _refAspectRatio = c.value.aspectRatio;
+    }
+  }
 
   // ── Animated face indicators ────────────────────────────────────────────────
   // Detection updates the *targets*; a 60fps ticker eases the displayed boxes
@@ -1445,6 +1588,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // 2 = level on the guide. Drives the shared top hint bubble + the haptic.
   final ValueNotifier<int> _hzLevel = ValueNotifier(0);
   int _hzPrevLevel = 0;
+
+  // ── Hold-it-straight level cue ──────────────────────────────────────────────
+  // Attitude for the jet-style "keep the camera level" dial, or null when the
+  // active mode doesn't show it. `roll` is radians; `vert` is a normalised
+  // vertical deflection [-1..1] (people modes: pitch off plumb; Horizon: the
+  // true-horizon offset from the best-spot guide, so the dial agrees with the
+  // grid); `level` is the mode-aware "you're square" verdict. Runs in Horizon +
+  // the people modes; pushed only on meaningful change to avoid repaints.
+  final ValueNotifier<({double roll, double vert, bool level})?>
+  _levelAttitude = ValueNotifier(null);
+  bool _levelWasLevel = false;
   // Target (from device motion) that the 60fps ticker eases the displayed line
   // toward.
   double? _hzTAngle, _hzTAx, _hzTAy;
@@ -1528,6 +1682,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     return [
       for (final p in pts) [p[0], _topInsetFrac + p[1] * bandF],
     ];
+  }
+
+  /// Plays the guide fade used by the spiral + triangle flip buttons: fades the
+  /// guide out, applies [swap] at the invisible trough, then fades the new in.
+  void _startGridFlip(VoidCallback swap) {
+    final c = _gridFlipController;
+    if (c == null || c.isAnimating) return;
+    _gridFlipSwap = swap;
+    _gridFlipSwapped = false;
+    c.forward(from: 0);
   }
 
   /// Feed a fresh set of detections in as targets. Matches each detection to the
@@ -1917,11 +2081,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
     await _controller!.setFlashMode(_flashMode);
 
+    _resolution = newResolution;
+    _recordRefAspect();
     if (mounted) {
       setState(() {
-        _resolution = newResolution;
         _isInitialized = true;
       });
+      // The fresh controller isn't streaming — re-arm the detection frame stream,
+      // otherwise face/eye detection silently dies after a resolution switch.
+      await _startImageStream();
     }
   }
 
@@ -2062,14 +2230,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                       topInset: _topInset,
                       bottomInset: _bottomInset,
                       spiralTurns: _spiralTurnsEffective,
+                      gridFlip: _gridFlipController,
                       trianglesFlipped: _trianglesFlipped,
+                      focalTurns: _focalTurns,
                       aspect: _aspectRatios[_aspectIndex].ratio,
                       horizon: _horizon,
+                      levelAttitude: _levelAttitude,
                       eyePoints: _eyePoints,
                       repaint: Listenable.merge([
                         _faceAnim,
                         _horizon,
                         _eyeRepaint,
+                        _gridFlipController,
+                        _levelAttitude,
                       ]),
                     ),
                   ),
@@ -2404,12 +2577,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             ),
 
           // Alignment / horizon hint — top centre, below panel. Shown for the
-          // alignment modes (power points) and Horizon Grid; suppressed while the
-          // tip bubble shows (they share the same spot).
+          // alignment modes (power points) and Horizon Grid. It shares this spot
+          // with the "best for" tip bubble, so it CROSS-FADES in as the tip
+          // retracts (gated on !_showTip via the switcher child, not the `if`) —
+          // a hard pop-in here used to mask the tip's upward retract animation.
           if ((_modePowerPoints != null ||
                   _compositionMode == CompositionMode.horizonGrid) &&
               !_isRecording &&
-              !_showTip &&
               _gridVisible)
             Positioned(
               top: MediaQuery.of(context).padding.top + 92,
@@ -2417,14 +2591,24 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               right: 0,
               child: IgnorePointer(
                 child: Center(
-                  child: RepaintBoundary(
-                    child: ValueListenableBuilder<int>(
-                      valueListenable:
-                          _compositionMode == CompositionMode.horizonGrid
-                          ? _hzLevel
-                          : _alignLevel,
-                      builder: (_, level, __) => _buildCompositionHint(level),
-                    ),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 280),
+                    transitionBuilder: (child, anim) =>
+                        FadeTransition(opacity: anim, child: child),
+                    child: _showTip
+                        ? const SizedBox.shrink(key: ValueKey('hintHidden'))
+                        : RepaintBoundary(
+                            key: const ValueKey('hint'),
+                            child: ValueListenableBuilder<int>(
+                              valueListenable:
+                                  _compositionMode ==
+                                      CompositionMode.horizonGrid
+                                  ? _hzLevel
+                                  : _alignLevel,
+                              builder: (_, level, _) =>
+                                  _buildCompositionHint(level),
+                            ),
+                          ),
                   ),
                 ),
               ),
@@ -2462,6 +2646,28 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             right: 12,
             child: const IgnorePointer(child: _FpsOverlay()),
           ),
+
+          // Launch render-pipeline warm-up — paints the guide overlay's heavy
+          // (blur/gradient) draw ops almost-invisibly so Impeller compiles them
+          // during launch, not on the first guide swipe. Removed after ~1.2s.
+          if (_warming)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Opacity(
+                  opacity: 0.004,
+                  child: CustomPaint(
+                    size: Size.infinite,
+                    painter: CompositionPainter(
+                      CompositionMode.ruleOfThirds,
+                      faceBoxes: [_warmFace],
+                      powerGlow: const [1.0, 1.0, 1.0, 1.0],
+                      eyePoints: const [Offset(0.45, 0.4), Offset(0.55, 0.4)],
+                      levelAttitude: _warmAttitude,
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // Branded loading state — full-screen, shown whenever the preview
           // isn't live: first launch, resolution switch (_isInitialized=false)
@@ -2779,6 +2985,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         return _buildSpiralRotateButton();
       case CompositionMode.goldenTriangles:
         return _buildTrianglesFlipButton();
+      case CompositionMode.focalMass:
+        return _buildFocalTurnButton();
       case CompositionMode.aspectRatio:
         return _buildAspectRatioButton();
       default:
@@ -2830,8 +3038,42 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Widget _buildSpiralRotateButton() {
     return GestureDetector(
       onTap: () {
+        final c = _gridFlipController;
+        if (c == null || c.isAnimating) return; // ignore taps mid-flip
         HapticFeedback.selectionClick();
-        setState(() => _spiralTurns = (_spiralTurns + 1) & 3);
+        _startGridFlip(() => _spiralTurns = (_spiralTurns + 1) & 3);
+      },
+      child: Container(
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.30),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.28),
+            width: 1.0,
+          ),
+        ),
+        child: _rotated(
+          const Icon(
+            Icons.rotate_90_degrees_cw_rounded,
+            color: kGold,
+            size: 24,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Turn control shown while Focal Mass is active — each tap rotates the cluster
+  /// 90° clockwise, through the same vanish-and-rebuild fade as the spiral flip.
+  Widget _buildFocalTurnButton() {
+    return GestureDetector(
+      onTap: () {
+        final c = _gridFlipController;
+        if (c == null || c.isAnimating) return; // ignore taps mid-flip
+        HapticFeedback.selectionClick();
+        _startGridFlip(() => _focalTurns = (_focalTurns + 1) & 3);
       },
       child: Container(
         width: 52,
@@ -2860,8 +3102,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Widget _buildTrianglesFlipButton() {
     return GestureDetector(
       onTap: () {
+        final c = _gridFlipController;
+        if (c == null || c.isAnimating) return; // ignore taps mid-flip
         HapticFeedback.selectionClick();
-        setState(() => _trianglesFlipped = !_trianglesFlipped);
+        _startGridFlip(() => _trianglesFlipped = !_trianglesFlipped);
       },
       child: Container(
         width: 52,
@@ -3351,6 +3595,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom);
     _isUsingUltraWide = false;
     _controller = nc;
+    _recordRefAspect();
     _isSwitchingLens = false;
     if (mounted) setState(() {});
     await _startImageStream();
@@ -3557,7 +3802,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
     return Transform(
       alignment: Alignment.center,
-      transform: Matrix4.diagonal3Values(1.17, 1.0, 1.0),
+      transform: Matrix4.diagonal3Values(_previewStretchX, 1.0, 1.0),
       child: CameraPreview(_controller!),
     );
   }
