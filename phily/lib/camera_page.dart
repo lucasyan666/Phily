@@ -77,6 +77,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Focal Mass orientation: 90° clockwise turns (0..3), cycled by its turn
   // button. Shares the grid-flip fade so the cluster vanishes + rebuilds.
   int _focalTurns = 0;
+  // Repaint clock for the Focal Mass bubble animation. Repeats only while Focal
+  // Mass is active, so it costs nothing in other modes. `late final` (not
+  // initState) so it also comes up on a hot reload, not only a full restart.
+  late final AnimationController _focalAnim = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 6),
+  );
   // Aspect Ratio mode: selected crop ratio. Cycled by a button in that mode.
   static const List<({String label, double ratio})> _aspectRatios = [
     (label: '1:1', ratio: 1.0),
@@ -678,6 +685,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _accelSub?.cancel();
     _faceAnim?.dispose();
     _gridFlipController?.dispose();
+    _focalAnim.dispose();
     _eyeRepaint.dispose();
     _alignLevel.dispose();
     _horizon.dispose();
@@ -827,6 +835,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // Require a clearly horizontal swipe past a threshold.
     if (dx.abs() > 60 && dx.abs() > dy.abs() * 1.5) {
       _changeCompositionBy(dx < 0 ? 1 : -1); // swipe left → next, right → prev
+    }
+  }
+
+  /// Run the Focal Mass repaint clock only while that mode is active.
+  void _syncFocalAnim() {
+    if (_compositionMode == CompositionMode.focalMass) {
+      if (!_focalAnim.isAnimating) _focalAnim.repeat();
+    } else if (_focalAnim.isAnimating) {
+      _focalAnim.stop();
     }
   }
 
@@ -1282,16 +1299,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// dial. Active in Horizon + the people modes (Rule of Thirds / Phi Grid);
   /// null elsewhere. Small deadzones read as dead-level; pushes on real change.
   void _updateLevelAttitude() {
-    final m = _compositionMode;
-    final bool want =
-        m == CompositionMode.horizonGrid ||
-        m == CompositionMode.ruleOfThirds ||
-        m == CompositionMode.goldenSection;
-    if (!want) {
-      if (_levelAttitude.value != null) _levelAttitude.value = null;
-      _levelWasLevel = false;
-      return;
-    }
+    final m = _compositionMode; // dial shows in every mode now
     double roll = math.atan2(_gravX, _gravY);
     if (roll.abs() < 0.018)
       roll = 0.0; // ~1° → reads dead-level (a touch lenient)
@@ -2220,32 +2228,46 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 opacity: _gridVisible ? 1.0 : 0.0,
                 duration: const Duration(milliseconds: 260),
                 curve: Curves.easeOut,
-                child: RepaintBoundary(
-                  child: CustomPaint(
-                    painter: CompositionPainter(
-                      _compositionMode,
-                      glowSegs: _glowSegMap.values.toList(),
-                      faceBoxes: _faceBoxes,
-                      powerGlow: _powerGlow,
-                      topInset: _topInset,
-                      bottomInset: _bottomInset,
-                      spiralTurns: _spiralTurnsEffective,
-                      gridFlip: _gridFlipController,
-                      trianglesFlipped: _trianglesFlipped,
-                      focalTurns: _focalTurns,
-                      aspect: _aspectRatios[_aspectIndex].ratio,
-                      horizon: _horizon,
-                      levelAttitude: _levelAttitude,
-                      eyePoints: _eyePoints,
-                      repaint: Listenable.merge([
-                        _faceAnim,
-                        _horizon,
-                        _eyeRepaint,
-                        _gridFlipController,
-                        _levelAttitude,
-                      ]),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    RepaintBoundary(
+                      child: CustomPaint(
+                        painter: CompositionPainter(
+                          _compositionMode,
+                          glowSegs: _glowSegMap.values.toList(),
+                          faceBoxes: _faceBoxes,
+                          powerGlow: _powerGlow,
+                          topInset: _topInset,
+                          bottomInset: _bottomInset,
+                          spiralTurns: _spiralTurnsEffective,
+                          gridFlip: _gridFlipController,
+                          trianglesFlipped: _trianglesFlipped,
+                          focalTurns: _focalTurns,
+                          aspect: _aspectRatios[_aspectIndex].ratio,
+                          horizon: _horizon,
+                          eyePoints: _eyePoints,
+                          repaint: Listenable.merge([
+                            _faceAnim,
+                            _horizon,
+                            _eyeRepaint,
+                            _gridFlipController,
+                            _focalAnim,
+                          ]),
+                        ),
+                      ),
                     ),
-                  ),
+                    // Attitude dial in its OWN boundary → the ~50 Hz gravity
+                    // updates repaint only this small dial, never the grid above.
+                    RepaintBoundary(
+                      child: CustomPaint(
+                        painter: _LevelDialPainter(
+                          _levelAttitude,
+                          _bottomInset,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -2342,6 +2364,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           _compositionMode = _compositionModes[index];
                         });
                         _showCompositionTip(); // "best for" bubble (~3s)
+                        _syncFocalAnim(); // run the bubble clock only in Focal Mass
                       },
                       itemCount: _compositionModes.length,
                       itemBuilder: (context, index) {
@@ -2655,15 +2678,25 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               child: IgnorePointer(
                 child: Opacity(
                   opacity: 0.004,
-                  child: CustomPaint(
-                    size: Size.infinite,
-                    painter: CompositionPainter(
-                      CompositionMode.ruleOfThirds,
-                      faceBoxes: [_warmFace],
-                      powerGlow: const [1.0, 1.0, 1.0, 1.0],
-                      eyePoints: const [Offset(0.45, 0.4), Offset(0.55, 0.4)],
-                      levelAttitude: _warmAttitude,
-                    ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CustomPaint(
+                        painter: CompositionPainter(
+                          CompositionMode.ruleOfThirds,
+                          faceBoxes: [_warmFace],
+                          powerGlow: const [1.0, 1.0, 1.0, 1.0],
+                          eyePoints: const [
+                            Offset(0.45, 0.4),
+                            Offset(0.55, 0.4),
+                          ],
+                        ),
+                      ),
+                      // Warm the dial's blur pipeline too (it's now its own layer).
+                      CustomPaint(
+                        painter: _LevelDialPainter(_warmAttitude, _bottomInset),
+                      ),
+                    ],
                   ),
                 ),
               ),
