@@ -1,5 +1,5 @@
 name: phily
-description: "A new Flutter project."
+description: "Phily — a composition-aware camera that helps you frame better shots."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -42,6 +42,10 @@ dependencies:
   gal: ^2.3.2
   google_mlkit_face_detection: ^0.13.2
   sensors_plus: ^7.0.0
+  share_plus: ^10.1.4
+  flutter_sticky_header: ^0.8.0
+  in_app_purchase: ^3.2.0
+  shared_preferences: ^2.3.3
 
 dev_dependencies:
   flutter_test:
@@ -61,6 +65,15 @@ dev_dependencies:
   # from a single source image, simplifying the process of preparing your app
   # for release. By using this package, you can ensure that your app has a
   # consistent and professional appearance across different devices and screen sizes.   
+
+# Vendored, patched copy of camera_avfoundation 0.9.23+2. The only change is a
+# finite-value guard in DefaultCamera.handleSampleBufferStreaming (sensorExposure
+# Time): upstream casts a CMTime to Int unguarded, which traps with a fatal error
+# when exposureDuration is invalid/indefinite (camera switchover / exposure-mode
+# transitions). Remove this override once upstream guards that conversion.
+dependency_overrides:
+  camera_avfoundation:
+    path: vendor/camera_avfoundation
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

@@ -26,6 +26,7 @@ private extension Comparable {
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    NSLog("[Phily] ✅ native build with share_plus — plugins registered")
 
     // ── Camera utility channel ────────────────────────────────────────────────
     let cameraRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "PhilyCameraPlugin")!
@@ -37,7 +38,7 @@ private extension Comparable {
       switch call.method {
       case "getUltraWideCameraId":    self?.handleGetUltraWideCameraId(result: result)
       case "getVirtualCameraId":      self?.handleGetVirtualCameraId(result: result)
-      case "analyzeRuleOfThirds":     self?.handleAnalyzeRuleOfThirds(call: call, result: result)
+      case "getFieldOfView":          self?.handleGetFieldOfView(result: result)
       case "detectAnimals":           self?.handleDetectAnimals(call: call, result: result)
       default: result(FlutterMethodNotImplemented)
       }
@@ -183,38 +184,6 @@ private extension Comparable {
     ])
   }
 
-  // MARK: - analyzeRuleOfThirds
-
-  private func handleAnalyzeRuleOfThirds(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard
-      let args   = call.arguments as? [String: Any],
-      let width  = args["width"]  as? Int,
-      let height = args["height"] as? Int
-    else {
-      result(FlutterError(code: "INVALID_ARGS", message: "width, height required", details: nil))
-      return
-    }
-
-    let format = (args["format"] as? String) ?? "gray"
-    let typed  = (args["bgra"] as? FlutterStandardTypedData)
-              ?? (args["yPlane"] as? FlutterStandardTypedData)
-    guard let typed else {
-      result(FlutterError(code: "INVALID_ARGS", message: "bgra or yPlane required", details: nil))
-      return
-    }
-
-    let data = typed.data
-    DispatchQueue.global(qos: .userInitiated).async {
-      var analysis: [String: Any] = ["aligned": false, "haptic": false]
-      if #available(iOS 14.0, *) {
-        analysis = RuleOfThirdsDetector.shared.analyze(
-          pixels: data, width: width, height: height, format: format
-        )
-      }
-      DispatchQueue.main.async { result(analysis) }
-    }
-  }
-
   // MARK: - detectAnimals (cats/dogs via Vision)
 
   private func handleDetectAnimals(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -236,6 +205,14 @@ private extension Comparable {
       }
       DispatchQueue.main.async { result(animals) }
     }
+  }
+
+  /// The active back camera's field of view (degrees, along the sensor's long /
+  /// horizontal axis). In portrait that long axis maps to the preview's vertical
+  /// extent, so Dart uses this to project the gravity horizon's height.
+  private func handleGetFieldOfView(result: @escaping FlutterResult) {
+    let fov = bestVirtualDevice()?.activeFormat.videoFieldOfView ?? 0
+    result(Double(fov))
   }
 
   private func handleGetVirtualCameraId(result: @escaping FlutterResult) {

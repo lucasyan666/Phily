@@ -1,0 +1,60 @@
+{
+  "identifier" : "6784C5CA-1C8C-4A2A-9FC6-95DA1959EB51",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
+  "settings" : {
+    "_applicationInternalID" : "0",
+    "_developerTeamID" : "Q7K6S5CMVK",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "0FEB103F-687D-4266-8955-670C8580F3C6",
+      "localizations" : [
+
+      ],
+      "name" : "Phily Pro",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "2.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "B31ECE85-5E2F-46ED-84AF-7CAD1F01D219",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Unlock every Phily composition tool.",
+              "displayName" : "Phily Pro Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "phily_pro_monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Phily Pro Monthly",
+          "subscriptionGroupID" : "0FEB103F-687D-4266-8955-670C8580F3C6",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}
