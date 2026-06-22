@@ -37,7 +37,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // first ~1.2s, so Impeller compiles those pipelines at launch instead of on the
   // first guide-mode swipe (which otherwise hitches once).
   bool _warming = true;
-  late final _FaceBox _warmFace = _FaceBox(0.5, 0.4, 0.25, 0.32, 0)
+  late final FaceBox _warmFace = FaceBox(0.5, 0.4, 0.25, 0.32, 0)
     ..opacity = 1.0
     ..appear = 1.0
     ..matched = true
@@ -179,8 +179,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Animation<double>? _glowAnimation;
 
   // Composition alignment detection — per-segment glow
-  // Key: normalised 'x1,y1,x2,y2'. Value: _GlowSeg with mutable intensity.
-  final Map<String, _GlowSeg> _glowSegMap = {};
+  // Key: normalised 'x1,y1,x2,y2'. Value: GlowSeg with mutable intensity.
+  final Map<String, GlowSeg> _glowSegMap = {};
   bool _isProcessingFrame = false;
   DateTime _lastFrameTime = DateTime.fromMillisecondsSinceEpoch(0);
   // Throttle the (expensive) multi-rotation face-detection re-probe so a scene
@@ -1665,7 +1665,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Detection updates the *targets*; a 60fps ticker eases the displayed boxes
   // toward those targets and fades them in/out, so the overlay is smooth and
   // stable regardless of the slower, slightly jittery detection rate.
-  final List<_FaceBox> _faceBoxes = [];
+  final List<FaceBox> _faceBoxes = [];
   AnimationController? _faceAnim;
   int _lastTickMs = 0;
   // Detected horizon for the None-mode test (preview space, full-screen
@@ -1847,7 +1847,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         b.lastSeenMs = now;
       } else {
         final nb =
-            _FaceBox(cx, cy, w, h, now) // new — fades/scales in
+            FaceBox(cx, cy, w, h, now) // new — fades/scales in
               ..keyOffX = kox
               ..keyOffY = koy
               ..eyeSpanY = eyeSpanY

@@ -439,16 +439,16 @@ enum CompositionMode {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Coordinates are normalised to [0,1]. Intensity fades in/out each analysis frame.
-class _GlowSeg {
+class GlowSeg {
   double x1, y1, x2, y2;
   double intensity;
-  _GlowSeg(this.x1, this.y1, this.x2, this.y2, this.intensity);
+  GlowSeg(this.x1, this.y1, this.x2, this.y2, this.intensity);
 }
 
 /// An animated face indicator. Holds the current (eased) box and the latest
 /// detection target, plus opacity/appearance so it can fade and ease smoothly
 /// at display framerate, decoupled from the slower detection rate.
-class _FaceBox {
+class FaceBox {
   // Current animated values (normalised screen space, centre + size).
   double cx, cy, w, h;
   // Latest detection target.
@@ -469,7 +469,7 @@ class _FaceBox {
   double eyeSpanY = 0;
   bool hasEyes = false;
   bool eyeLevel = false;
-  _FaceBox(this.cx, this.cy, this.w, this.h, this.lastSeenMs)
+  FaceBox(this.cx, this.cy, this.w, this.h, this.lastSeenMs)
     : tcx = cx,
       tcy = cy,
       tw = w,
@@ -787,10 +787,10 @@ class CompositionPainter extends CustomPainter {
   final CompositionMode mode;
 
   /// Lines from the active grid that are currently edge-aligned.
-  final List<_GlowSeg> glowSegs;
+  final List<GlowSeg> glowSegs;
 
   /// Animated face indicators (drawn as corner brackets).
-  final List<_FaceBox> faceBoxes;
+  final List<FaceBox> faceBoxes;
 
   /// Per-power-point glow strength (0..1) for Rule-of-Thirds alignment.
   final List<double> powerGlow;
@@ -839,8 +839,8 @@ class CompositionPainter extends CustomPainter {
 
   CompositionPainter(
     this.mode, {
-    List<_GlowSeg>? glowSegs,
-    List<_FaceBox>? faceBoxes,
+    List<GlowSeg>? glowSegs,
+    List<FaceBox>? faceBoxes,
     List<double>? powerGlow,
     this.topInset = 0,
     this.bottomInset = 0,
