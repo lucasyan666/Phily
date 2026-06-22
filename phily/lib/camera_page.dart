@@ -298,6 +298,21 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     child: child,
   );
 
+  /// Like [_rotated], but also turns the control by [modelTurns] × 90° so a
+  /// turn/flip button's arrow follows the orientation of the guide it controls.
+  Widget _rotatedTurns(Widget child, int modelTurns) => AnimatedRotation(
+    turns: -_deviceTurns / 4 + modelTurns / 4,
+    duration: const Duration(milliseconds: 250),
+    curve: Curves.easeOut,
+    child: child,
+  );
+
+  static const List<String> _kMonths = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  String _fmtMonthDay(DateTime d) => '${_kMonths[d.month - 1]} ${d.day}';
+
   void _onProChanged() {
     if (mounted) setState(() {});
   }
@@ -331,29 +346,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               ),
             ),
             ListTile(
-              leading: const Icon(
-                Icons.restart_alt_rounded,
-                color: Colors.white,
-              ),
+              leading: const Icon(Icons.lock_rounded, color: Colors.white),
               title: const Text(
-                'Reset trial (fresh)',
+                'Expire trial — lock all',
                 style: TextStyle(color: Colors.white),
               ),
               onTap: () {
-                pro.debugSetTrial(expired: false);
-                Navigator.pop(sheetCtx);
-              },
-            ),
-            ListTile(
-              leading: const Icon(
-                Icons.lock_clock_rounded,
-                color: Colors.white,
-              ),
-              title: const Text(
-                'Expire trial (lock now)',
-                style: TextStyle(color: Colors.white),
-              ),
-              onTap: () {
+                pro.debugSetSubscribed(false);
                 pro.debugSetTrial(expired: true);
                 Navigator.pop(sheetCtx);
               },
@@ -363,12 +362,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 Icons.workspace_premium_rounded,
                 color: kGold,
               ),
-              title: Text(
-                pro.subscribed ? 'Cancel Pro (debug)' : 'Grant Pro (debug)',
-                style: const TextStyle(color: Colors.white),
+              title: const Text(
+                'Grant Pro — open all',
+                style: TextStyle(color: Colors.white),
               ),
               onTap: () {
-                pro.debugSetSubscribed(!pro.subscribed);
+                pro.debugSetSubscribed(true);
                 Navigator.pop(sheetCtx);
               },
             ),
@@ -921,8 +920,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       _openGalleryViewer();
       return;
     }
-    // Require a clearly horizontal swipe past a threshold.
-    if (dx.abs() > 60 && dx.abs() > dy.abs() * 1.5) {
+    // A short, clearly-horizontal flick is enough to step modes.
+    if (dx.abs() > 24 && dx.abs() > dy.abs() * 1.2) {
       _changeCompositionBy(dx < 0 ? 1 : -1); // swipe left → next, right → prev
     }
   }
@@ -2537,7 +2536,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           _currentCompositionIndex = index;
                           _compositionMode = _compositionModes[index];
                         });
-                        _showCompositionTip(); // "best for" bubble (~3s)
+                        if (!_modeLocked) {
+                          _showCompositionTip(); // "best for" bubble (~3s)
+                        } else {
+                          _dismissTip();
+                        }
                         _syncFocalAnim(); // run the bubble clock only in Focal Mass
                       },
                       itemCount: _compositionModes.length,
@@ -2781,6 +2784,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           if ((_modePowerPoints != null ||
                   _compositionMode == CompositionMode.horizonGrid) &&
               !_isRecording &&
+              !_modeLocked && // locked → the Pro card is the message, not a hint
               _gridVisible)
             Positioned(
               top: MediaQuery.of(context).padding.top + 92,
@@ -2845,10 +2849,55 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               child: const IgnorePointer(child: _FpsOverlay()),
             ),
 
+          // Free-trial signal — gold glass chip with the end date; tap → paywall.
+          if (PhilyPro.instance.showTrialBadge &&
+              _isInitialized &&
+              !_isRecording)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 56,
+              left: 12,
+              child: GestureDetector(
+                onTap: () => showPhilyProPaywall(context),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 11,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.42),
+                    borderRadius: BorderRadius.circular(kRadiusLg),
+                    border: Border.all(color: kGold.withValues(alpha: 0.55)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.workspace_premium_rounded,
+                        color: kGold,
+                        size: 14,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Trial ends '
+                        '${_fmtMonthDay(PhilyPro.instance.trialEndDate)}'
+                        ' · ${PhilyPro.instance.trialDaysLeft}d',
+                        style: const TextStyle(
+                          color: kGold,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
           // Debug-only Pro/trial control.
           if (kPhilyDebug)
             Positioned(
-              top: MediaQuery.of(context).padding.top + 58,
+              top: MediaQuery.of(context).padding.top + 92,
               left: 12,
               child: GestureDetector(
                 onTap: _showProDebugMenu,
@@ -3293,12 +3342,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             width: 1.0,
           ),
         ),
-        child: _rotated(
+        child: _rotatedTurns(
           const Icon(
             Icons.rotate_90_degrees_cw_rounded,
             color: kGold,
             size: 24,
           ),
+          _spiralTurns,
         ),
       ),
     );
@@ -3325,12 +3375,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             width: 1.0,
           ),
         ),
-        child: _rotated(
+        child: _rotatedTurns(
           const Icon(
             Icons.rotate_90_degrees_cw_rounded,
             color: kGold,
             size: 24,
           ),
+          _focalTurns,
         ),
       ),
     );

@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:phily/services/phily_pro.dart';
 import 'package:phily/theme.dart';
 
@@ -14,6 +15,16 @@ Future<void> showPhilyProPaywall(BuildContext context) {
   );
 }
 
+/// A purchasable tier shown in the paywall.
+class _Tier {
+  final String id;
+  final String name;
+  final String cadence; // shown under the price
+  final String? badge;
+  final String? note; // small line under the name
+  const _Tier(this.id, this.name, this.cadence, {this.badge, this.note});
+}
+
 class _PaywallSheet extends StatefulWidget {
   const _PaywallSheet();
 
@@ -23,6 +34,24 @@ class _PaywallSheet extends StatefulWidget {
 
 class _PaywallSheetState extends State<_PaywallSheet> {
   bool _busy = false;
+  String _selectedId = PhilyPro.lifetimeId;
+
+  static const List<_Tier> _tiers = [
+    _Tier(
+      PhilyPro.lifetimeId,
+      'Lifetime',
+      'one-time',
+      badge: 'BEST VALUE',
+      note: 'Pay once · yours forever',
+    ),
+    _Tier(
+      PhilyPro.yearlyId,
+      'Annual',
+      'per year',
+      note: 'Billed yearly · best for regulars',
+    ),
+    _Tier(PhilyPro.monthlyId, 'Monthly', 'per month'),
+  ];
 
   static const List<String> _benefits = [
     'Every composition guide — Rule of Thirds, Phi Grid, Golden Triangles & Spiral',
@@ -31,9 +60,13 @@ class _PaywallSheetState extends State<_PaywallSheet> {
     'Horizon, Cross, Focal Mass, V-Arrangement & more',
   ];
 
-  Future<void> _subscribe() async {
+  bool get _selectedIsSub => _selectedId != PhilyPro.lifetimeId;
+
+  Future<void> _purchase() async {
+    final p = PhilyPro.instance.productFor(_selectedId);
+    if (p == null) return;
     setState(() => _busy = true);
-    await PhilyPro.instance.subscribe();
+    await PhilyPro.instance.buy(p);
     if (mounted) setState(() => _busy = false);
   }
 
@@ -50,7 +83,8 @@ class _PaywallSheetState extends State<_PaywallSheet> {
     return AnimatedBuilder(
       animation: pro,
       builder: (context, _) {
-        final bool active = pro.subscribed;
+        final bool active = pro.subscribed || pro.lifetime;
+        final ProductDetails? selProduct = pro.productFor(_selectedId);
         return ClipRRect(
           borderRadius: const BorderRadius.vertical(
             top: Radius.circular(kRadiusLg + 8),
@@ -58,7 +92,7 @@ class _PaywallSheetState extends State<_PaywallSheet> {
           child: BackdropFilter(
             filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
             child: Container(
-              padding: EdgeInsets.fromLTRB(24, 14, 24, 20 + bottom),
+              padding: EdgeInsets.fromLTRB(24, 14, 24, 18 + bottom),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
@@ -81,7 +115,7 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                     child: Container(
                       width: 38,
                       height: 4,
-                      margin: const EdgeInsets.only(bottom: 18),
+                      margin: const EdgeInsets.only(bottom: 16),
                       decoration: BoxDecoration(
                         color: Colors.white.withValues(alpha: 0.25),
                         borderRadius: BorderRadius.circular(2),
@@ -110,7 +144,9 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                   const SizedBox(height: 4),
                   Text(
                     active
-                        ? 'Your subscription is active.'
+                        ? (pro.lifetime
+                              ? 'Lifetime unlock active — thank you!'
+                              : 'Your subscription is active.')
                         : pro.trialActive
                         ? '${pro.trialDaysLeft} day(s) left in your free trial'
                         : 'Unlock every composition tool.',
@@ -119,10 +155,10 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                       fontSize: 13,
                     ),
                   ),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 16),
                   for (final b in _benefits)
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.only(bottom: 10),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -137,7 +173,7 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                               b,
                               style: TextStyle(
                                 color: Colors.white.withValues(alpha: 0.85),
-                                fontSize: 13.5,
+                                fontSize: 13,
                                 height: 1.3,
                               ),
                             ),
@@ -146,21 +182,46 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                       ),
                     ),
                   const SizedBox(height: 8),
+
                   if (active)
                     _PrimaryButton(
                       label: 'Done',
                       onTap: () => Navigator.of(context).maybePop(),
                     )
-                  else
+                  else ...[
+                    for (final t in _tiers)
+                      _TierRow(
+                        tier: t,
+                        price: pro.productFor(t.id)?.price,
+                        selected: _selectedId == t.id,
+                        onTap: () => setState(() => _selectedId = t.id),
+                      ),
+                    const SizedBox(height: 6),
                     _PrimaryButton(
                       label: _busy
                           ? 'Please wait…'
-                          : pro.priceLabel.isNotEmpty
-                          ? 'Subscribe — ${pro.priceLabel}/mo'
-                          : 'Subscribe to Phily Pro',
-                      onTap: (_busy || pro.product == null) ? null : _subscribe,
+                          : selProduct == null
+                          ? 'Continue'
+                          : _selectedIsSub
+                          ? 'Subscribe — ${selProduct.price}'
+                          : 'Unlock — ${selProduct.price}',
+                      onTap: (_busy || selProduct == null) ? null : _purchase,
                     ),
-                  const SizedBox(height: 6),
+                    const SizedBox(height: 10),
+                    Text(
+                      _selectedIsSub
+                          ? 'Auto-renews until cancelled. Manage or cancel anytime '
+                                'in Settings › Apple ID › Subscriptions.'
+                          : 'One-time purchase — unlocks Phily Pro forever.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.45),
+                        fontSize: 10.5,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 2),
                   Center(
                     child: TextButton(
                       onPressed: _busy ? null : _restore,
@@ -173,7 +234,7 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                       ),
                     ),
                   ),
-                  if (!active && pro.product == null && pro.storeReady)
+                  if (!active && selProduct == null && pro.storeReady)
                     Center(
                       child: Text(
                         'Pricing unavailable — check back shortly.',
@@ -189,6 +250,127 @@ class _PaywallSheetState extends State<_PaywallSheet> {
           ),
         );
       },
+    );
+  }
+}
+
+/// A single selectable pricing tier (radio + name + price + optional badge).
+class _TierRow extends StatelessWidget {
+  final _Tier tier;
+  final String? price;
+  final bool selected;
+  final VoidCallback onTap;
+  const _TierRow({
+    required this.tier,
+    required this.price,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: selected
+              ? kGold.withValues(alpha: 0.12)
+              : Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(kRadiusMd),
+          border: Border.all(
+            color: selected
+                ? kGold.withValues(alpha: 0.9)
+                : Colors.white.withValues(alpha: 0.16),
+            width: selected ? 1.6 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              selected
+                  ? Icons.radio_button_checked_rounded
+                  : Icons.radio_button_unchecked_rounded,
+              color: selected ? kGold : Colors.white.withValues(alpha: 0.4),
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        tier.name,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (tier.badge != null) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: kGold,
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                          child: Text(
+                            tier.badge!,
+                            style: const TextStyle(
+                              color: Colors.black,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  if (tier.note != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        tier.note!,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.5),
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  price ?? '—',
+                  style: const TextStyle(
+                    color: kGold,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                Text(
+                  tier.cadence,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.45),
+                    fontSize: 10.5,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -4,7 +4,21 @@
 
   ],
   "products" : [
-
+    {
+      "displayPrice" : "24.99",
+      "familyShareable" : false,
+      "internalID" : "070634C0-B056-4BD0-A14F-F38077EDED6A",
+      "localizations" : [
+        {
+          "description" : "Unlock every Phily composition tool forever.",
+          "displayName" : "Phily Pro Lifetime",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "phily_pro_lifetime",
+      "referenceName" : "Phily Pro Lifetime",
+      "type" : "NonConsumable"
+    }
   ],
   "settings" : {
     "_applicationInternalID" : "0",
@@ -47,6 +61,31 @@
           "productID" : "phily_pro_monthly",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "Phily Pro Monthly",
+          "subscriptionGroupID" : "0FEB103F-687D-4266-8955-670C8580F3C6",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "14.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "993FFA69-47E3-408F-ACB9-119837FF2C06",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Unlock every Phily composition tool.",
+              "displayName" : "Phily Pro Annual",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "phily_pro_yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Phily Pro Annual",
           "subscriptionGroupID" : "0FEB103F-687D-4266-8955-670C8580F3C6",
           "type" : "RecurringSubscription"
         }

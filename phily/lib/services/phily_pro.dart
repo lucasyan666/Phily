@@ -8,7 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///
 /// Free trial: every composition mode is unlocked for the first [trialDays]
 /// after install. After that only `None` stays free — the rest require an active
-/// Phily Pro subscription.
+/// Phily Pro subscription (monthly/yearly) or the one-time lifetime unlock.
 ///
 /// A `ChangeNotifier` so the UI can rebuild when entitlement changes (trial
 /// expires, purchase completes, restore).
@@ -20,27 +20,37 @@ class PhilyPro extends ChangeNotifier {
   PhilyPro._();
   static final PhilyPro instance = PhilyPro._();
 
-  /// Must match the auto-renewable subscription you create in App Store Connect.
-  static const String subscriptionId = 'phily_pro_monthly';
+  /// Product ids — must match App Store Connect / the StoreKit config.
+  static const String monthlyId = 'phily_pro_monthly';
+  static const String yearlyId = 'phily_pro_yearly';
+  static const String lifetimeId = 'phily_pro_lifetime';
+  static const Set<String> _allIds = {monthlyId, yearlyId, lifetimeId};
+  static const Set<String> _subIds = {monthlyId, yearlyId};
+
   static const int trialDays = 7;
 
   static const String _kFirstLaunch = 'phily_first_launch_ms';
   static const String _kSubscribed = 'phily_subscribed';
+  static const String _kLifetime = 'phily_lifetime';
 
   final InAppPurchase _iap = InAppPurchase.instance;
   StreamSubscription<List<PurchaseDetails>>? _sub;
 
   DateTime _firstLaunch = DateTime.now();
   bool _subscribed = false;
+  bool _lifetime = false;
   bool _storeReady = false;
-  ProductDetails? _product;
+  final Map<String, ProductDetails> _products = {};
 
   bool get subscribed => _subscribed;
+  bool get lifetime => _lifetime;
   bool get storeReady => _storeReady;
-  ProductDetails? get product => _product;
 
-  /// Localised price string (e.g. "$2.99"), or empty until the store responds.
-  String get priceLabel => _product?.price ?? '';
+  /// Loaded product (price/title) for a tier id, or null until the store replies.
+  ProductDetails? productFor(String id) => _products[id];
+
+  /// Localised monthly price (e.g. "$2.99"), or empty until the store responds.
+  String get priceLabel => _products[monthlyId]?.price ?? '';
 
   bool get trialActive =>
       DateTime.now().difference(_firstLaunch).inDays < trialDays;
@@ -51,8 +61,15 @@ class PhilyPro extends ChangeNotifier {
         trialDays,
       );
 
-  /// True when the user may use the paid composition modes (active trial or sub).
-  bool get isPro => _subscribed || trialActive;
+  /// Calendar date the trial lapses — for the on-screen trial signal.
+  DateTime get trialEndDate =>
+      _firstLaunch.add(const Duration(days: trialDays));
+
+  /// Whether to show the trial countdown chip (on trial, not yet a paying user).
+  bool get showTrialBadge => trialActive && !_subscribed && !_lifetime;
+
+  /// True when the user may use the paid composition modes (trial, sub, or buy).
+  bool get isPro => _subscribed || _lifetime || trialActive;
 
   /// Call once at launch. Loads the trial clock + wires the store.
   Future<void> init() async {
@@ -65,26 +82,27 @@ class PhilyPro extends ChangeNotifier {
       _firstLaunch = DateTime.fromMillisecondsSinceEpoch(ms);
     }
     _subscribed = prefs.getBool(_kSubscribed) ?? false;
+    _lifetime = prefs.getBool(_kLifetime) ?? false;
     notifyListeners();
 
     _storeReady = await _iap.isAvailable();
     if (!_storeReady) return;
 
     _sub = _iap.purchaseStream.listen(_onPurchases, onError: (_) {});
-    final resp = await _iap.queryProductDetails({subscriptionId});
-    if (resp.productDetails.isNotEmpty) _product = resp.productDetails.first;
+    final resp = await _iap.queryProductDetails(_allIds);
+    for (final p in resp.productDetails) {
+      _products[p.id] = p;
+    }
     notifyListeners();
-    // Pick up an existing subscription (reinstall / new device / re-login).
+    // Pick up an existing entitlement (reinstall / new device / re-login).
     await _iap.restorePurchases();
   }
 
-  /// Start the subscription purchase flow. Returns false if the product isn't
-  /// loaded yet (store unavailable / id mismatch).
-  Future<bool> subscribe() async {
-    final p = _product;
-    if (p == null) return false;
+  /// Start the purchase flow for a tier (monthly/yearly subscription or the
+  /// one-time lifetime unlock). Returns false if the product isn't loaded.
+  Future<bool> buy(ProductDetails product) {
     return _iap.buyNonConsumable(
-      purchaseParam: PurchaseParam(productDetails: p),
+      purchaseParam: PurchaseParam(productDetails: product),
     );
   }
 
@@ -92,9 +110,12 @@ class PhilyPro extends ChangeNotifier {
 
   Future<void> _onPurchases(List<PurchaseDetails> purchases) async {
     for (final pd in purchases) {
-      if ((pd.status == PurchaseStatus.purchased ||
-              pd.status == PurchaseStatus.restored) &&
-          pd.productID == subscriptionId) {
+      final bool ok =
+          pd.status == PurchaseStatus.purchased ||
+          pd.status == PurchaseStatus.restored;
+      if (ok && pd.productID == lifetimeId) {
+        await _setLifetime(true);
+      } else if (ok && _subIds.contains(pd.productID)) {
         await _setSubscribed(true);
       }
       if (pd.pendingCompletePurchase) await _iap.completePurchase(pd);
@@ -106,6 +127,14 @@ class PhilyPro extends ChangeNotifier {
     _subscribed = v;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kSubscribed, v);
+    notifyListeners();
+  }
+
+  Future<void> _setLifetime(bool v) async {
+    if (_lifetime == v) return;
+    _lifetime = v;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kLifetime, v);
     notifyListeners();
   }
 
@@ -123,8 +152,12 @@ class PhilyPro extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Force the subscribed flag (simulate a purchase / cancellation) sans StoreKit.
-  Future<void> debugSetSubscribed(bool v) => _setSubscribed(v);
+  /// Force the entitlement flags (simulate a purchase / cancellation) sans
+  /// StoreKit — clears the lifetime flag too so "lock all" really locks.
+  Future<void> debugSetSubscribed(bool v) async {
+    if (!v) await _setLifetime(false);
+    await _setSubscribed(v);
+  }
 
   @override
   void dispose() {
