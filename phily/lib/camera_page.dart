@@ -508,7 +508,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // Note: on iOS, cam.name is device.uniqueID (not a human-readable string),
       // so name-based detection like contains('ultra') never works.
       for (int i = 0; i < _cameras!.length; i++) {
-        debugPrint(
+        debugLog(
           'Camera[$i]: "${_cameras![i].name}" dir=${_cameras![i].lensDirection}',
         );
       }
@@ -530,15 +530,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           'getVirtualCameraId',
         );
       } catch (e) {
-        debugPrint('getVirtualCameraId: $e');
+        debugLog('getVirtualCameraId: $e');
       }
       final virtualCam = virtualId != null
           ? _cameras!.where((c) => c.name == virtualId).firstOrNull
           : null;
-      debugPrint('getVirtualCameraId=$virtualId  matched=${virtualCam?.name}');
+      debugLog('getVirtualCameraId=$virtualId  matched=${virtualCam?.name}');
 
       if (virtualCam != null) {
-        debugPrint('Virtual multi-camera found: ${virtualCam.name}');
+        debugLog('Virtual multi-camera found: ${virtualCam.name}');
         _usesVirtualCamera = true;
         _ultraWideCamera = null;
         _controller = CameraController(
@@ -547,7 +547,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           enableAudio: true,
         );
       } else {
-        debugPrint(
+        debugLog(
           'No virtual camera — using pre-warmed two-controller approach.',
         );
         _usesVirtualCamera = false;
@@ -593,15 +593,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             _switchoverFactors = ((info['switchoverFactors'] as List?) ?? [])
                 .map((e) => (e as num).toDouble())
                 .toList();
-            debugPrint('Switchover factors: $_switchoverFactors');
+            debugLog('Switchover factors: $_switchoverFactors');
           }
         } catch (e) {
-          debugPrint('getZoomInfo failed: $e');
+          debugLog('getZoomInfo failed: $e');
         }
         _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom);
         await _CameraZoomChannel.instance.setZoom(_currentZoom);
       }
-      debugPrint(
+      debugLog(
         'Zoom range: $_minZoom – $_maxZoom | ultra-wide: ${_ultraWideCamera?.name}',
       );
 
@@ -640,7 +640,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       setState(() {
         _error = 'Camera initialization failed: $e';
       });
-      debugPrint('Camera error: $e');
+      debugLog('Camera error: $e');
     }
   }
 
@@ -661,19 +661,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       if (uid != null) {
         final match = _cameras!.where((c) => c.name == uid).firstOrNull;
         if (match != null) {
-          debugPrint(
+          debugLog(
             '_resolveUltraWide: matched "${match.name}" via native channel',
           );
           return match;
         }
-        debugPrint('_resolveUltraWide: uid "$uid" not found in camera list');
+        debugLog('_resolveUltraWide: uid "$uid" not found in camera list');
       } else {
-        debugPrint(
+        debugLog(
           '_resolveUltraWide: channel returned null (no ultra-wide on device)',
         );
       }
     } catch (e) {
-      debugPrint('_resolveUltraWide: channel error — $e');
+      debugLog('_resolveUltraWide: channel error — $e');
     }
 
     // Fallback: first additional back camera.
@@ -684,7 +684,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         )
         .firstOrNull;
     if (fallback != null) {
-      debugPrint('_resolveUltraWide: fallback to "${fallback.name}"');
+      debugLog('_resolveUltraWide: fallback to "${fallback.name}"');
     }
     return fallback;
   }
@@ -701,10 +701,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Future<void> _loadLatestThumbnail() async {
     try {
-      debugPrint('Starting thumbnail load...');
+      debugLog('Starting thumbnail load...');
 
       if (!await _ensurePhotoPermission()) {
-        debugPrint('Photo library permission denied or not granted');
+        debugLog('Photo library permission denied or not granted');
         return;
       }
 
@@ -715,10 +715,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         onlyAll: true,
       );
 
-      debugPrint('Found ${albums.length} albums');
+      debugLog('Found ${albums.length} albums');
 
       if (albums.isEmpty) {
-        debugPrint('No albums found');
+        debugLog('No albums found');
         return;
       }
 
@@ -728,10 +728,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // Cache so the gallery can open instantly (no query between swipe + slide).
       _galleryAlbum = recentAlbum;
       _galleryCount = assetCount;
-      debugPrint('Album "${recentAlbum.name}" has $assetCount assets');
+      debugLog('Album "${recentAlbum.name}" has $assetCount assets');
 
       if (assetCount == 0) {
-        debugPrint('No assets in album');
+        debugLog('No assets in album');
         return;
       }
 
@@ -739,17 +739,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           .getAssetListRange(start: 0, end: 1);
 
       if (recentAssets.isEmpty) {
-        debugPrint('Failed to get recent assets');
+        debugLog('Failed to get recent assets');
         return;
       }
 
-      debugPrint('Loading thumbnail for asset: ${recentAssets.first.id}');
+      debugLog('Loading thumbnail for asset: ${recentAssets.first.id}');
 
       // Get thumbnail data
       final Uint8List? thumbnail = await recentAssets.first
           .thumbnailDataWithSize(const ThumbnailSize(200, 200), quality: 90);
 
-      debugPrint(
+      debugLog(
         'Thumbnail loaded: ${thumbnail != null ? "${thumbnail.length} bytes" : "null"}',
       );
 
@@ -757,10 +757,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         setState(() {
           _latestThumbnail = thumbnail;
         });
-        debugPrint('Thumbnail set in state');
+        debugLog('Thumbnail set in state');
       }
     } catch (e) {
-      debugPrint('Error loading latest thumbnail: $e');
+      debugLog('Error loading latest thumbnail: $e');
     }
   }
 
@@ -1038,7 +1038,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     try {
       await _controller!.startImageStream(_onCameraFrame);
     } catch (e) {
-      debugPrint('startImageStream: $e');
+      debugLog('startImageStream: $e');
     }
   }
 
@@ -1049,7 +1049,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         _controller!.stopImageStream();
       }
     } catch (e) {
-      debugPrint('stopImageStream: $e');
+      debugLog('stopImageStream: $e');
     }
   }
 
@@ -1080,7 +1080,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // Restart stream after capture.
       await _startImageStream();
     } catch (e) {
-      debugPrint('Error taking photo: $e');
+      debugLog('Error taking photo: $e');
       await _startImageStream();
     }
   }
@@ -1099,15 +1099,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // Refresh thumbnail after save completes
       _loadLatestThumbnail();
     } catch (e) {
-      debugPrint('Error saving media: $e');
+      debugLog('Error saving media: $e');
     }
   }
 
   Future<void> _startVideoRecording() async {
     if (_controller == null ||
         !_controller!.value.isInitialized ||
-        _isRecording)
+        _isRecording) {
       return;
+    }
 
     // Trigger animations immediately for instant feedback
     _recordingStopwatch
@@ -1131,7 +1132,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       _stopImageStream();
       await _controller!.startVideoRecording();
     } catch (e) {
-      debugPrint('Error starting video: $e');
+      debugLog('Error starting video: $e');
       _recordingTimer?.cancel();
       _recordingStopwatch.stop();
       setState(() {
@@ -1169,7 +1170,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // Resume alignment analysis after recording stops.
       await _startImageStream();
     } catch (e) {
-      debugPrint('Error stopping video: $e');
+      debugLog('Error stopping video: $e');
       _glowController!.reset();
       await _startImageStream();
     }
@@ -1208,7 +1209,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         }
       }
     } catch (e) {
-      debugPrint('_onCameraFrame: $e');
+      debugLog('_onCameraFrame: $e');
     } finally {
       _isProcessingFrame = false;
     }
@@ -1388,8 +1389,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   void _updateLevelAttitude() {
     final m = _compositionMode; // dial shows in every mode now
     double roll = math.atan2(_gravX, _gravY);
-    if (roll.abs() < 0.018)
+    if (roll.abs() < 0.018) {
       roll = 0.0; // ~1° → reads dead-level (a touch lenient)
+    }
 
     double vert; // normalised vertical deflection for the dial
     bool isLevel;
@@ -1639,8 +1641,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double get _previewStretchX {
     final c = _controller;
     final ref = _refAspectRatio;
-    if (c == null || !c.value.isInitialized || ref == null)
+    if (c == null || !c.value.isInitialized || ref == null) {
       return _kBaseStretch;
+    }
     final double ar = c.value.aspectRatio;
     return ar > 0 ? _kBaseStretch * (ref / ar) : _kBaseStretch;
   }
@@ -1756,7 +1759,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         final eye = _goldenSpiralEyePx(
           Size(_bandW, _bandH),
           _spiralTurnsEffective,
-          CompositionPainter._goldenSpiralFill,
+          _CompositionPainter._goldenSpiralFill,
         );
         return [
           [eye.dx / _bandW, eye.dy / _bandH],
@@ -2011,7 +2014,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final double guideYn =
         _topInsetFrac +
         (1 - _topInsetFrac - _bottomInsetFrac) *
-            CompositionPainter._horizonGuideRatio;
+            _CompositionPainter._horizonGuideRatio;
     // `aligned` (0..1) drives only the guide-glow, so it ramps smoothly as the
     // line approaches (within ~6% it starts glowing). The actual "Level" verdict
     // is a much stricter explicit check below.
@@ -2120,7 +2123,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       await _startImageStream();
       _loadLatestThumbnail(); // refresh in case anything changed
     } catch (e) {
-      debugPrint('Error opening gallery: $e');
+      debugLog('Error opening gallery: $e');
     }
   }
 
@@ -2148,7 +2151,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         _flashMode = newMode;
       });
     } catch (e) {
-      debugPrint('Error setting flash mode: $e');
+      debugLog('Error setting flash mode: $e');
     }
   }
 
@@ -2320,7 +2323,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                   children: [
                     RepaintBoundary(
                       child: CustomPaint(
-                        painter: CompositionPainter(
+                        painter: _CompositionPainter(
                           _paintedMode, // locked modes render as None
                           glowSegs: _glowSegMap.values.toList(),
                           faceBoxes: _faceBoxes,
@@ -2937,7 +2940,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     fit: StackFit.expand,
                     children: [
                       CustomPaint(
-                        painter: CompositionPainter(
+                        painter: _CompositionPainter(
                           CompositionMode.ruleOfThirds,
                           faceBoxes: [_warmFace],
                           powerGlow: const [1.0, 1.0, 1.0, 1.0],
@@ -3813,8 +3816,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Future<void> _switchToUltraWide() async {
-    if (_ultraWideCamera == null || _isUsingUltraWide || _isSwitchingLens)
+    if (_ultraWideCamera == null || _isUsingUltraWide || _isSwitchingLens) {
       return;
+    }
     _isSwitchingLens = true;
     _stopImageStream();
     final old = _controller;
@@ -3832,7 +3836,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     try {
       await nc.initialize();
     } catch (e) {
-      debugPrint('_switchToUltraWide: $e');
+      debugLog('_switchToUltraWide: $e');
       try {
         await nc.dispose();
       } catch (_) {}
@@ -3870,7 +3874,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     try {
       await nc.initialize();
     } catch (e) {
-      debugPrint('_switchToMainCamera: $e');
+      debugLog('_switchToMainCamera: $e');
       try {
         await nc.dispose();
       } catch (_) {}
@@ -3905,12 +3909,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         if (mounted) setState(() => _currentZoom = clamped);
       } catch (e) {
         // Native channel unavailable — fall back to plugin path.
-        debugPrint('_setCameraZoom native failed ($e) — using plugin fallback');
+        debugLog('_setCameraZoom native failed ($e) — using plugin fallback');
         try {
           await _controller!.setZoomLevel(clamped);
           if (mounted) setState(() => _currentZoom = clamped);
         } catch (e2) {
-          debugPrint('_setCameraZoom plugin: $e2');
+          debugLog('_setCameraZoom plugin: $e2');
         }
       }
       return;
@@ -3942,7 +3946,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         await _controller!.setZoomLevel(physical);
         if (mounted) setState(() => _currentZoom = v);
       } catch (e) {
-        debugPrint('_setCameraZoom ultra-wide: $e');
+        debugLog('_setCameraZoom ultra-wide: $e');
       }
     } else {
       if (_isUsingUltraWide) {
@@ -3954,7 +3958,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         await _controller!.setZoomLevel(clamped);
         if (mounted) setState(() => _currentZoom = clamped);
       } catch (e) {
-        debugPrint('_setCameraZoom main: $e');
+        debugLog('_setCameraZoom main: $e');
       }
     }
   }

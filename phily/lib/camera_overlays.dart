@@ -783,7 +783,7 @@ class _LevelDialPainter extends CustomPainter {
   bool shouldRepaint(_LevelDialPainter old) => old.bottomInset != bottomInset;
 }
 
-class CompositionPainter extends CustomPainter {
+class _CompositionPainter extends CustomPainter {
   final CompositionMode mode;
 
   /// Lines from the active grid that are currently edge-aligned.
@@ -837,7 +837,7 @@ class CompositionPainter extends CustomPainter {
   >?
   horizon;
 
-  CompositionPainter(
+  _CompositionPainter(
     this.mode, {
     List<_GlowSeg>? glowSegs,
     List<_FaceBox>? faceBoxes,
@@ -851,12 +851,11 @@ class CompositionPainter extends CustomPainter {
     this.aspect = 1.0,
     this.horizon,
     List<Offset>? eyePoints,
-    Listenable? repaint,
+    super.repaint,
   }) : glowSegs = glowSegs ?? const [],
        faceBoxes = faceBoxes ?? const [],
        powerGlow = powerGlow ?? const [0, 0, 0, 0],
-       eyePoints = eyePoints ?? const [],
-       super(repaint: repaint);
+       eyePoints = eyePoints ?? const [];
 
   static const Color _gold = Color(0xFFFFFFFF);
   static const double _sw = 0.8;
@@ -1836,7 +1835,7 @@ class CompositionPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(CompositionPainter old) =>
+  bool shouldRepaint(_CompositionPainter old) =>
       old.mode != mode ||
       old.glowSegs != glowSegs ||
       old.faceBoxes != faceBoxes ||
