@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:phily/debug.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
@@ -2837,15 +2837,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           if (_showShutterFlash)
             Positioned.fill(child: Container(color: Colors.white)),
 
-          // FPS counter (testing) — top right.
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 60,
-            right: 12,
-            child: const IgnorePointer(child: _FpsOverlay()),
-          ),
+          // FPS counter (testing) — top right. Gated by the master debug flag.
+          if (kPhilyDebug)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 60,
+              right: 12,
+              child: const IgnorePointer(child: _FpsOverlay()),
+            ),
 
-          // Debug-only Pro/trial control (never ships in release builds).
-          if (kDebugMode)
+          // Debug-only Pro/trial control.
+          if (kPhilyDebug)
             Positioned(
               top: MediaQuery.of(context).padding.top + 58,
               left: 12,
