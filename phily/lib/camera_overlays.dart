@@ -592,12 +592,28 @@ Offset _goldenSpiralEyePx(Size size, int turns, double fill) {
   return Offset(size.width / 2 + rx, size.height / 2 + ry);
 }
 
-/// One focal-mass dot. Position is relative to the cluster centre (absolute px,
-/// so size-independent); [big] dots get the floaty/glow bubble animation.
+/// One focal-mass bubble, carrying its own drift + animation + glow so every dot
+/// floats independently. Position is cluster-local px (size-independent).
 class _FocalDot {
-  final double dx, dy, r, a, phase;
-  final bool big;
-  const _FocalDot(this.dx, this.dy, this.r, this.a, this.big, this.phase);
+  final double dx, dy; // base position (relative to the cluster centre)
+  final double r; // radius
+  final double a; // base opacity
+  final double phase; // animation phase offset (radians)
+  final double driftX,
+      driftY; // drift amplitude per axis (px) — the drift pattern
+  final double speed; // drift + pulse speed multiplier
+  final double glow; // glow strength (0 = none)
+  const _FocalDot(
+    this.dx,
+    this.dy,
+    this.r,
+    this.a,
+    this.phase,
+    this.driftX,
+    this.driftY,
+    this.speed,
+    this.glow,
+  );
 }
 
 /// Focal-mass layout, computed once (the Box–Muller scatter is the expensive
@@ -633,8 +649,20 @@ List<_FocalDot> _buildFocalDots() {
       final double influence = math.exp(-distNorm * distNorm * falloff);
       final double r = rBase + rGain * influence;
       final double a = aBase + aGain * influence;
+      // Per-bubble drift pattern + animation, from a separate RNG so the layout
+      // (seeds 7/31) is untouched. Glow scales with the dot's own brightness.
       dots.add(
-        _FocalDot(dx, dy, r, a, r > 1.9, phaseRng.nextDouble() * 2 * math.pi),
+        _FocalDot(
+          dx,
+          dy,
+          r,
+          a,
+          phaseRng.nextDouble() * 2 * math.pi, // phase
+          3.0 + phaseRng.nextDouble() * 5.0, // driftX 3–8 px
+          3.0 + phaseRng.nextDouble() * 5.0, // driftY 3–8 px
+          0.4 + phaseRng.nextDouble() * 0.5, // speed 0.4–0.9
+          a * 0.25, // glow ∝ brightness
+        ),
       );
     }
   }
@@ -1577,25 +1605,29 @@ class CompositionPainter extends CustomPainter {
     // per-frame maths — and only the big dots animate, so this stays cheap.
     final double cx = s.width * 0.33;
     final double cy = s.height * 0.50;
+    // Scale the cluster by the frame width (vs a 390pt reference) so it occupies
+    // the SAME proportion on every iPhone, from SE to Pro Max. The cache stays in
+    // reference px; offsets, radii and drift are scaled here at draw time.
+    final double k = s.width / 390.0;
     final double t = DateTime.now().millisecondsSinceEpoch / 1000.0;
     final dot = Paint()..style = PaintingStyle.fill;
     final glow = Paint()..style = PaintingStyle.fill;
 
     for (final d in _focalDots) {
-      if (d.big) {
-        // Floaty drift + soft glow pulse → the big dots read as glowing bubbles.
-        final double fx = math.sin(t * 0.6 + d.phase) * 6.0;
-        final double fy = math.cos(t * 0.5 + d.phase * 1.3) * 6.0;
-        final double pulse = 0.5 + 0.5 * math.sin(t * 1.1 + d.phase);
-        final Offset p = Offset(cx + d.dx + fx, cy + d.dy + fy);
-        glow.color = _gold.withValues(alpha: (0.10 + 0.18 * pulse) * dip);
-        canvas.drawCircle(p, d.r * 4.0, glow); // soft halo (no blur — cheap)
-        dot.color = _gold.withValues(alpha: d.a * (0.7 + 0.3 * pulse) * dip);
-        canvas.drawCircle(p, d.r, dot);
-      } else {
-        dot.color = _gold.withValues(alpha: d.a * dip);
-        canvas.drawCircle(Offset(cx + d.dx, cy + d.dy), d.r, dot);
+      // Every bubble drifts on its own pattern + speed; brighter ones glow more.
+      final double fx = math.sin(t * d.speed + d.phase) * d.driftX;
+      final double fy = math.cos(t * d.speed * 0.85 + d.phase * 1.3) * d.driftY;
+      final double pulse = 0.5 + 0.5 * math.sin(t * d.speed * 1.5 + d.phase);
+      final Offset p = Offset(cx + (d.dx + fx) * k, cy + (d.dy + fy) * k);
+      if (d.glow > 0.02) {
+        // Slight soft halo (no blur — cheap), gently breathing.
+        glow.color = _gold.withValues(
+          alpha: d.glow * (0.45 + 0.4 * pulse) * dip,
+        );
+        canvas.drawCircle(p, d.r * 2.8 * k, glow);
       }
+      dot.color = _gold.withValues(alpha: d.a * (0.75 + 0.25 * pulse) * dip);
+      canvas.drawCircle(p, d.r * k, dot);
     }
     canvas.restore();
   }

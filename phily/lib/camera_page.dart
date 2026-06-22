@@ -3524,16 +3524,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                   ),
                 ),
                 alignment: Alignment.center,
-                child: _rotated(
-                  Text(
-                    type.toUpperCase(),
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: kGold,
-                      fontSize: 9,
-                      fontWeight: FontWeight.w300,
-                      letterSpacing: 1.2,
-                    ),
+                // Mode labels stay horizontal (not _rotated) — a long upright
+                // label can't fit the thin belt in landscape. Control icons still
+                // rotate; only the text holds its place.
+                child: Text(
+                  type.toUpperCase(),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: kGold,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w300,
+                    letterSpacing: 1.2,
                   ),
                 ),
               ),
@@ -3541,16 +3542,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           )
         : Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: _rotated(
-              Text(
-                type.toUpperCase(),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.32),
-                  fontSize: 9,
-                  fontWeight: FontWeight.w300,
-                  letterSpacing: 1.2,
-                ),
+            child: Text(
+              type.toUpperCase(),
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.32),
+                fontSize: 9,
+                fontWeight: FontWeight.w300,
+                letterSpacing: 1.2,
               ),
             ),
           );
