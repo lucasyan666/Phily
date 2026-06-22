@@ -851,12 +851,11 @@ class CompositionPainter extends CustomPainter {
     this.aspect = 1.0,
     this.horizon,
     List<Offset>? eyePoints,
-    Listenable? repaint,
+    super.repaint,
   }) : glowSegs = glowSegs ?? const [],
        faceBoxes = faceBoxes ?? const [],
        powerGlow = powerGlow ?? const [0, 0, 0, 0],
-       eyePoints = eyePoints ?? const [],
-       super(repaint: repaint);
+       eyePoints = eyePoints ?? const [];
 
   static const Color _gold = Color(0xFFFFFFFF);
   static const double _sw = 0.8;

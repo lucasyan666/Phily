@@ -1108,8 +1108,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Future<void> _startVideoRecording() async {
     if (_controller == null ||
         !_controller!.value.isInitialized ||
-        _isRecording)
+        _isRecording) {
       return;
+    }
 
     // Trigger animations immediately for instant feedback
     _recordingStopwatch
@@ -1390,8 +1391,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   void _updateLevelAttitude() {
     final m = _compositionMode; // dial shows in every mode now
     double roll = math.atan2(_gravX, _gravY);
-    if (roll.abs() < 0.018)
+    if (roll.abs() < 0.018) {
       roll = 0.0; // ~1° → reads dead-level (a touch lenient)
+    }
 
     double vert; // normalised vertical deflection for the dial
     bool isLevel;
@@ -1641,8 +1643,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double get _previewStretchX {
     final c = _controller;
     final ref = _refAspectRatio;
-    if (c == null || !c.value.isInitialized || ref == null)
+    if (c == null || !c.value.isInitialized || ref == null) {
       return _kBaseStretch;
+    }
     final double ar = c.value.aspectRatio;
     return ar > 0 ? _kBaseStretch * (ref / ar) : _kBaseStretch;
   }
@@ -3764,8 +3767,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Future<void> _switchToUltraWide() async {
-    if (_ultraWideCamera == null || _isUsingUltraWide || _isSwitchingLens)
+    if (_ultraWideCamera == null || _isUsingUltraWide || _isSwitchingLens) {
       return;
+    }
     _isSwitchingLens = true;
     _stopImageStream();
     final old = _controller;
