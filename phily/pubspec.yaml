@@ -44,6 +44,8 @@ dependencies:
   sensors_plus: ^7.0.0
   share_plus: ^10.1.4
   flutter_sticky_header: ^0.8.0
+  in_app_purchase: ^3.2.0
+  shared_preferences: ^2.3.3
 
 dev_dependencies:
   flutter_test:

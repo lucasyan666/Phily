@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
@@ -11,6 +12,8 @@ import 'package:gal/gal.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:phily/screens/branded_loader.dart';
 import 'package:phily/screens/gallery_viewer.dart';
+import 'package:phily/screens/paywall.dart';
+import 'package:phily/services/phily_pro.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:phily/theme.dart';
@@ -295,11 +298,96 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     child: child,
   );
 
+  void _onProChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// True when the active mode is gated — trial over + not subscribed (None is
+  /// always free).
+  bool get _modeLocked =>
+      _compositionMode != CompositionMode.none && !PhilyPro.instance.isPro;
+
+  /// Mode actually painted — a locked mode renders as None (no guide) until the
+  /// user unlocks Phily Pro.
+  CompositionMode get _paintedMode =>
+      _modeLocked ? CompositionMode.none : _compositionMode;
+
+  /// Debug-only sheet to flip the trial/subscription state for testing the lock.
+  void _showProDebugMenu() {
+    final pro = PhilyPro.instance;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF161616),
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+              child: Text(
+                'DEBUG · isPro=${pro.isPro} · subscribed=${pro.subscribed} · '
+                'trialLeft=${pro.trialDaysLeft}d',
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.restart_alt_rounded,
+                color: Colors.white,
+              ),
+              title: const Text(
+                'Reset trial (fresh)',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                pro.debugSetTrial(expired: false);
+                Navigator.pop(sheetCtx);
+              },
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.lock_clock_rounded,
+                color: Colors.white,
+              ),
+              title: const Text(
+                'Expire trial (lock now)',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                pro.debugSetTrial(expired: true);
+                Navigator.pop(sheetCtx);
+              },
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.workspace_premium_rounded,
+                color: kGold,
+              ),
+              title: Text(
+                pro.subscribed ? 'Cancel Pro (debug)' : 'Grant Pro (debug)',
+                style: const TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                pro.debugSetSubscribed(!pro.subscribed);
+                Navigator.pop(sheetCtx);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
     _initializeCamera();
     _startOrientationListener();
+    // Phily Pro: load the trial clock + wire the store; rebuild on entitlement
+    // changes (trial expiry, purchase, restore) so locked modes gate live.
+    PhilyPro.instance.init();
+    PhilyPro.instance.addListener(_onProChanged);
     // Delay thumbnail loading to ensure permissions are ready
     Future.delayed(const Duration(milliseconds: 500), () {
       _loadLatestThumbnail();
@@ -683,6 +771,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _tipTimer?.cancel();
     _focusHideTimer?.cancel();
     _accelSub?.cancel();
+    PhilyPro.instance.removeListener(_onProChanged);
     _faceAnim?.dispose();
     _gridFlipController?.dispose();
     _focalAnim.dispose();
@@ -1099,26 +1188,25 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _isProcessingFrame = true;
     _lastFrameTime = now;
     try {
-      // Horizon Grid doesn't touch camera frames at all — its line comes from
-      // the gravity sensor (_updateHorizonFromMotion). The other detection modes
-      // share the face/animal path.
-      switch (_compositionMode) {
-        case CompositionMode.none:
-        case CompositionMode.ruleOfThirds:
-        case CompositionMode.goldenSection:
-        case CompositionMode.fibonacciSpiral:
-          await _analyzeDetections(image);
-          break;
-        default:
-          // These modes don't detect — fade out any face/animal boxes and clear
-          // the eye rings left from the previous mode so they don't freeze and
-          // carry over on screen.
-          if (_faceBoxes.isNotEmpty) _updateFaceTargets(const []);
-          if (_eyePoints.isNotEmpty) {
-            _eyePoints.clear();
-            _eyeRepaint.value++;
-          }
-          break;
+      // Horizon Grid doesn't touch camera frames (its line comes from the gravity
+      // sensor); the other detection modes share the face/animal path. Locked
+      // modes (post-trial, non-Pro) detect nothing — they render as None.
+      final bool detect =
+          !_modeLocked &&
+          (_compositionMode == CompositionMode.none ||
+              _compositionMode == CompositionMode.ruleOfThirds ||
+              _compositionMode == CompositionMode.goldenSection ||
+              _compositionMode == CompositionMode.fibonacciSpiral);
+      if (detect) {
+        await _analyzeDetections(image);
+      } else {
+        // Fade out any face/animal boxes + clear eye rings left from the previous
+        // mode so they don't freeze and carry over on screen.
+        if (_faceBoxes.isNotEmpty) _updateFaceTargets(const []);
+        if (_eyePoints.isNotEmpty) {
+          _eyePoints.clear();
+          _eyeRepaint.value++;
+        }
       }
     } catch (e) {
       debugPrint('_onCameraFrame: $e');
@@ -2234,7 +2322,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     RepaintBoundary(
                       child: CustomPaint(
                         painter: CompositionPainter(
-                          _compositionMode,
+                          _paintedMode, // locked modes render as None
                           glowSegs: _glowSegMap.values.toList(),
                           faceBoxes: _faceBoxes,
                           powerGlow: _powerGlow,
@@ -2272,6 +2360,92 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               ),
             ),
           ),
+
+          // Phily Pro lock — shown when the active mode is gated (free trial
+          // over, not subscribed). Tap to open the paywall. Doesn't block the
+          // belt/shutter (the card is the only hit target), so swiping back to
+          // None still works.
+          if (_modeLocked && _isInitialized && !_isRecording)
+            Positioned.fill(
+              child: Align(
+                alignment: const Alignment(0, -0.15),
+                child: GestureDetector(
+                  onTap: () => showPhilyProPaywall(context),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(kRadiusLg),
+                    child: BackdropFilter(
+                      filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 22,
+                          vertical: 20,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(kRadiusLg),
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.white.withValues(alpha: 0.12),
+                              Colors.black.withValues(alpha: 0.55),
+                            ],
+                          ),
+                          border: Border.all(
+                            color: kGold.withValues(alpha: 0.5),
+                          ),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.lock_rounded,
+                              color: kGold,
+                              size: 26,
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              '${_compositionMode.label} is a Pro feature',
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.92),
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Your free trial has ended',
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.55),
+                                fontSize: 12,
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 18,
+                                vertical: 9,
+                              ),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(kRadiusMd),
+                                color: kGold,
+                              ),
+                              child: const Text(
+                                'Unlock with Phily Pro',
+                                style: TextStyle(
+                                  color: Colors.black,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // Top settings panel
           Positioned(
@@ -2669,6 +2843,37 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             right: 12,
             child: const IgnorePointer(child: _FpsOverlay()),
           ),
+
+          // Debug-only Pro/trial control (never ships in release builds).
+          if (kDebugMode)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 58,
+              left: 12,
+              child: GestureDetector(
+                onTap: _showProDebugMenu,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: Colors.redAccent.withValues(alpha: 0.7),
+                    ),
+                  ),
+                  child: const Text(
+                    'DBG',
+                    style: TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // Launch render-pipeline warm-up — paints the guide overlay's heavy
           // (blur/gradient) draw ops almost-invisibly so Impeller compiles them
