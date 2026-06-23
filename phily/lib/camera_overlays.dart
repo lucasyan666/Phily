@@ -1,5 +1,11 @@
 part of 'camera_page.dart';
 
+/// Cross composition — the vertical arm is a fixed track between these fractions
+/// of the frame height; the horizontal crossbar slides within it (see [_crossY]).
+const double kCrossTopFrac = 0.28;
+const double kCrossBottomFrac = 0.68;
+const double kCrossDefaultY = 0.38;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Focus bracket painter — corner-bracket focus indicator
 // ─────────────────────────────────────────────────────────────────────────────
@@ -807,6 +813,21 @@ class _CompositionPainter extends CustomPainter {
   /// Focal Mass orientation in 90° clockwise turns (0..3).
   final int focalTurns;
 
+  /// Diagonal orientation in 90° clockwise turns (0..3) — cycles which corner
+  /// the fan springs from.
+  final int diagonalTurns;
+
+  /// Cross composition: crossbar position as a fraction of the frame height,
+  /// clamped within the fixed vertical-arm track.
+  final double crossY;
+
+  /// Cross composition: rotation (radians) about the centre of the vertical arm.
+  final double crossAngle;
+
+  /// Cross composition: selection-glow strength (0..1) while the rotate handle
+  /// is held — brightens + blooms the cross lines.
+  final double crossGlow;
+
   /// Drives the guide-flip transition (spiral + triangles): 0 = settled; sweeps
   /// 0..1 on a flip, dipping the guide's opacity to a trough at 0.5 that hides
   /// the swap behind a quick fade.
@@ -814,6 +835,9 @@ class _CompositionPainter extends CustomPainter {
 
   /// Golden Triangles: mirror the set across the vertical axis (TL→BR ↔ TR→BL).
   final bool trianglesFlipped;
+
+  /// V-Arrangement: flip the V upside-down (V ↔ ∧) about its vertical centre.
+  final bool vFlipped;
 
   /// Detected eye landmarks (preview-normalised) — shown in None mode while
   /// validating eye tracking.
@@ -846,8 +870,13 @@ class _CompositionPainter extends CustomPainter {
     this.bottomInset = 0,
     this.spiralTurns = 0,
     this.focalTurns = 0,
+    this.diagonalTurns = 0,
+    this.crossY = kCrossDefaultY,
+    this.crossAngle = 0,
+    this.crossGlow = 0,
     this.gridFlip,
     this.trianglesFlipped = false,
+    this.vFlipped = false,
     this.aspect = 1.0,
     this.horizon,
     List<Offset>? eyePoints,
@@ -1570,23 +1599,52 @@ class _CompositionPainter extends CustomPainter {
   void _drawCross(Canvas canvas, Size s) {
     final p = _p;
 
-    // Christian cross — centered horizontally, positioned in the upper portion
-    // of the frame. The vertical arm is longer below the crossbar than above.
+    // Christian cross — centered horizontally. The vertical arm is a FIXED
+    // track; the user slides the crossbar up/down within it (crossY).
     final double cx = s.width * 0.50;
-    final double cy = s.height * 0.38; // crossbar sits at upper-center
-
-    // Vertical arm: short above the crossbar, long below — classic cross ratio.
-    final double armUp = s.height * 0.10;
-    final double armDown = s.height * 0.30;
+    final double top = s.height * kCrossTopFrac;
+    final double bottom = s.height * kCrossBottomFrac;
+    final double cy = (s.height * crossY).clamp(top, bottom);
 
     // Horizontal crossbar: symmetric, does not reach screen edges.
     final double armLeft = s.width * 0.18;
     final double armRight = s.width * 0.18;
 
-    // Vertical line
-    canvas.drawLine(Offset(cx, cy - armUp), Offset(cx, cy + armDown), p);
-    // Horizontal crossbar
-    canvas.drawLine(Offset(cx - armLeft, cy), Offset(cx + armRight, cy), p);
+    // Hold-to-rotate spins the whole cross about the vertical arm's centre.
+    final double pivotY = (top + bottom) / 2;
+    canvas.save();
+    if (crossAngle != 0) {
+      canvas.translate(cx, pivotY);
+      canvas.rotate(crossAngle);
+      canvas.translate(-cx, -pivotY);
+    }
+    final Offset vTop = Offset(cx, top);
+    final Offset vBottom = Offset(cx, bottom);
+    final Offset hLeft = Offset(cx - armLeft, cy);
+    final Offset hRight = Offset(cx + armRight, cy);
+
+    // Selection glow: two soft, blurred gold halos that fade outward — a gentle
+    // bloom rather than a hard outline. Only active briefly while held.
+    if (crossGlow > 0.01) {
+      for (final layer in const [
+        (width: 13.0, alpha: 0.16, blur: 9.0),
+        (width: 5.0, alpha: 0.38, blur: 4.0),
+      ]) {
+        final bloom = Paint()
+          ..color = _gold.withValues(alpha: layer.alpha * crossGlow)
+          ..strokeWidth = _sw + layer.width * crossGlow
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, layer.blur);
+        canvas.drawLine(vTop, vBottom, bloom);
+        canvas.drawLine(hLeft, hRight, bloom);
+      }
+    }
+
+    // Vertical line (fixed track) + horizontal crossbar (slides within it).
+    canvas.drawLine(vTop, vBottom, p);
+    canvas.drawLine(hLeft, hRight, p);
+    canvas.restore();
   }
 
   // ── Focal Mass ──────────────────────────────────────────────────────────────
@@ -1634,7 +1692,9 @@ class _CompositionPainter extends CustomPainter {
   // ── V Arrangement ───────────────────────────────────────────────────────────
   // V shape opening upward, vertex at bottom-center
   void _drawVArrangement(Canvas canvas, Size s) {
-    final p = _p;
+    // Fade through the shared flip dip so the upside-down swap is hidden.
+    final double dip = _gridDip;
+    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
 
     // Vertex at lower-center; arms rise symmetrically to the upper corners
     // of a contained region — fully visible, no clipping at edges.
@@ -1646,30 +1706,53 @@ class _CompositionPainter extends CustomPainter {
     final double topLeftX = s.width * 0.08;
     final double topRightX = s.width * 0.92;
 
+    // Flip button turns the V upside-down (V ↔ ∧), mirrored about its centre.
+    final double midY = (topY + vy) / 2;
+    canvas.save();
+    if (vFlipped) {
+      canvas.translate(0, midY);
+      canvas.scale(1, -1);
+      canvas.translate(0, -midY);
+    }
     // Left arm: vertex → upper-left
     canvas.drawLine(Offset(vx, vy), Offset(topLeftX, topY), p);
     // Right arm: vertex → upper-right (mirror)
     canvas.drawLine(Offset(vx, vy), Offset(topRightX, topY), p);
+    canvas.restore();
   }
 
   // ── Diagonal ────────────────────────────────────────────────────────────────
-  // Two strong diagonals plus two parallel helpers — like the reference
+  // A strong diagonal springing from one corner, with two helper lines fanning
+  // to ~85px apart near the opposite corner. The turn button cycles the corner.
   void _drawDiagonal(Canvas canvas, Size s) {
-    final p = _p;
+    final double dip = _gridDip;
+    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
 
-    // Both lines share a single origin at the top-right corner.
-    // They fan toward the bottom-left corner, ending ~2 cm apart
-    // (~85 logical px each side of the BL corner — distance ≈ 120 px).
-    final Offset origin = Offset(s.width, 0);
+    // Offsets as fractions so the helpers stay ~85px apart near the far corner.
+    final double ox = 85 / s.width;
+    final double oy = 85 / s.height;
 
-    // Line 1 — ends on the left edge, 85px above the bottom-left corner.
-    final Offset end1 = Offset(0, s.height - 85);
+    // Turn 0 (normalised, unit square): fan from the top-right corner toward BL.
+    const Offset origin = Offset(1, 0); // top-right
+    final Offset end1 = Offset(0, 1 - oy); // left edge, above BL
+    final Offset end2 = Offset(ox, 1); // bottom edge, right of BL
 
-    // Line 2 — ends on the bottom edge, 85px right of the bottom-left corner.
-    final Offset end2 = Offset(85, s.height);
+    // Rotate the whole config 90°·turns about the centre — in the unit square so
+    // corners map to corners — then scale to the frame.
+    final int turns = diagonalTurns & 3;
+    Offset place(Offset q) {
+      double x = q.dx - 0.5, y = q.dy - 0.5;
+      for (int i = 0; i < turns; i++) {
+        final double nx = -y, ny = x; // 90° clockwise (screen space)
+        x = nx;
+        y = ny;
+      }
+      return Offset((x + 0.5) * s.width, (y + 0.5) * s.height);
+    }
 
-    canvas.drawLine(origin, end1, p);
-    canvas.drawLine(origin, end2, p);
+    final Offset o = place(origin);
+    canvas.drawLine(o, place(end1), p);
+    canvas.drawLine(o, place(end2), p);
   }
 
   // ── Radial ──────────────────────────────────────────────────────────────────
@@ -1843,7 +1926,12 @@ class _CompositionPainter extends CustomPainter {
       old.bottomInset != bottomInset ||
       old.spiralTurns != spiralTurns ||
       old.focalTurns != focalTurns ||
+      old.diagonalTurns != diagonalTurns ||
+      old.crossY != crossY ||
+      old.crossAngle != crossAngle ||
+      old.crossGlow != crossGlow ||
       old.trianglesFlipped != trianglesFlipped ||
+      old.vFlipped != vFlipped ||
       old.aspect != aspect ||
       old.eyePoints != eyePoints;
 }

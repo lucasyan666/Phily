@@ -77,9 +77,31 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Golden Triangles: flip the set across the vertical axis (TL→BR ↔ TR→BL) —
   // the old "Harmonious Triangles" mode is just this mirror. Toggled by a button.
   bool _trianglesFlipped = false;
+  // V-Arrangement: flip the V upside-down (V ↔ ∧). Toggled by its flip button.
+  bool _vFlipped = false;
+  // Diagonal orientation: 90° clockwise turns (0..3), cycled by its turn button.
+  int _diagonalTurns = 0;
   // Focal Mass orientation: 90° clockwise turns (0..3), cycled by its turn
   // button. Shares the grid-flip fade so the cluster vanishes + rebuilds.
   int _focalTurns = 0;
+  // Cross composition: crossbar height as a fraction of the frame, dragged via
+  // the cross slider within the fixed vertical-arm track.
+  double _crossY = kCrossDefaultY; // rendered (eased toward target)
+  double _crossYTarget = kCrossDefaultY; // slider-driven target
+  bool _slidingCross = false; // crossbar slider currently dragged
+  int _slideNotch = 0; // last notch crossed (for slide haptic ticks)
+  // Cross rotation (radians) about the vertical arm's centre — driven by the
+  // glowing rotate handle at the arm tip.
+  double _crossAngle = 0; // rendered angle (eased toward target)
+  double _crossAngleTarget = 0; // finger-driven target
+  double _crossGlow = 0; // selection glow 0..1 (eased)
+  bool _rotatingCross = false; // handle currently grabbed
+  int _lastDetent = 0; // last 90° step crossed (for haptic ticks)
+  // Ticker that eases the spin + glow each frame while the handle is in use.
+  late final AnimationController _crossSpinCtl = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 1),
+  )..addListener(_tickCrossSpin);
   // Repaint clock for the Focal Mass bubble animation. Repeats only while Focal
   // Mass is active, so it costs nothing in other modes. `late final` (not
   // initState) so it also comes up on a hot reload, not only a full restart.
@@ -774,6 +796,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _faceAnim?.dispose();
     _gridFlipController?.dispose();
     _focalAnim.dispose();
+    _crossSpinCtl.dispose();
     _eyeRepaint.dispose();
     _alignLevel.dispose();
     _horizon.dispose();
@@ -874,6 +897,112 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _swipeStartX = _swipeLastX = details.focalPoint.dx;
     _swipeStartY = _swipeLastY = details.focalPoint.dy;
     _swipeMaxPointers = details.pointerCount;
+  }
+
+  // ── Cross rotate handle ──────────────────────────────────────────────────
+  // The handle is grabbed (glow + haptic), then a tangential drag spins the
+  // cross about its pivot. A ticker eases the rendered angle toward the finger
+  // target and fades the glow, so the spin feels smooth and weighted.
+
+  void _ensureCrossSpinTicking() {
+    if (!_crossSpinCtl.isAnimating) _crossSpinCtl.repeat();
+  }
+
+  /// Restore the cross to its default look (centred bar, no rotation, no glow).
+  void _resetCross() {
+    _crossY = _crossYTarget = kCrossDefaultY;
+    _crossAngle = 0;
+    _crossAngleTarget = 0;
+    _crossGlow = 0;
+    _rotatingCross = false;
+    _slidingCross = false;
+    if (_crossSpinCtl.isAnimating) _crossSpinCtl.stop();
+  }
+
+  // ── Cross slider (move the crossbar) ─────────────────────────────────────
+  void _onCrossSlideStart() {
+    _slidingCross = true;
+    _slideNotch = (_crossYTarget * 24).round();
+    HapticFeedback.selectionClick();
+    _ensureCrossSpinTicking();
+  }
+
+  void _onCrossSlide(double dyFrac) {
+    _crossYTarget = (_crossYTarget + dyFrac).clamp(
+      kCrossTopFrac,
+      kCrossBottomFrac,
+    );
+    // A light notch tick as the bar travels — tactile without being constant.
+    final int notch = (_crossYTarget * 24).round();
+    if (notch != _slideNotch) {
+      _slideNotch = notch;
+      HapticFeedback.selectionClick();
+    }
+    _ensureCrossSpinTicking();
+  }
+
+  void _onCrossSlideEnd() {
+    _slidingCross = false;
+    _ensureCrossSpinTicking(); // keep ticking until the bar + glow settle
+  }
+
+  void _onCrossGrab() {
+    _rotatingCross = true;
+    _lastDetent = (_crossAngle / (math.pi / 2)).round();
+    HapticFeedback.selectionClick();
+    _ensureCrossSpinTicking();
+  }
+
+  void _onCrossSpin(DragUpdateDetails d) {
+    // Handle sits at radius L from the pivot; a tangential drag of `delta`
+    // changes the angle by (tangential component / radius). No absolute finger
+    // position needed, so this is independent of coordinate space.
+    final double l =
+        MediaQuery.of(context).size.height *
+        (kCrossBottomFrac - kCrossTopFrac) /
+        2;
+    if (l <= 0) return;
+    final double dTheta =
+        -(math.cos(_crossAngle) * d.delta.dx +
+            math.sin(_crossAngle) * d.delta.dy) /
+        l;
+    _crossAngleTarget += dTheta;
+    _ensureCrossSpinTicking();
+  }
+
+  void _onCrossRelease() {
+    _rotatingCross = false;
+    _ensureCrossSpinTicking(); // keep ticking until angle + glow settle
+  }
+
+  /// Per-frame easing for the cross spin + selection glow. Stops itself once
+  /// the angle has caught up to the finger and the glow has settled.
+  void _tickCrossSpin() {
+    _crossAngle += (_crossAngleTarget - _crossAngle) * 0.30;
+    _crossY += (_crossYTarget - _crossY) * 0.35; // smooth crossbar travel
+    // Glow whenever the cross is being actively spun OR slid.
+    final double gTarget = (_rotatingCross || _slidingCross) ? 1.0 : 0.0;
+    _crossGlow += (gTarget - _crossGlow) * 0.16;
+
+    // Tactile detent every 90° while actively spinning.
+    if (_rotatingCross) {
+      final int detent = (_crossAngle / (math.pi / 2)).round();
+      if (detent != _lastDetent) {
+        _lastDetent = detent;
+        HapticFeedback.selectionClick();
+      }
+    }
+
+    final bool aSettled = (_crossAngleTarget - _crossAngle).abs() < 0.0015;
+    final bool ySettled = (_crossYTarget - _crossY).abs() < 0.0008;
+    final bool gSettled = (gTarget - _crossGlow).abs() < 0.004;
+    if (aSettled) _crossAngle = _crossAngleTarget;
+    if (ySettled) _crossY = _crossYTarget;
+    if (gSettled) _crossGlow = gTarget;
+    if (mounted) setState(() {});
+    if (!_rotatingCross && !_slidingCross && aSettled && ySettled && gSettled) {
+      _crossSpinCtl.stop();
+    }
   }
 
   Future<void> _onScaleUpdate(ScaleUpdateDetails details) async {
@@ -986,7 +1115,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       case CompositionMode.diagonal:
         return 'Energy & motion — street, action, leading lines.';
       case CompositionMode.radial:
-        return 'Flowers, wheels, sunbursts, radial food plating.';
+        return 'Flowers, wheels, sunbursts, tunnels, spiral staircases.';
       case CompositionMode.lArrangement:
         return 'Product & still life — frame a subject in a corner.';
       case CompositionMode.compoundCurve:
@@ -2333,7 +2462,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           spiralTurns: _spiralTurnsEffective,
                           gridFlip: _gridFlipController,
                           trianglesFlipped: _trianglesFlipped,
+                          vFlipped: _vFlipped,
                           focalTurns: _focalTurns,
+                          diagonalTurns: _diagonalTurns,
+                          crossY: _crossY,
+                          crossAngle: _crossAngle,
+                          crossGlow: _crossGlow,
                           aspect: _aspectRatios[_aspectIndex].ratio,
                           horizon: _horizon,
                           eyePoints: _eyePoints,
@@ -2449,6 +2583,26 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               ),
             ),
 
+          // Cross composition: a tiny, very responsive vertical slider to nudge
+          // the crossbar up/down within the fixed vertical arm. Right side, centred.
+          if (_paintedMode == CompositionMode.cross &&
+              _isInitialized &&
+              !_isRecording &&
+              _gridVisible)
+            Positioned(
+              right: 14,
+              top: 0,
+              bottom: 0,
+              child: Center(child: _buildCrossSlider()),
+            ),
+
+          // Cross composition: glowing rotate handle at the arm tip — grab + spin.
+          if (_paintedMode == CompositionMode.cross &&
+              _isInitialized &&
+              !_isRecording &&
+              _gridVisible)
+            _buildCrossRotateHandle(),
+
           // Top settings panel
           Positioned(
             key: const ValueKey('topPanel'),
@@ -2538,6 +2692,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                         setState(() {
                           _currentCompositionIndex = index;
                           _compositionMode = _compositionModes[index];
+                          // Re-entering Cross starts it fresh (centred, level).
+                          if (_compositionMode == CompositionMode.cross) {
+                            _resetCross();
+                          }
                         });
                         if (!_modeLocked) {
                           _showCompositionTip(); // "best for" bubble (~3s)
@@ -3278,6 +3436,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         return _buildTrianglesFlipButton();
       case CompositionMode.focalMass:
         return _buildFocalTurnButton();
+      case CompositionMode.vArrangement:
+        return _buildVFlipButton();
+      case CompositionMode.diagonal:
+        return _buildDiagonalTurnButton();
       case CompositionMode.aspectRatio:
         return _buildAspectRatioButton();
       default:
@@ -3323,98 +3485,93 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
-  /// Rotate control shown in the controls row while Fibonacci Spiral is active.
-  /// Each tap turns the spiral 90° clockwise, cycling its eye through the four
-  /// corners. Styled to mirror the gallery button on the opposite side.
-  Widget _buildSpiralRotateButton() {
-    return GestureDetector(
+  /// Builds a right-slot action button that runs the shared grid-flip fade.
+  /// [icon] is the (already transformed) glyph; [swap] mutates the orientation
+  /// state at the fade's midpoint. Taps mid-flip are ignored.
+  Widget _gridFlipButton({required Widget icon, required VoidCallback swap}) {
+    return _GridActionButton(
       onTap: () {
         final c = _gridFlipController;
         if (c == null || c.isAnimating) return; // ignore taps mid-flip
         HapticFeedback.selectionClick();
-        _startGridFlip(() => _spiralTurns = (_spiralTurns + 1) & 3);
+        _startGridFlip(swap);
       },
-      child: Container(
-        width: 52,
-        height: 52,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.30),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.28),
-            width: 1.0,
-          ),
-        ),
-        child: _rotatedTurns(
-          const Icon(
-            Icons.rotate_90_degrees_cw_rounded,
-            color: kGold,
-            size: 24,
-          ),
-          _spiralTurns,
-        ),
-      ),
+      child: icon,
     );
   }
 
-  /// Turn control shown while Focal Mass is active — each tap rotates the cluster
-  /// 90° clockwise, through the same vanish-and-rebuild fade as the spiral flip.
-  Widget _buildFocalTurnButton() {
-    return GestureDetector(
-      onTap: () {
-        final c = _gridFlipController;
-        if (c == null || c.isAnimating) return; // ignore taps mid-flip
-        HapticFeedback.selectionClick();
-        _startGridFlip(() => _focalTurns = (_focalTurns + 1) & 3);
+  /// Animates a card-style flip of [child] about [axis] whenever [flipped]
+  /// toggles, so a flip button's glyph mirrors the direction of its grid model.
+  Widget _animatedFlip(
+    Widget child, {
+    required bool flipped,
+    required Axis axis,
+  }) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(end: flipped ? 1.0 : 0.0),
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeInOut,
+      builder: (context, t, w) {
+        final m = Matrix4.identity()..setEntry(3, 2, 0.0012); // perspective
+        axis == Axis.horizontal
+            ? m.rotateY(t * math.pi)
+            : m.rotateX(t * math.pi);
+        return Transform(alignment: Alignment.center, transform: m, child: w);
       },
-      child: Container(
-        width: 52,
-        height: 52,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.30),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.28),
-            width: 1.0,
-          ),
-        ),
-        child: _rotatedTurns(
-          const Icon(
-            Icons.rotate_90_degrees_cw_rounded,
-            color: kGold,
-            size: 24,
-          ),
-          _focalTurns,
-        ),
-      ),
+      child: child,
     );
   }
 
-  /// Flip control shown while Golden Triangles is active — mirrors the triangle
-  /// set across the vertical axis (TL→BR diagonal ↔ TR→BL diagonal).
-  Widget _buildTrianglesFlipButton() {
-    return GestureDetector(
-      onTap: () {
-        final c = _gridFlipController;
-        if (c == null || c.isAnimating) return; // ignore taps mid-flip
-        HapticFeedback.selectionClick();
-        _startGridFlip(() => _trianglesFlipped = !_trianglesFlipped);
-      },
-      child: Container(
-        width: 52,
-        height: 52,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.30),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.28),
-            width: 1.0,
-          ),
-        ),
-        child: _rotated(const Icon(Icons.flip_rounded, color: kGold, size: 24)),
+  static const Icon _kTurnIcon = Icon(
+    Icons.rotate_90_degrees_cw_rounded,
+    color: kGold,
+    size: 24,
+  );
+
+  /// Rotate control (Fibonacci Spiral) — each tap turns the spiral 90° CW; the
+  /// glyph rotates with it.
+  Widget _buildSpiralRotateButton() => _gridFlipButton(
+    icon: _rotatedTurns(_kTurnIcon, _spiralTurns),
+    swap: () => _spiralTurns = (_spiralTurns + 1) & 3,
+  );
+
+  /// Turn control (Focal Mass) — each tap rotates the cluster 90° CW.
+  Widget _buildFocalTurnButton() => _gridFlipButton(
+    icon: _rotatedTurns(_kTurnIcon, _focalTurns),
+    swap: () => _focalTurns = (_focalTurns + 1) & 3,
+  );
+
+  /// Turn control (Diagonal) — each tap springs the fan from the next corner.
+  Widget _buildDiagonalTurnButton() => _gridFlipButton(
+    icon: _rotatedTurns(_kTurnIcon, _diagonalTurns),
+    swap: () => _diagonalTurns = (_diagonalTurns + 1) & 3,
+  );
+
+  /// Flip control (Golden Triangles) — mirrors the set across the vertical axis;
+  /// the glyph flips horizontally to match.
+  Widget _buildTrianglesFlipButton() => _gridFlipButton(
+    icon: _rotated(
+      _animatedFlip(
+        const Icon(Icons.flip_rounded, color: kGold, size: 24),
+        flipped: _trianglesFlipped,
+        axis: Axis.horizontal,
       ),
-    );
-  }
+    ),
+    swap: () => _trianglesFlipped = !_trianglesFlipped,
+  );
+
+  /// Flip control (V-Arrangement) — turns the V upside-down (V ↔ ∧); the glyph
+  /// flips vertically to match.
+  Widget _buildVFlipButton() => _gridFlipButton(
+    icon: _rotated(
+      _animatedFlip(
+        const Icon(Icons.swap_vert_rounded, color: kGold, size: 24),
+        flipped: _vFlipped,
+        axis: Axis.vertical,
+      ),
+    ),
+    swap: () => _vFlipped = !_vFlipped,
+  );
 
   Widget _buildGlassCaptureButton() {
     return AnimatedBuilder(
@@ -3653,6 +3810,131 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// A short, very responsive vertical slider that nudges the Cross crossbar up
+  /// and down within its fixed vertical arm. The drag maps straight onto the
+  /// track — a small move sweeps the whole range, so it feels far more sensitive
+  /// than the (deliberately gentle) exposure slider.
+  /// Glowing, draggable rotate handle that sits at the BOTTOM tip of the cross's
+  /// vertical arm (its base). It signals "grab me and spin" (a ↻ grip), glows +
+  /// scales up while held, and orbits the pivot as the cross turns.
+  Widget _buildCrossRotateHandle() {
+    final Size sz = MediaQuery.of(context).size;
+    final double cx = sz.width * 0.5;
+    final double pivotY = sz.height * (kCrossTopFrac + kCrossBottomFrac) / 2;
+    final double l = sz.height * (kCrossBottomFrac - kCrossTopFrac) / 2;
+    // Handle rides the bottom arm tip, rotated about the pivot by the angle.
+    final double hx = cx - l * math.sin(_crossAngle);
+    final double hy = pivotY + l * math.cos(_crossAngle);
+    final double g = _crossGlow;
+    final double size = 36 + 6 * g;
+    return Positioned(
+      left: hx - size / 2,
+      top: hy - size / 2,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanDown: (_) => _onCrossGrab(),
+        onPanUpdate: _onCrossSpin,
+        onPanEnd: (_) => _onCrossRelease(),
+        onPanCancel: _onCrossRelease,
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.black.withValues(alpha: 0.35 + 0.15 * g),
+            border: Border.all(
+              color: kGold.withValues(alpha: 0.55 + 0.45 * g),
+              width: 1.2 + 0.8 * g,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: kGold.withValues(alpha: 0.22 + 0.5 * g),
+                blurRadius: 6 + 18 * g,
+                spreadRadius: 0.5 + 2 * g,
+              ),
+            ],
+          ),
+          child: Icon(
+            Icons.cached_rounded,
+            color: kGold.withValues(alpha: 0.85 + 0.15 * g),
+            size: 18 + 3 * g,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCrossSlider() {
+    const double trackH = 150;
+    const double knob = 22;
+    const double range = kCrossBottomFrac - kCrossTopFrac;
+    final double frac = ((_crossY - kCrossTopFrac) / range).clamp(0.0, 1.0);
+    final double g = _crossGlow; // selection glow drives the knob bloom
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      // Double-tap smoothly eases the cross back (recentre bar + straighten).
+      onDoubleTap: () {
+        HapticFeedback.selectionClick();
+        _crossYTarget = kCrossDefaultY;
+        _crossAngleTarget = 0;
+        _ensureCrossSpinTicking();
+      },
+      onVerticalDragStart: (_) => _onCrossSlideStart(),
+      onVerticalDragUpdate: (d) => _onCrossSlide((d.delta.dy / trackH) * range),
+      onVerticalDragEnd: (_) => _onCrossSlideEnd(),
+      onVerticalDragCancel: _onCrossSlideEnd,
+      child: SizedBox(
+        width: 36,
+        height: trackH,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Track — brightens a touch while in use.
+            Container(
+              width: 2,
+              height: trackH,
+              decoration: BoxDecoration(
+                color: kGold.withValues(alpha: 0.4 + 0.4 * g),
+                borderRadius: BorderRadius.circular(1),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black54, blurRadius: 3),
+                ],
+              ),
+            ),
+            // Knob — glows + haloes while sliding.
+            Positioned(
+              top: frac * (trackH - knob),
+              child: Container(
+                width: knob,
+                height: knob,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.black.withValues(alpha: 0.4),
+                  border: Border.all(
+                    color: kGold.withValues(alpha: 0.3 + 0.5 * g),
+                    width: 1,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: kGold.withValues(alpha: 0.35 + 0.45 * g),
+                      blurRadius: 8 + 12 * g,
+                      spreadRadius: 0.5 + 1.5 * g,
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.unfold_more_rounded,
+                  color: kGold,
+                  size: 14,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -4097,6 +4379,36 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       alignment: Alignment.center,
       transform: Matrix4.diagonal3Values(_previewStretchX, 1.0, 1.0),
       child: CameraPreview(_controller!),
+    );
+  }
+}
+
+/// Shared chrome for the right-slot mode-action buttons (spiral rotate, focal
+/// turn, triangles / V flip): a 52pt dark rounded square with a hairline border.
+/// [child] is the (transformed) glyph; [onTap] performs the action. Centralising
+/// the look here keeps every mode button identical and easy to reuse.
+class _GridActionButton extends StatelessWidget {
+  final Widget child;
+  final VoidCallback? onTap;
+  const _GridActionButton({required this.child, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.30),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.28),
+            width: 1.0,
+          ),
+        ),
+        child: Center(child: child),
+      ),
     );
   }
 }
