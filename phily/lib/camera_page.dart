@@ -62,6 +62,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Fibonacci-spiral orientation: number of 90° clockwise turns (0..3). Lets the
   // user point the spiral's eye at any corner. Persists across mode switches.
   int _spiralTurns = 0;
+  // Fibonacci spiral: mirror horizontally (eye to the opposite side). Flip button.
+  bool _spiralFlipped = false;
   // The spiral is always drawn a quarter-turn off the stored value, so it sits
   // in the rotated (landscape) orientation by default; the rotate button cycles
   // from there. Used for both the painter and the alignment eye so they match.
@@ -81,6 +83,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   bool _vFlipped = false;
   // Diagonal orientation: 90° clockwise turns (0..3), cycled by its turn button.
   int _diagonalTurns = 0;
+  // L-Arrangement: 90° turns (0..3) + horizontal mirror, via turn + flip buttons.
+  int _lTurns = 0;
+  bool _lFlipped = false;
   // Focal Mass orientation: 90° clockwise turns (0..3), cycled by its turn
   // button. Shares the grid-flip fade so the cluster vanishes + rebuilds.
   int _focalTurns = 0;
@@ -2460,11 +2465,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           topInset: _topInset,
                           bottomInset: _bottomInset,
                           spiralTurns: _spiralTurnsEffective,
+                          spiralFlipped: _spiralFlipped,
                           gridFlip: _gridFlipController,
                           trianglesFlipped: _trianglesFlipped,
                           vFlipped: _vFlipped,
                           focalTurns: _focalTurns,
                           diagonalTurns: _diagonalTurns,
+                          lTurns: _lTurns,
+                          lFlipped: _lFlipped,
                           crossY: _crossY,
                           crossAngle: _crossAngle,
                           crossGlow: _crossGlow,
@@ -2737,49 +2745,62 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     const SizedBox(height: 10),
                   ] else
                     const SizedBox(height: 8),
-                  // Camera controls row
+                  // Camera controls row. Flexible side regions keep the capture
+                  // button dead-centre even when the right slot holds two
+                  // controls (e.g. the spiral's turn + flip buttons).
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       // Gallery button (left, centred with capture button)
-                      GestureDetector(
-                        onTap: _isRecording ? null : _openGalleryViewer,
-                        child: Container(
-                          width: 52,
-                          height: 52,
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.30),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.28),
-                              width: 1.0,
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: GestureDetector(
+                            onTap: _isRecording ? null : _openGalleryViewer,
+                            child: Container(
+                              width: 52,
+                              height: 52,
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.30),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.28),
+                                  width: 1.0,
+                                ),
+                              ),
+                              child: _latestThumbnail != null
+                                  ? ClipRRect(
+                                      borderRadius: BorderRadius.circular(9),
+                                      child: Image.memory(
+                                        _latestThumbnail!,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    )
+                                  : _rotated(
+                                      Icon(
+                                        Icons.photo_library_outlined,
+                                        color: Colors.white.withValues(
+                                          alpha: 0.55,
+                                        ),
+                                        size: 24,
+                                      ),
+                                    ),
                             ),
                           ),
-                          child: _latestThumbnail != null
-                              ? ClipRRect(
-                                  borderRadius: BorderRadius.circular(9),
-                                  child: Image.memory(
-                                    _latestThumbnail!,
-                                    fit: BoxFit.cover,
-                                  ),
-                                )
-                              : _rotated(
-                                  Icon(
-                                    Icons.photo_library_outlined,
-                                    color: Colors.white.withValues(alpha: 0.55),
-                                    size: 24,
-                                  ),
-                                ),
                         ),
                       ),
 
                       // Capture button (center) - tap for photo, hold for video
                       _buildGlassCaptureButton(),
 
-                      // Right slot: a mode-specific control (spiral rotate /
-                      // aspect-ratio cycle), otherwise empty space for symmetry.
-                      _buildRightSlotControl(),
+                      // Right slot: mode-specific control(s) — e.g. spiral
+                      // turn + flip — anchored right, mirroring the gallery.
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: _buildRightSlotControl(),
+                        ),
+                      ),
                     ],
                   ),
                 ],
@@ -3431,7 +3452,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Widget _buildRightSlotControl() {
     switch (_compositionMode) {
       case CompositionMode.fibonacciSpiral:
-        return _buildSpiralRotateButton();
+        // Two controls: flip (mirror) beside the turn button.
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildSpiralFlipButton(),
+            const SizedBox(width: 10),
+            _buildSpiralRotateButton(),
+          ],
+        );
       case CompositionMode.goldenTriangles:
         return _buildTrianglesFlipButton();
       case CompositionMode.focalMass:
@@ -3440,6 +3469,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         return _buildVFlipButton();
       case CompositionMode.diagonal:
         return _buildDiagonalTurnButton();
+      case CompositionMode.lArrangement:
+        // Two controls: flip (mirror) beside the turn button.
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildLFlipButton(),
+            const SizedBox(width: 10),
+            _buildLTurnButton(),
+          ],
+        );
       case CompositionMode.aspectRatio:
         return _buildAspectRatioButton();
       default:
@@ -3535,6 +3574,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     swap: () => _spiralTurns = (_spiralTurns + 1) & 3,
   );
 
+  /// Flip control (Fibonacci Spiral) — mirrors the spiral horizontally so its
+  /// eye lands on the opposite side; the glyph flips to match.
+  Widget _buildSpiralFlipButton() => _gridFlipButton(
+    icon: _rotated(
+      _animatedFlip(
+        const Icon(Icons.flip_rounded, color: kGold, size: 24),
+        flipped: _spiralFlipped,
+        axis: Axis.horizontal,
+      ),
+    ),
+    swap: () => _spiralFlipped = !_spiralFlipped,
+  );
+
   /// Turn control (Focal Mass) — each tap rotates the cluster 90° CW.
   Widget _buildFocalTurnButton() => _gridFlipButton(
     icon: _rotatedTurns(_kTurnIcon, _focalTurns),
@@ -3545,6 +3597,24 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Widget _buildDiagonalTurnButton() => _gridFlipButton(
     icon: _rotatedTurns(_kTurnIcon, _diagonalTurns),
     swap: () => _diagonalTurns = (_diagonalTurns + 1) & 3,
+  );
+
+  /// Turn control (L-Arrangement) — each tap moves the L to the next corner.
+  Widget _buildLTurnButton() => _gridFlipButton(
+    icon: _rotatedTurns(_kTurnIcon, _lTurns),
+    swap: () => _lTurns = (_lTurns + 1) & 3,
+  );
+
+  /// Flip control (L-Arrangement) — mirrors the L horizontally; glyph flips too.
+  Widget _buildLFlipButton() => _gridFlipButton(
+    icon: _rotated(
+      _animatedFlip(
+        const Icon(Icons.flip_rounded, color: kGold, size: 24),
+        flipped: _lFlipped,
+        axis: Axis.horizontal,
+      ),
+    ),
+    swap: () => _lFlipped = !_lFlipped,
   );
 
   /// Flip control (Golden Triangles) — mirrors the set across the vertical axis;

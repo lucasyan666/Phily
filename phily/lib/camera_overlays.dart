@@ -810,12 +810,21 @@ class _CompositionPainter extends CustomPainter {
   /// Fibonacci-spiral orientation in 90° clockwise turns (0..3).
   final int spiralTurns;
 
+  /// Fibonacci spiral: mirror horizontally (eye to the opposite side).
+  final bool spiralFlipped;
+
   /// Focal Mass orientation in 90° clockwise turns (0..3).
   final int focalTurns;
 
   /// Diagonal orientation in 90° clockwise turns (0..3) — cycles which corner
   /// the fan springs from.
   final int diagonalTurns;
+
+  /// L-Arrangement orientation in 90° clockwise turns (0..3) — cycles the corner.
+  final int lTurns;
+
+  /// L-Arrangement: mirror horizontally (swap which side the L opens to).
+  final bool lFlipped;
 
   /// Cross composition: crossbar position as a fraction of the frame height,
   /// clamped within the fixed vertical-arm track.
@@ -869,8 +878,11 @@ class _CompositionPainter extends CustomPainter {
     this.topInset = 0,
     this.bottomInset = 0,
     this.spiralTurns = 0,
+    this.spiralFlipped = false,
     this.focalTurns = 0,
     this.diagonalTurns = 0,
+    this.lTurns = 0,
+    this.lFlipped = false,
     this.crossY = kCrossDefaultY,
     this.crossAngle = 0,
     this.crossGlow = 0,
@@ -1502,6 +1514,7 @@ class _CompositionPainter extends CustomPainter {
     // Rotate the drawing frame about the band centre; the (fw × fh) frame is
     // centred there so the rotated rectangle lands back inside the band.
     canvas.translate(s.width / 2, s.height / 2);
+    if (spiralFlipped) canvas.scale(-1.0, 1.0); // mirror eye to opposite side
     canvas.rotate(turns * (math.pi / 2));
     canvas.translate(-fw / 2, -fh / 2);
 
@@ -1781,21 +1794,33 @@ class _CompositionPainter extends CustomPainter {
 
   // ── L Arrangement ───────────────────────────────────────────────────────────
   void _drawLArrangement(Canvas canvas, Size s) {
-    final p = _p;
-    // Flipped both vertically (y→h−y) and horizontally (x→w−x).
-    // Vertical bar on the LEFT ~32%.
-    final double vx = s.width * 0.32;
-    canvas.drawLine(
-      Offset(vx, s.height * 0.20),
-      Offset(vx, s.height * 0.82),
-      p,
-    );
-    // Horizontal bar at the TOP, extending to the RIGHT.
-    canvas.drawLine(
-      Offset(vx, s.height * 0.20),
-      Offset(s.width * 0.80, s.height * 0.20),
-      p,
-    );
+    final double dip = _gridDip;
+    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
+
+    // Normalised (turn 0, unflipped): corner low-left, vertical bar rising, foot
+    // across the bottom to the right — a standard "L" by default. Flip mirrors
+    // it; turns cycle the corner.
+    const Offset corner = Offset(0.32, 0.80);
+    const Offset vEnd = Offset(0.32, 0.18);
+    const Offset hEnd = Offset(0.80, 0.80);
+
+    final int turns = lTurns & 3;
+    Offset place(Offset q) {
+      double x = lFlipped ? 1 - q.dx : q.dx; // mirror horizontally first
+      double y = q.dy;
+      x -= 0.5;
+      y -= 0.5;
+      for (int i = 0; i < turns; i++) {
+        final double nx = -y, ny = x; // 90° clockwise (screen space)
+        x = nx;
+        y = ny;
+      }
+      return Offset((x + 0.5) * s.width, (y + 0.5) * s.height);
+    }
+
+    final Offset c = place(corner);
+    canvas.drawLine(c, place(vEnd), p);
+    canvas.drawLine(c, place(hEnd), p);
   }
 
   // ── Compound Curve ──────────────────────────────────────────────────────────
@@ -1925,8 +1950,11 @@ class _CompositionPainter extends CustomPainter {
       old.topInset != topInset ||
       old.bottomInset != bottomInset ||
       old.spiralTurns != spiralTurns ||
+      old.spiralFlipped != spiralFlipped ||
       old.focalTurns != focalTurns ||
       old.diagonalTurns != diagonalTurns ||
+      old.lTurns != lTurns ||
+      old.lFlipped != lFlipped ||
       old.crossY != crossY ||
       old.crossAngle != crossAngle ||
       old.crossGlow != crossGlow ||
