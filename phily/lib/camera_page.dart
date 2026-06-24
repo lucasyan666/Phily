@@ -60,7 +60,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Quick toggle to dim the composition overlay for a clean frame (mode stays).
   bool _gridVisible = true;
   // Fibonacci-spiral orientation: number of 90° clockwise turns (0..3). Lets the
-  // user point the spiral's eye at any corner. Persists across mode switches.
+  // user point the spiral's eye at any corner. Resets when the mode is re-entered.
   int _spiralTurns = 0;
   // Fibonacci spiral: mirror horizontally (eye to the opposite side). Flip button.
   bool _spiralFlipped = false;
@@ -911,6 +911,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   void _ensureCrossSpinTicking() {
     if (!_crossSpinCtl.isAnimating) _crossSpinCtl.repeat();
+  }
+
+  /// Reset every mode's turn/flip orientation to its default, so each grid
+  /// starts fresh whenever its page is (re-)entered.
+  void _resetModeOrientations() {
+    _spiralTurns = 0;
+    _spiralFlipped = false;
+    _trianglesFlipped = false;
+    _focalTurns = 0;
+    _diagonalTurns = 0;
+    _lTurns = 0;
+    _lFlipped = false;
   }
 
   /// Restore the cross to its default look (centred bar, no rotation, no glow).
@@ -2700,7 +2712,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                         setState(() {
                           _currentCompositionIndex = index;
                           _compositionMode = _compositionModes[index];
-                          // Re-entering Cross starts it fresh (centred, level).
+                          // Every mode starts fresh on (re-)entry: turn/flip
+                          // orientations reset to their defaults.
+                          _resetModeOrientations();
                           if (_compositionMode == CompositionMode.cross) {
                             _resetCross();
                           }
