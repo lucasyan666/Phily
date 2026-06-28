@@ -906,11 +906,11 @@ class _CompositionPainter extends CustomPainter {
   static const double _goldenSpiralFill = 1.0;
 
   /// Where the Horizon Grid's guide line sits, as a fraction of the camera band
-  /// from the top. 0.618 = the golden-section "low horizon" — the line falls in
-  /// the lower part of the frame, leaving ~62% sky above, which landscape
-  /// research finds the most balanced default (sky-forward, not centred/static).
-  /// Foreground-heavy scenes suit the upper golden line (0.382) instead.
-  static const double _horizonGuideRatio = 0.6180339887;
+  /// from the top. Nudged just above the golden-section "low horizon" (1/φ ≈
+  /// 0.618) so the best-spot line reads right against the level dial. Still
+  /// sky-forward (~59% sky above), not centred/static. Lower this to raise the
+  /// line further; the dial tracks it automatically (detection reads this value).
+  static const double _horizonGuideRatio = 0.59;
 
   /// Normal white hairline paint used by all draw methods.
   Paint _gp({StrokeCap cap = StrokeCap.butt}) => Paint()
@@ -1666,6 +1666,19 @@ class _CompositionPainter extends CustomPainter {
     // Each tap turns the cluster 90° about the band centre, fading out + back in
     // through the shared grid-flip dip so the swap is hidden.
     final double dip = _gridDip;
+
+    // Spotlight the cluster: dim the rest, keeping the subject area in focus.
+    // Focal Mass repaints every frame (drifting bubbles), so use the cheap
+    // radial-gradient scrim (no layer/blur) at the rotated cluster centre.
+    final double a = (focalTurns & 3) * (math.pi / 2);
+    final double vx = s.width * 0.33 - s.width / 2;
+    final double vy = s.height * 0.50 - s.height / 2;
+    final Offset fc = Offset(
+      s.width / 2 + vx * math.cos(a) - vy * math.sin(a),
+      s.height / 2 + vx * math.sin(a) + vy * math.cos(a),
+    );
+    _drawRadialScrim(canvas, s, fc, s.width * 0.40, dip);
+
     canvas.save();
     canvas.translate(s.width / 2, s.height / 2);
     canvas.rotate((focalTurns & 3) * (math.pi / 2));
@@ -1878,6 +1891,7 @@ class _CompositionPainter extends CustomPainter {
       ..lineTo(baseL.dx, baseL.dy)
       ..lineTo(baseR.dx, baseR.dy)
       ..close();
+    _drawFocusScrim(canvas, s, path); // dim outside, keep the pyramid in focus
     canvas.drawPath(path, p);
   }
 
@@ -1886,7 +1900,48 @@ class _CompositionPainter extends CustomPainter {
     final p = _p;
     final Offset center = Offset(s.width / 2, s.height / 2);
     final double radius = math.min(s.width, s.height) * 0.36;
+    final path = Path()
+      ..addOval(Rect.fromCircle(center: center, radius: radius));
+    _drawFocusScrim(canvas, s, path); // dim outside, keep the circle in focus
     canvas.drawCircle(center, radius, p);
+  }
+
+  /// "Spotlight" the inside of [shape]: darken the rest of the band and punch a
+  /// soft, blurred hole over the shape so the subject inside reads as focused
+  /// and the surroundings fade out. One cached masked layer — Pyramid/Circular
+  /// don't animate, so the live preview just composites under it each frame.
+  void _drawFocusScrim(Canvas canvas, Size s, Path shape) {
+    final Rect band = Offset.zero & s;
+    canvas.saveLayer(band, Paint());
+    canvas.drawRect(band, Paint()..color = const Color(0x80000000)); // ~50% dim
+    canvas.drawPath(
+      shape,
+      Paint()
+        ..color = const Color(0xFF000000)
+        ..blendMode = BlendMode
+            .dstOut // erase the scrim inside the shape
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, s.width * 0.06),
+    );
+    canvas.restore();
+  }
+
+  /// Cheap radial "spotlight" — a single gradient fill (no layer/mask), for modes
+  /// that repaint every frame (Focal Mass): clear at [center], fading to ~50%
+  /// dark by [radius]. [opacity] scales the dim (e.g. with the flip dip).
+  void _drawRadialScrim(
+    Canvas canvas,
+    Size s,
+    Offset center,
+    double radius,
+    double opacity,
+  ) {
+    if (opacity <= 0.01) return;
+    final int alpha = (0x80 * opacity).round().clamp(0, 255);
+    final shader = RadialGradient(
+      colors: [const Color(0x00000000), Color(alpha << 24)],
+      stops: const [0.5, 1.0],
+    ).createShader(Rect.fromCircle(center: center, radius: radius));
+    canvas.drawRect(Offset.zero & s, Paint()..shader = shader);
   }
 
   // ── Symmetry ──────────────────────────────────────────────────────────────

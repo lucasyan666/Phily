@@ -233,10 +233,11 @@ class _SectionHeaderBar extends StatelessWidget {
       padding: const EdgeInsets.only(left: 14, top: 12, bottom: 6),
       child: Text(
         label,
-        style: TextStyle(
-          color: recent ? _gold : Colors.white,
-          fontSize: 15,
-          fontWeight: FontWeight.w600,
+        // Editorial serif for the date — reads like a photo journal.
+        style: brandDisplay(
+          size: 16,
+          weight: FontWeight.w500,
+          color: recent ? _gold : kPaper,
           letterSpacing: 0.2,
         ),
       ),
@@ -256,25 +257,26 @@ class _EmptyGallery extends StatelessWidget {
         children: [
           Icon(
             Icons.photo_library_outlined,
-            color: Colors.white.withValues(alpha: 0.28),
-            size: 54,
+            color: kPaper.withValues(alpha: 0.22),
+            size: 52,
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 20),
           Text(
             'No photos yet',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.7),
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
-              letterSpacing: 0.3,
+            style: brandDisplay(
+              size: 21,
+              weight: FontWeight.w500,
+              color: kPaper.withValues(alpha: 0.85),
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
             'Photos you capture will appear here',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.4),
-              fontSize: 13,
+            style: brandLabel(
+              size: 12.5,
+              weight: FontWeight.w400,
+              color: kPaper.withValues(alpha: 0.42),
+              letterSpacing: 0.3,
             ),
           ),
         ],

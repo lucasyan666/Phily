@@ -1,12 +1,14 @@
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
+import 'package:google_fonts/google_fonts.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phily design system
 //
 // One source of truth for the app's look: the brand accent, the shape/elevation
-// scale, and the shared "liquid glass" surface. Build chrome from these so every
-// screen reads as the same product.
+// scale, the type system, and the shared "liquid glass" surface. Build chrome
+// from these so every screen reads as the same product.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Colour ───────────────────────────────────────────────────────────────────
@@ -15,8 +17,76 @@ import 'package:flutter/material.dart';
 /// re-declare `Color(0xFFE5C158)` elsewhere.
 const Color kGold = Color(0xFFE5C158);
 
+/// A softer, antique-gold partner for fine rules, gradients and secondary marks.
+const Color kGoldDeep = Color(0xFFB8923D);
+
+/// Warm off-white for brand surfaces — more refined than pure white, and the
+/// primary text colour on the dark chrome.
+const Color kPaper = Color(0xFFF6F1E7);
+
 /// App background.
 const Color kBackground = Color(0xFF000000);
+
+// ── Type ─────────────────────────────────────────────────────────────────────
+//
+// Two faces carry the brand voice:
+//  • Fraunces — an editorial, high-contrast serif for the wordmark and headline
+//    moments (the "couture" voice).
+//  • Outfit — a clean geometric sans for all UI, set app-wide via the theme so
+//    every label inherits it.
+
+/// Editorial display serif — wordmark + headline brand moments.
+TextStyle brandDisplay({
+  double size = 30,
+  FontWeight weight = FontWeight.w400,
+  Color color = kPaper,
+  double letterSpacing = 0,
+  double? height,
+  FontStyle? style,
+}) => GoogleFonts.fraunces(
+  fontSize: size,
+  fontWeight: weight,
+  color: color,
+  letterSpacing: letterSpacing,
+  height: height,
+  fontStyle: style,
+);
+
+/// Refined tracked UI label (small caps-style chrome labels).
+TextStyle brandLabel({
+  double size = 11,
+  FontWeight weight = FontWeight.w500,
+  Color color = kPaper,
+  double letterSpacing = 1.5,
+}) => GoogleFonts.outfit(
+  fontSize: size,
+  fontWeight: weight,
+  color: color,
+  letterSpacing: letterSpacing,
+);
+
+/// App-wide UI text theme (geometric sans). Apply in [ThemeData.textTheme] so
+/// every Text inherits the brand typeface without per-widget changes.
+TextTheme appTextTheme(TextTheme base) => GoogleFonts.outfitTextTheme(base);
+
+// ── Motion ───────────────────────────────────────────────────────────────────
+//
+// One easing + duration language across the app: calm, settled entrances and a
+// touch of acceleration on exits — never linear, never bouncy.
+
+const Curve kEaseOut = Curves.easeOutCubic; // entrances / settles
+const Curve kEaseIn = Curves.easeInCubic; // exits / retracts
+const Duration kDurFast = Duration(milliseconds: 200); // taps, toggles
+const Duration kDurMed = Duration(milliseconds: 340); // pills, hints
+const Duration kDurSlow = Duration(milliseconds: 460); // sheets, reveals
+
+// ── Haptics ──────────────────────────────────────────────────────────────────
+
+/// The app's standard tap tick — selection-style, used on every deliberate tap.
+void hapticTap() => HapticFeedback.selectionClick();
+
+/// A warmer confirmation, for rewarding moments (alignment locking to "Perfect").
+void hapticReward() => HapticFeedback.mediumImpact();
 
 // ── Shape ────────────────────────────────────────────────────────────────────
 

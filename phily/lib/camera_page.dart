@@ -120,11 +120,30 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     (label: '4:5', ratio: 4 / 5),
     (label: '16:9', ratio: 16 / 9),
   ];
-  int _aspectIndex = 1; // default 4:5 (most useful for social portraits)
+  int _aspectIndex = 2; // default 16:9
   // "Best for" tip bubble shown briefly when the composition mode changes.
   bool _showTip = false;
   Timer? _tipTimer;
-  static const List<CompositionMode> _compositionModes = CompositionMode.values;
+  // Composition belt order — most commonly used first, niche patterns last.
+  static const List<CompositionMode> _compositionModes = [
+    CompositionMode.none,
+    CompositionMode.ruleOfThirds,
+    CompositionMode.goldenSection, // Phi Grid
+    CompositionMode.symmetry,
+    CompositionMode.goldenTriangles,
+    CompositionMode.fibonacciSpiral,
+    CompositionMode.diagonal,
+    CompositionMode.horizonGrid,
+    CompositionMode.aspectRatio,
+    CompositionMode.cross,
+    CompositionMode.focalMass,
+    CompositionMode.vArrangement,
+    CompositionMode.lArrangement,
+    CompositionMode.radial,
+    CompositionMode.compoundCurve,
+    CompositionMode.pyramid,
+    CompositionMode.circular,
+  ];
   late PageController _compositionPageController;
   int _currentCompositionIndex = 0;
   // Rule-of-Thirds hint level: 0 none, 1 "Almost" (subject's box on a point),
@@ -161,6 +180,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Zoom
   double _currentZoom = 1.0;
   double _baseZoom = 1.0;
+  int _lastZoomTick = 5; // 1.0× / 0.2 — last 0.2× step that fired a haptic
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
 
@@ -334,14 +354,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     child: child,
   );
 
-  static const List<String> _kMonths = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  String _fmtMonthDay(DateTime d) => '${_kMonths[d.month - 1]} ${d.day}';
-
   void _onProChanged() {
     if (mounted) setState(() {});
+    // Locking/unlocking changes whether the current mode detects → re-sync.
+    _syncImageStream();
   }
 
   /// True when the active mode is gated — trial over + not subscribed (None is
@@ -660,7 +676,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       // main source of first-launch jank, so let the UI settle first.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Future.delayed(const Duration(milliseconds: 400), () {
-          if (mounted) _startImageStream();
+          if (mounted) _syncImageStream(); // stream only if the mode needs it
         });
       });
     } catch (e) {
@@ -972,12 +988,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   void _onCrossSpin(DragUpdateDetails d) {
     // Handle sits at radius L from the pivot; a tangential drag of `delta`
-    // changes the angle by (tangential component / radius). No absolute finger
-    // position needed, so this is independent of coordinate space.
-    final double l =
-        MediaQuery.of(context).size.height *
-        (kCrossBottomFrac - kCrossTopFrac) /
-        2;
+    // changes the angle by (tangential component / radius). The radius is based
+    // on the camera-visible BAND (same space the painter draws the cross in), so
+    // it matches the handle on every device regardless of panel/safe-area size.
+    final double bandH =
+        MediaQuery.of(context).size.height - _topInset - _bottomInset;
+    final double l = bandH * (kCrossBottomFrac - kCrossTopFrac) / 2;
     if (l <= 0) return;
     final double dTheta =
         -(math.cos(_crossAngle) * d.delta.dx +
@@ -1199,6 +1215,36 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
+  /// Modes that actually analyze camera frames (subject detection). Horizon uses
+  /// the gravity sensor, and every other mode is geometry-only — none of them
+  /// need the ML image stream.
+  bool get _needsDetection =>
+      !_modeLocked &&
+      (_compositionMode == CompositionMode.none ||
+          _compositionMode == CompositionMode.ruleOfThirds ||
+          _compositionMode == CompositionMode.goldenSection ||
+          _compositionMode == CompositionMode.fibonacciSpiral);
+
+  /// Run the ML image stream ONLY when the current mode needs it. In the other
+  /// ~13 modes the live preview keeps running but no 24MP frames are delivered
+  /// to Dart and no ML runs — a big cut in per-frame CPU/GPU work, and heat.
+  Future<void> _syncImageStream() async {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized || _isRecording) return;
+    final bool streaming = c.value.isStreamingImages;
+    if (_needsDetection && !streaming) {
+      await _startImageStream();
+    } else if (!_needsDetection && streaming) {
+      _stopImageStream();
+      // Clear any boxes/eye rings the previous detection mode left behind.
+      if (_faceBoxes.isNotEmpty) _updateFaceTargets(const []);
+      if (_eyePoints.isNotEmpty) {
+        _eyePoints.clear();
+        _eyeRepaint.value++;
+      }
+    }
+  }
+
   Future<void> _capturePhoto() async {
     if (_controller == null || !_controller!.value.isInitialized) return;
 
@@ -1223,11 +1269,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final file = File(image.path);
       _triggerBounceAnimation(file);
       _saveMediaInBackground(file.path);
-      // Restart stream after capture.
-      await _startImageStream();
+      // Restart the stream after capture only if the mode needs it.
+      await _syncImageStream();
     } catch (e) {
       debugLog('Error taking photo: $e');
-      await _startImageStream();
+      await _syncImageStream();
     }
   }
 
@@ -2553,37 +2599,74 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(
-                              Icons.lock_rounded,
-                              color: kGold,
-                              size: 26,
+                            // Gold lock badge.
+                            Container(
+                              width: 46,
+                              height: 46,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: kGold.withValues(alpha: 0.14),
+                                border: Border.all(
+                                  color: kGold.withValues(alpha: 0.5),
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.lock_rounded,
+                                color: kGold,
+                                size: 20,
+                              ),
                             ),
-                            const SizedBox(height: 10),
+                            const SizedBox(height: 14),
                             Text(
-                              '${_compositionMode.label} is a Pro feature',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.92),
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
+                              'PHILY PRO',
+                              style: brandLabel(
+                                size: 10,
+                                color: kGold.withValues(alpha: 0.75),
+                                letterSpacing: 3,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            // Mode name in the editorial serif.
+                            Text(
+                              _compositionMode.label,
+                              style: brandDisplay(
+                                size: 22,
+                                weight: FontWeight.w500,
+                                color: kPaper,
+                                letterSpacing: 0.2,
                               ),
                             ),
                             const SizedBox(height: 4),
                             Text(
                               'Your free trial has ended',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.55),
-                                fontSize: 12,
+                              style: brandLabel(
+                                size: 11.5,
+                                weight: FontWeight.w400,
+                                color: kPaper.withValues(alpha: 0.5),
+                                letterSpacing: 0.2,
                               ),
                             ),
-                            const SizedBox(height: 14),
+                            const SizedBox(height: 16),
+                            // Unlock — gilded gradient with a soft glow.
                             Container(
                               padding: const EdgeInsets.symmetric(
-                                horizontal: 18,
-                                vertical: 9,
+                                horizontal: 20,
+                                vertical: 11,
                               ),
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(kRadiusMd),
-                                color: kGold,
+                                gradient: const LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [kGold, kGoldDeep],
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: kGold.withValues(alpha: 0.35),
+                                    blurRadius: 18,
+                                    offset: const Offset(0, 6),
+                                  ),
+                                ],
                               ),
                               child: const Text(
                                 'Unlock with Phily Pro',
@@ -2591,6 +2674,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                   color: Colors.black,
                                   fontSize: 13,
                                   fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.2,
                                 ),
                               ),
                             ),
@@ -2640,14 +2724,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               child: _buildGridToggle(),
             ),
 
-          // Zoom level indicator — thin right-edge tag
+          // Zoom level indicator — thin right-edge tag. Sits dead-centre, but
+          // lifts above the cross slider (also right-centred) when that's shown,
+          // so the two never overlap on any screen size.
           if (_currentZoom > _minZoom + 0.05)
             Positioned(
               top: 0,
               bottom: 0,
               right: 12,
               child: Align(
-                alignment: Alignment.center,
+                alignment: _paintedMode == CompositionMode.cross
+                    ? const Alignment(0, -0.5)
+                    : Alignment.center,
                 child: IgnorePointer(
                   child: Container(
                     padding: const EdgeInsets.symmetric(
@@ -2725,29 +2813,45 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           _dismissTip();
                         }
                         _syncFocalAnim(); // run the bubble clock only in Focal Mass
+                        _syncImageStream(); // stream/ML only in detection modes
                       },
                       itemCount: _compositionModes.length,
                       itemBuilder: (context, index) {
-                        final double opacity =
-                            (index - _currentCompositionIndex).abs() <= 1
-                            ? 1.0 -
-                                  (index - _currentCompositionIndex).abs() * 0.4
-                            : 0.3;
-                        return GestureDetector(
-                          // Tap a mode to jump to it (in addition to swiping).
-                          // opaque so the whole page slot is tappable, not just
-                          // the label glyph.
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => _goToCompositionIndex(index),
-                          child: Center(
-                            child: Opacity(
-                              opacity: opacity.clamp(0.3, 1.0),
-                              child: _buildCompositionButton(
-                                _compositionModes[index].label,
-                                isSelected: index == _currentCompositionIndex,
+                        // Rebuild each label as the belt scrolls, driving its
+                        // pill + scale off the LIVE fractional page position so
+                        // the transition is continuous, not a settle-point swap.
+                        return AnimatedBuilder(
+                          animation: _compositionPageController,
+                          builder: (context, _) {
+                            final double page =
+                                (_compositionPageController.hasClients &&
+                                    _compositionPageController
+                                        .position
+                                        .haveDimensions)
+                                ? _compositionPageController.page!
+                                : _currentCompositionIndex.toDouble();
+                            // 1 at centre → 0 a full page away.
+                            final double t = (1.0 - (index - page).abs()).clamp(
+                              0.0,
+                              1.0,
+                            );
+                            return GestureDetector(
+                              // Tap a mode to jump (in addition to swiping);
+                              // opaque so the whole slot is tappable.
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => _goToCompositionIndex(index),
+                              child: Center(
+                                child: Transform.scale(
+                                  scale:
+                                      0.9 + 0.1 * Curves.easeOut.transform(t),
+                                  child: _buildCompositionButton(
+                                    _compositionModes[index].label,
+                                    t,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
+                            );
+                          },
                         );
                       },
                     ),
@@ -3003,7 +3107,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                   ? _hzLevel
                                   : _alignLevel,
                               builder: (_, level, _) =>
-                                  _buildCompositionHint(level),
+                                  _rotated(_buildCompositionHint(level)),
                             ),
                           ),
                   ),
@@ -3027,7 +3131,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 padding: const EdgeInsets.only(top: 8),
                 child: Align(
                   alignment: Alignment.topCenter,
-                  child: _buildTipBubble(),
+                  child: _rotated(_buildTipBubble()),
                 ),
               ),
             ),
@@ -3043,51 +3147,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               top: MediaQuery.of(context).padding.top + 60,
               right: 12,
               child: const IgnorePointer(child: _FpsOverlay()),
-            ),
-
-          // Free-trial signal — gold glass chip with the end date; tap → paywall.
-          if (PhilyPro.instance.showTrialBadge &&
-              _isInitialized &&
-              !_isRecording)
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 56,
-              left: 12,
-              child: GestureDetector(
-                onTap: () => showPhilyProPaywall(context),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 11,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.42),
-                    borderRadius: BorderRadius.circular(kRadiusLg),
-                    border: Border.all(color: kGold.withValues(alpha: 0.55)),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.workspace_premium_rounded,
-                        color: kGold,
-                        size: 14,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Trial ends '
-                        '${_fmtMonthDay(PhilyPro.instance.trialEndDate)}'
-                        ' · ${PhilyPro.instance.trialDaysLeft}d',
-                        style: const TextStyle(
-                          color: kGold,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 0.2,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
             ),
 
           // Debug-only Pro/trial control.
@@ -3259,27 +3318,40 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                             width: 0.8,
                           ),
                         ),
-                        child: Row(
+                        child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(
-                              Icons.auto_awesome_rounded,
-                              color: gold,
-                              size: 14,
-                            ),
-                            const SizedBox(width: 8),
-                            Flexible(
-                              child: Text(
-                                tip,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.92),
-                                  fontSize: 11.5,
-                                  fontWeight: FontWeight.w400,
-                                  letterSpacing: 0.2,
-                                  height: 1.25,
+                            // Gold eyebrow.
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.auto_awesome_rounded,
+                                  color: gold,
+                                  size: 11,
                                 ),
-                              ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'BEST FOR',
+                                  style: brandLabel(
+                                    size: 8.5,
+                                    weight: FontWeight.w600,
+                                    color: gold.withValues(alpha: 0.85),
+                                    letterSpacing: 2.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              tip,
+                              textAlign: TextAlign.center,
+                              style: brandLabel(
+                                size: 12,
+                                weight: FontWeight.w400,
+                                color: kPaper.withValues(alpha: 0.95),
+                                letterSpacing: 0.2,
+                              ).copyWith(height: 1.25),
                             ),
                           ],
                         ),
@@ -3333,9 +3405,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }) {
     const gold = kGold;
     Widget build(double pulse) {
-      final Color textColor = emphasis
-          ? gold
-          : Colors.white.withValues(alpha: 0.92);
+      final Color textColor = emphasis ? gold : kPaper.withValues(alpha: 0.92);
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
         decoration: BoxDecoration(
@@ -3380,13 +3450,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               child: Text(
                 text,
                 textAlign: TextAlign.center,
-                style: TextStyle(
+                style: brandLabel(
+                  size: emphasis ? 12.5 : 11.5,
+                  weight: emphasis ? FontWeight.w600 : FontWeight.w400,
                   color: textColor,
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w400,
-                  letterSpacing: 0.2,
-                  height: 1.25,
-                ),
+                  letterSpacing: emphasis ? 1.0 : 0.2,
+                ).copyWith(height: 1.25),
               ),
             ),
           ],
@@ -3906,10 +3975,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// vertical arm (its base). It signals "grab me and spin" (a ↻ grip), glows +
   /// scales up while held, and orbits the pivot as the cross turns.
   Widget _buildCrossRotateHandle() {
+    // Position against the camera-visible BAND — the exact space the painter
+    // draws the cross in (translated by the top inset, height = band) — so the
+    // handle stays glued to the arm tip on every device, whatever the safe-area
+    // and panel heights are.
     final Size sz = MediaQuery.of(context).size;
+    final double bandH = sz.height - _topInset - _bottomInset;
     final double cx = sz.width * 0.5;
-    final double pivotY = sz.height * (kCrossTopFrac + kCrossBottomFrac) / 2;
-    final double l = sz.height * (kCrossBottomFrac - kCrossTopFrac) / 2;
+    final double pivotY =
+        _topInset + bandH * (kCrossTopFrac + kCrossBottomFrac) / 2;
+    final double l = bandH * (kCrossBottomFrac - kCrossTopFrac) / 2;
     // Handle rides the bottom arm tip, rotated about the pivot by the angle.
     final double hx = cx - l * math.sin(_crossAngle);
     final double hy = pivotY + l * math.cos(_crossAngle);
@@ -4129,56 +4204,52 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildCompositionButton(String type, {bool isSelected = false}) {
-    const Color gold = kGold;
-    return isSelected
-        ? ClipRRect(
-            borderRadius: BorderRadius.circular(18),
-            child: BackdropFilter(
-              filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
+  /// A belt label whose "selectedness" is a continuous value [t] (0 off-centre →
+  /// 1 centred). The gilded pill — fill, rim, glow — and the text colour all
+  /// interpolate with [t], so as you scroll the gold pill **materialises** into
+  /// the centre label and **dissolves** out of the leaving one, rather than
+  /// snapping at the settle point. No BackdropFilter (a gradient fakes the glass)
+  /// so it's cheap to animate every frame for the few visible labels.
+  ///
+  /// Mode labels stay horizontal (not _rotated) — a long upright label can't fit
+  /// the thin belt in landscape; only control icons rotate.
+  Widget _buildCompositionButton(String type, double t) {
+    final double e = Curves.easeOut.transform(t.clamp(0.0, 1.0));
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(kRadiusLg),
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            kGold.withValues(alpha: 0.085 * e),
+            kGold.withValues(alpha: 0.015 * e),
+          ],
+        ),
+        border: Border.all(color: kGold.withValues(alpha: 0.45 * e)),
+        boxShadow: e > 0.02
+            ? [
+                BoxShadow(
+                  color: kGold.withValues(alpha: 0.08 * e),
+                  blurRadius: 9,
+                  offset: const Offset(0, 2),
                 ),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(18),
-                  color: gold.withValues(alpha: 0.10),
-                  border: Border.all(
-                    color: gold.withValues(alpha: 0.65),
-                    width: 1.0,
-                  ),
-                ),
-                alignment: Alignment.center,
-                // Mode labels stay horizontal (not _rotated) — a long upright
-                // label can't fit the thin belt in landscape. Control icons still
-                // rotate; only the text holds its place.
-                child: Text(
-                  type.toUpperCase(),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: kGold,
-                    fontSize: 9,
-                    fontWeight: FontWeight.w300,
-                    letterSpacing: 1.2,
-                  ),
-                ),
-              ),
-            ),
-          )
-        : Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: Text(
-              type.toUpperCase(),
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.32),
-                fontSize: 9,
-                fontWeight: FontWeight.w300,
-                letterSpacing: 1.2,
-              ),
-            ),
-          );
+              ]
+            : null,
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        type.toUpperCase(),
+        textAlign: TextAlign.center,
+        style: brandLabel(
+          size: 9.5,
+          weight: FontWeight.w600,
+          color: Color.lerp(kPaper.withValues(alpha: 0.34), kGold, e)!,
+          letterSpacing: 1.8,
+        ),
+      ),
+    );
   }
 
   Future<void> _switchToUltraWide() async {
@@ -4260,8 +4331,20 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     await _startImageStream();
   }
 
+  /// A whisper-light tick each 0.2× as the zoom scrubs past a step, so the bar
+  /// has a tactile "notched" feel. Uses the lightest selection haptic.
+  void _zoomHapticTick(double targetZoom) {
+    final double z = targetZoom.clamp(_minZoom, _maxZoom);
+    final int step = (z / 0.2).round();
+    if (step != _lastZoomTick) {
+      _lastZoomTick = step;
+      HapticFeedback.selectionClick();
+    }
+  }
+
   Future<void> _setCameraZoom(double value) async {
     if (_controller == null || !_controller!.value.isInitialized) return;
+    _zoomHapticTick(value);
 
     if (_usesVirtualCamera) {
       // ── Native seamless-zoom path ───────────────────────────────────────────

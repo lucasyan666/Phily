@@ -4,6 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:phily/services/phily_pro.dart';
 import 'package:phily/theme.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+// Apple requires both of these as live, functional links on the paywall.
+const String kPrivacyPolicyUrl =
+    'https://lucasyan666.github.io/phily-legal/privacy-policy.html';
+const String kTermsOfUseUrl =
+    'https://lucasyan666.github.io/phily-legal/terms-of-use.html';
 
 /// Present the Phily Pro paywall as a frosted bottom sheet.
 Future<void> showPhilyProPaywall(BuildContext context) {
@@ -76,6 +83,11 @@ class _PaywallSheetState extends State<_PaywallSheet> {
     if (mounted) setState(() => _busy = false);
   }
 
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.parse(url);
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
   @override
   Widget build(BuildContext context) {
     final pro = PhilyPro.instance;
@@ -132,11 +144,11 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                       const SizedBox(width: 10),
                       Text(
                         'Phily Pro',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.95),
-                          fontSize: 22,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 0.3,
+                        style: brandDisplay(
+                          size: 26,
+                          weight: FontWeight.w500,
+                          color: kPaper,
+                          letterSpacing: 0.2,
                         ),
                       ),
                     ],
@@ -244,6 +256,27 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                         ),
                       ),
                     ),
+                  // Apple-required legal links.
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _LegalLink(
+                        label: 'Terms of Use',
+                        onTap: () => _openUrl(kTermsOfUseUrl),
+                      ),
+                      Text(
+                        '  ·  ',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.3),
+                          fontSize: 11,
+                        ),
+                      ),
+                      _LegalLink(
+                        label: 'Privacy Policy',
+                        onTap: () => _openUrl(kPrivacyPolicyUrl),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -369,6 +402,33 @@ class _TierRow extends StatelessWidget {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A small, muted underlined text link for the legal (Terms / Privacy) row.
+class _LegalLink extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _LegalLink({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.55),
+            fontSize: 11,
+            decoration: TextDecoration.underline,
+            decorationColor: Colors.white.withValues(alpha: 0.35),
+          ),
         ),
       ),
     );

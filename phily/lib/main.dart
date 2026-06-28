@@ -19,17 +19,19 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final base = ThemeData(
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: kGold,
+        brightness: Brightness.dark,
+      ),
+      scaffoldBackgroundColor: Colors.black,
+      useMaterial3: true,
+    );
     return MaterialApp(
       title: 'Phily',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: kGold,
-          brightness: Brightness.dark,
-        ),
-        scaffoldBackgroundColor: Colors.black,
-        useMaterial3: true,
-      ),
+      // Brand UI typeface, inherited by every Text in the app.
+      theme: base.copyWith(textTheme: appTextTheme(base.textTheme)),
       home: const CameraPage(),
     );
   }

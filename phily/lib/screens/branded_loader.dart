@@ -82,49 +82,92 @@ class _BrandedLoaderState extends State<BrandedLoader>
     return Container(
       color: Colors.black,
       child: Center(
-        // Gentle one-shot fade-in so the mark doesn't pop on launch.
+        // Gentle one-shot fade + rise so the mark settles in rather than popping.
         child: TweenAnimationBuilder<double>(
           tween: Tween(begin: 0, end: 1),
-          duration: const Duration(milliseconds: 600),
-          curve: Curves.easeOut,
-          builder: (_, t, child) => Opacity(opacity: t, child: child),
+          duration: const Duration(milliseconds: 750),
+          curve: Curves.easeOutCubic,
+          builder: (_, t, child) => Opacity(
+            opacity: t,
+            child: Transform.translate(
+              offset: Offset(0, (1 - t) * 14),
+              child: child,
+            ),
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // The φ-spiral mark, lit from within by a soft gold aura.
               SizedBox(
-                width: 150,
-                height: 150,
-                child: AnimatedBuilder(
-                  animation: _spin,
-                  builder: (_, _) => CustomPaint(
-                    painter: FibonacciSpiralPainter(
-                      rotationAngle: _spin.value * 2 * pi,
-                      color: gold,
+                width: 160,
+                height: 160,
+                child: Stack(
+                  alignment: Alignment.center,
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      width: 160,
+                      height: 160,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [
+                            gold.withValues(alpha: 0.16),
+                            Colors.transparent,
+                          ],
+                          stops: const [0.0, 0.72],
+                        ),
+                      ),
                     ),
+                    AnimatedBuilder(
+                      animation: _spin,
+                      builder: (_, _) => CustomPaint(
+                        size: const Size(150, 150),
+                        painter: FibonacciSpiralPainter(
+                          rotationAngle: _spin.value * 2 * pi,
+                          color: gold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 42),
+              // Wordmark — editorial serif, finished with a gilded gradient.
+              ShaderMask(
+                shaderCallback: (r) => const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [kPaper, kGold],
+                  stops: [0.3, 1.0],
+                ).createShader(r),
+                child: Text(
+                  'Phily',
+                  style: brandDisplay(
+                    size: 52,
+                    weight: FontWeight.w400,
+                    color: Colors.white, // recoloured by the shader
+                    letterSpacing: 0.5,
                   ),
                 ),
               ),
-              const SizedBox(height: 36),
-              const Text(
-                'Phily',
-                style: TextStyle(
-                  fontSize: 30,
-                  fontWeight: FontWeight.w300,
-                  color: Colors.white,
-                  letterSpacing: 6,
-                ),
+              const SizedBox(height: 20),
+              // Fine gold rule.
+              Container(
+                width: 44,
+                height: 1,
+                color: gold.withValues(alpha: 0.5),
               ),
-              const SizedBox(height: 10),
-              // Pronunciation guide — the name comes from φ ("phi", as in Phi
-              // Grid), not "Philly". Muted gold so it reads as a refined tagline.
+              const SizedBox(height: 16),
+              // Pronunciation — the name is from φ ("phi", as in Phi Grid), not
+              // "Philly". Tracked caps so it reads as a refined maison tagline.
               Text(
-                '( pronounced  fy-lee )',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w300,
-                  fontStyle: FontStyle.italic,
-                  color: gold.withValues(alpha: 0.72),
-                  letterSpacing: 2.2,
+                'PRONOUNCED  “FY-LEE”',
+                style: brandLabel(
+                  size: 10,
+                  weight: FontWeight.w500,
+                  color: gold.withValues(alpha: 0.68),
+                  letterSpacing: 3,
                 ),
               ),
             ],
