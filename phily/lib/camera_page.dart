@@ -102,6 +102,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double _crossGlow = 0; // selection glow 0..1 (eased)
   bool _rotatingCross = false; // handle currently grabbed
   int _lastDetent = 0; // last 90° step crossed (for haptic ticks)
+  // How far below the vertical-arm tip the rotate handle sits (px). Keeps the
+  // grip clear of the arm and a little lower on screen.
+  static const double _kCrossHandleDrop = 22;
   // Ticker that eases the spin + glow each frame while the handle is in use.
   late final AnimationController _crossSpinCtl = AnimationController(
     vsync: this,
@@ -183,6 +186,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   int _lastZoomTick = 5; // 1.0× / 0.2 — last 0.2× step that fired a haptic
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
+  // Lens mode for the zoom bar: false → normal (1.0×–25×), true → ultra-wide
+  // (0.5×–1.0×). A small switch on the meter flips between them.
+  bool _ultraZoomMode = false;
+  bool get _hasUltraWide => _ultraWideCamera != null || _minZoom < 0.99;
+  double get _zoomLo => _ultraZoomMode ? 0.5 : 1.0;
+  double get _zoomHi => _ultraZoomMode ? 1.0 : _zoomMax;
 
   // Swipe-to-switch-composition tracking (single-finger horizontal swipe on the
   // preview). Kept separate from pinch-zoom via the max-pointer-count check.
@@ -993,7 +1002,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // it matches the handle on every device regardless of panel/safe-area size.
     final double bandH =
         MediaQuery.of(context).size.height - _topInset - _bottomInset;
-    final double l = bandH * (kCrossBottomFrac - kCrossTopFrac) / 2;
+    final double l =
+        bandH * (kCrossBottomFrac - kCrossTopFrac) / 2 + _kCrossHandleDrop;
     if (l <= 0) return;
     final double dTheta =
         -(math.cos(_crossAngle) * d.delta.dx +
@@ -1011,25 +1021,32 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Per-frame easing for the cross spin + selection glow. Stops itself once
   /// the angle has caught up to the finger and the glow has settled.
   void _tickCrossSpin() {
-    _crossAngle += (_crossAngleTarget - _crossAngle) * 0.30;
+    // Sticky 90° detents: while the finger target sits within a small band of a
+    // quarter-turn, the cross HOLDS to that detent (with a click), releasing only
+    // once you drag past the band. Between detents it turns freely.
+    const double quarter = math.pi / 2;
+    const double stick = 0.14; // ~8° catch band each side of a quarter-turn
+    final int detent = (_crossAngleTarget / quarter).round();
+    final double detentAngle = detent * quarter;
+    final bool stuck = (_crossAngleTarget - detentAngle).abs() < stick;
+    final double effective = stuck ? detentAngle : _crossAngleTarget;
+
+    _crossAngle += (effective - _crossAngle) * 0.30;
     _crossY += (_crossYTarget - _crossY) * 0.35; // smooth crossbar travel
     // Glow whenever the cross is being actively spun OR slid.
     final double gTarget = (_rotatingCross || _slidingCross) ? 1.0 : 0.0;
     _crossGlow += (gTarget - _crossGlow) * 0.16;
 
-    // Tactile detent every 90° while actively spinning.
-    if (_rotatingCross) {
-      final int detent = (_crossAngle / (math.pi / 2)).round();
-      if (detent != _lastDetent) {
-        _lastDetent = detent;
-        HapticFeedback.selectionClick();
-      }
+    // A single click as it snaps into each detent.
+    if (_rotatingCross && stuck && detent != _lastDetent) {
+      _lastDetent = detent;
+      HapticFeedback.selectionClick();
     }
 
-    final bool aSettled = (_crossAngleTarget - _crossAngle).abs() < 0.0015;
+    final bool aSettled = (effective - _crossAngle).abs() < 0.0015;
     final bool ySettled = (_crossYTarget - _crossY).abs() < 0.0008;
     final bool gSettled = (gTarget - _crossGlow).abs() < 0.004;
-    if (aSettled) _crossAngle = _crossAngleTarget;
+    if (aSettled) _crossAngle = effective;
     if (ySettled) _crossY = _crossYTarget;
     if (gSettled) _crossGlow = gTarget;
     if (mounted) setState(() {});
@@ -1046,9 +1063,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _swipeLastY = details.focalPoint.dy;
     if (_controller == null || !_controller!.value.isInitialized) return;
 
-    // Two fingers → pinch zoom (down to 0.5×; _setCameraZoom clamps the lens).
+    // Two fingers → pinch zoom, constrained to the active lens range.
     if (details.pointerCount > 1) {
-      final double newZoom = (_baseZoom * details.scale).clamp(0.5, _maxZoom);
+      final double newZoom = (_baseZoom * details.scale).clamp(
+        _zoomLo,
+        _zoomHi,
+      );
       if ((newZoom - _currentZoom).abs() < 0.01) return;
       await _setCameraZoom(newZoom);
       return;
@@ -1161,6 +1181,34 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         return 'Reflections, faces, doorways — centre on the line.';
       case CompositionMode.aspectRatio:
         return 'Frame for social or print — tap to cycle 1:1 · 4:5 · 16:9.';
+    }
+  }
+
+  /// Which way to hold the phone for this mode — a quick portrait / landscape /
+  /// both hint shown beside the tip. Null where it doesn't apply.
+  String? get _compositionOrientation {
+    switch (_compositionMode) {
+      case CompositionMode.none:
+      case CompositionMode.aspectRatio:
+        return null;
+      case CompositionMode.goldenSection:
+      case CompositionMode.symmetry:
+      case CompositionMode.cross:
+      case CompositionMode.focalMass:
+      case CompositionMode.vArrangement:
+        return 'Portrait';
+      case CompositionMode.horizonGrid:
+      case CompositionMode.goldenTriangles:
+      case CompositionMode.fibonacciSpiral:
+      case CompositionMode.diagonal:
+      case CompositionMode.compoundCurve:
+      case CompositionMode.pyramid:
+        return 'Landscape';
+      case CompositionMode.ruleOfThirds:
+      case CompositionMode.lArrangement:
+      case CompositionMode.radial:
+      case CompositionMode.circular:
+        return 'Both';
     }
   }
 
@@ -3086,53 +3134,61 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               !_isRecording &&
               !_modeLocked && // locked → the Pro card is the message, not a hint
               _gridVisible)
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 92,
-              left: 0,
-              right: 0,
+            Positioned.fill(
               child: IgnorePointer(
-                child: Center(
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 280),
-                    transitionBuilder: (child, anim) =>
-                        FadeTransition(opacity: anim, child: child),
-                    child: _showTip
-                        ? const SizedBox.shrink(key: ValueKey('hintHidden'))
-                        : RepaintBoundary(
-                            key: const ValueKey('hint'),
-                            child: ValueListenableBuilder<int>(
-                              valueListenable:
-                                  _compositionMode ==
-                                      CompositionMode.horizonGrid
-                                  ? _hzLevel
-                                  : _alignLevel,
-                              builder: (_, level, _) =>
-                                  _rotated(_buildCompositionHint(level)),
+                child: AnimatedAlign(
+                  alignment: _userTopAlign,
+                  duration: const Duration(milliseconds: 340),
+                  curve: Curves.easeOutCubic,
+                  child: AnimatedPadding(
+                    padding: _bannerInset(
+                      MediaQuery.of(context).padding.top + 92,
+                    ),
+                    duration: const Duration(milliseconds: 340),
+                    curve: Curves.easeOutCubic,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 280),
+                      transitionBuilder: (child, anim) =>
+                          FadeTransition(opacity: anim, child: child),
+                      child: _showTip
+                          ? const SizedBox.shrink(key: ValueKey('hintHidden'))
+                          : RepaintBoundary(
+                              key: const ValueKey('hint'),
+                              child: ValueListenableBuilder<int>(
+                                valueListenable:
+                                    _compositionMode ==
+                                        CompositionMode.horizonGrid
+                                    ? _hzLevel
+                                    : _alignLevel,
+                                builder: (_, level, _) => _bannerRotated(
+                                  _buildCompositionHint(level),
+                                ),
+                              ),
                             ),
-                          ),
+                    ),
                   ),
                 ),
               ),
             ),
 
-          // "Best for" tip bubble — drops down from behind the top panel on mode
-          // change and retracts back up under it (iMessage-style). Anchored at
-          // the panel's bottom edge and clipped there so it tucks cleanly under
-          // the chrome on both auto-dismiss and swipe-up.
-          Positioned(
-            top: _topInset > 0
-                ? _topInset
-                : MediaQuery.of(context).padding.top + 56,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: ClipRect(
-              child: Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Align(
-                  alignment: Alignment.topCenter,
-                  child: _rotated(_buildTipBubble()),
+          // "Best for" tip bubble — sits just below the panel in portrait, and
+          // follows the rotation to the top edge of the user's view in landscape,
+          // centred on the full screen with a gap off the edge.
+          Positioned.fill(
+            child: AnimatedAlign(
+              alignment: _userTopAlign,
+              duration: const Duration(milliseconds: 340),
+              curve: Curves.easeOutCubic,
+              child: AnimatedPadding(
+                padding: _bannerInset(
+                  (_topInset > 0
+                          ? _topInset
+                          : MediaQuery.of(context).padding.top + 56) +
+                      8,
                 ),
+                duration: const Duration(milliseconds: 340),
+                curve: Curves.easeOutCubic,
+                child: _bannerRotated(_buildTipBubble()),
               ),
             ),
           ),
@@ -3244,8 +3300,38 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// the drop-in and the dismiss glide vertically (it's clipped at the panel
   /// edge by the caller, so it reads as sliding out from / back behind the
   /// panel, iMessage-style).
+  /// Where the frame's "top" is for the current device hold, so the advisory
+  /// pills FOLLOW the rotation and sit along the edge that has become "up".
+  /// Rotate the phone clockwise → its left edge becomes the top → pills go left.
+  Alignment get _userTopAlign => switch (_deviceTurns & 3) {
+    1 => Alignment.centerLeft,
+    2 => Alignment.bottomCenter,
+    3 => Alignment.centerRight,
+    _ => Alignment.topCenter,
+  };
+
+  /// Like [_rotated] but with a LAYOUT rotation ([RotatedBox]) — a wide pill
+  /// becomes a tall box, so [AnimatedAlign] can pin it flush to the top edge in
+  /// landscape (Transform.rotate keeps the wide box and leaves it stuck mid-frame).
+  Widget _bannerRotated(Widget child) =>
+      RotatedBox(quarterTurns: (-_deviceTurns) % 4, child: child);
+
+  /// Gap between an advisory banner and the "top" edge for the current hold.
+  /// In portrait that's [portraitTop] (below the panel); rotated it's a small gap
+  /// off the leading edge, so the banner floats clear of the screen edge.
+  EdgeInsets _bannerInset(double portraitTop) {
+    const double gap = 24;
+    return switch (_deviceTurns & 3) {
+      1 => const EdgeInsets.only(left: gap),
+      2 => const EdgeInsets.only(bottom: gap),
+      3 => const EdgeInsets.only(right: gap),
+      _ => EdgeInsets.only(top: portraitTop),
+    };
+  }
+
   Widget _buildTipBubble() {
     final tip = _compositionTip;
+    final orient = _compositionOrientation; // Portrait / Landscape / Both
     final bool visible = _showTip && tip != null && !_isRecording;
     const gold = kGold;
     return IgnorePointer(
@@ -3257,16 +3343,20 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         switchOutCurve: Curves.easeInCubic,
         // Slide + scale only (no opacity layer) so the frosted backdrop blur
         // stays live throughout; the panel-edge clip handles disappearance.
-        transitionBuilder: (child, anim) => SlideTransition(
-          position: Tween<Offset>(
-            // Travels > full height so it fully clears the panel edge.
-            begin: const Offset(0, -1.4),
-            end: Offset.zero,
-          ).animate(anim),
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
-            alignment: Alignment.topCenter,
-            child: child,
+        transitionBuilder: (child, anim) => FadeTransition(
+          // Fade with the slide so it retracts cleanly (no clip needed now that
+          // the bubble follows the device rotation instead of tucking).
+          opacity: anim,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, -0.6),
+              end: Offset.zero,
+            ).animate(anim),
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
+              alignment: Alignment.topCenter,
+              child: child,
+            ),
           ),
         ),
         child: !visible
@@ -3340,6 +3430,29 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                     letterSpacing: 2.4,
                                   ),
                                 ),
+                                // Portrait / Landscape / Both recommendation.
+                                if (orient != null) ...[
+                                  const SizedBox(width: 9),
+                                  Icon(
+                                    orient == 'Portrait'
+                                        ? Icons.stay_current_portrait_rounded
+                                        : orient == 'Landscape'
+                                        ? Icons.stay_current_landscape_rounded
+                                        : Icons.screen_rotation_rounded,
+                                    color: gold.withValues(alpha: 0.7),
+                                    size: 10,
+                                  ),
+                                  const SizedBox(width: 3),
+                                  Text(
+                                    orient.toUpperCase(),
+                                    style: brandLabel(
+                                      size: 8.5,
+                                      weight: FontWeight.w600,
+                                      color: gold.withValues(alpha: 0.7),
+                                      letterSpacing: 1.6,
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                             const SizedBox(height: 4),
@@ -3984,8 +4097,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final double cx = sz.width * 0.5;
     final double pivotY =
         _topInset + bandH * (kCrossTopFrac + kCrossBottomFrac) / 2;
-    final double l = bandH * (kCrossBottomFrac - kCrossTopFrac) / 2;
-    // Handle rides the bottom arm tip, rotated about the pivot by the angle.
+    // Sits just past the bottom arm tip (a touch lower on screen), orbiting the
+    // pivot by the angle.
+    final double l =
+        bandH * (kCrossBottomFrac - kCrossTopFrac) / 2 + _kCrossHandleDrop;
     final double hx = cx - l * math.sin(_crossAngle);
     final double hy = pivotY + l * math.cos(_crossAngle);
     final double g = _crossGlow;
@@ -4416,15 +4531,65 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Zoom meter — horizontal scroll wheel with hairline ticks
   // ────────────────────────────────────────────────────────────────────────────
 
+  /// Switch the zoom bar between the ultra-wide (0.5–1.0×) and normal (1–25×)
+  /// lens ranges, jumping to that range's base and updating the lens.
+  void _setLensMode(bool ultra) {
+    if (_ultraZoomMode == ultra || (ultra && !_hasUltraWide)) return;
+    HapticFeedback.selectionClick();
+    setState(() => _ultraZoomMode = ultra);
+    _setCameraZoom(ultra ? 0.5 : 1.0);
+  }
+
+  /// Tiny segmented switch for the lens range, shown on the zoom bar.
+  Widget _buildLensToggle() {
+    Widget seg(String label, bool ultra) {
+      final bool active = _ultraZoomMode == ultra;
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _setLensMode(ultra),
+        child: AnimatedContainer(
+          duration: kDurFast,
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+          decoration: BoxDecoration(
+            color: active ? kGold : Colors.transparent,
+            borderRadius: BorderRadius.circular(kRadiusLg),
+          ),
+          child: Text(
+            label,
+            style: brandLabel(
+              size: 9,
+              weight: FontWeight.w600,
+              color: active ? Colors.black : kPaper.withValues(alpha: 0.55),
+              letterSpacing: 0.4,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(kRadiusLg),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [seg('.5×', true), seg('1×', false)],
+      ),
+    );
+  }
+
   Widget _buildZoomMeter() {
     const double pxPerUnit = 36.0;
-    final double clampedZoom = _currentZoom.clamp(0.5, _zoomMax);
+    final double clampedZoom = _currentZoom.clamp(_zoomLo, _zoomHi);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
-          '${clampedZoom < 1 ? clampedZoom.toStringAsFixed(1) : clampedZoom.toStringAsFixed(1)}×',
+          '${clampedZoom.toStringAsFixed(1)}×',
           style: const TextStyle(
             color: kGold,
             fontSize: 13,
@@ -4433,32 +4598,43 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ),
         ),
         const SizedBox(height: 1),
-        GestureDetector(
-          onHorizontalDragStart: (d) {
-            _meterDragStart = d.localPosition.dx;
-            _zoomAtDragStart = clampedZoom;
-          },
-          onHorizontalDragUpdate: (d) {
-            final double delta = d.localPosition.dx - _meterDragStart;
-            final double newZoom = (_zoomAtDragStart - delta / pxPerUnit).clamp(
-              0.5,
-              _zoomMax,
-            );
-            _setCameraZoom(newZoom);
-          },
-          onHorizontalDragEnd: (_) {},
-          child: SizedBox(
-            width: double.infinity,
-            height: 36,
-            child: CustomPaint(
-              painter: _ZoomMeterPainter(
-                zoom: clampedZoom,
-                maxZoom: _zoomMax,
-                pxPerUnit: pxPerUnit,
-                switchoverFactors: _switchoverFactors,
+        // The belt (full width, centred) with the lens switch floated on its
+        // left edge, so adding the switch doesn't shift the belt.
+        Stack(
+          alignment: Alignment.centerLeft,
+          children: [
+            GestureDetector(
+              onHorizontalDragStart: (d) {
+                _meterDragStart = d.localPosition.dx;
+                _zoomAtDragStart = clampedZoom;
+              },
+              onHorizontalDragUpdate: (d) {
+                final double delta = d.localPosition.dx - _meterDragStart;
+                final double newZoom = (_zoomAtDragStart - delta / pxPerUnit)
+                    .clamp(_zoomLo, _zoomHi);
+                _setCameraZoom(newZoom);
+              },
+              onHorizontalDragEnd: (_) {},
+              child: SizedBox(
+                width: double.infinity,
+                height: 36,
+                child: CustomPaint(
+                  painter: _ZoomMeterPainter(
+                    zoom: clampedZoom,
+                    minZoom: _zoomLo,
+                    maxZoom: _zoomHi,
+                    pxPerUnit: pxPerUnit,
+                    switchoverFactors: _switchoverFactors,
+                  ),
+                ),
               ),
             ),
-          ),
+            if (_hasUltraWide)
+              Padding(
+                padding: const EdgeInsets.only(left: 6),
+                child: _buildLensToggle(),
+              ),
+          ],
         ),
       ],
     );

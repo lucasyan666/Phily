@@ -94,7 +94,8 @@ class _CameraZoomChannel {
 
 class _ZoomMeterPainter extends CustomPainter {
   final double zoom; // current logical zoom level
-  final double maxZoom; // software upper bound (25.0)
+  final double minZoom; // lower bound of the active range (0.5 or 1.0)
+  final double maxZoom; // upper bound of the active range
   final double pxPerUnit; // logical pixels per 1×
   final List<double> switchoverFactors; // hardware lens-switch boundaries
 
@@ -102,6 +103,7 @@ class _ZoomMeterPainter extends CustomPainter {
     required this.zoom,
     required this.maxZoom,
     required this.pxPerUnit,
+    this.minZoom = 0.5,
     this.switchoverFactors = const [],
   });
 
@@ -120,11 +122,11 @@ class _ZoomMeterPainter extends CustomPainter {
     final double visibleUnits = (size.width / 2) / pxPerUnit;
 
     final double lo = (zoom - visibleUnits - 1).floorToDouble().clamp(
-      0.5,
+      minZoom,
       maxZoom,
     );
     final double hi = (zoom + visibleUnits + 1).ceilToDouble().clamp(
-      0.5,
+      minZoom,
       maxZoom,
     );
 
@@ -1518,8 +1520,9 @@ class _CompositionPainter extends CustomPainter {
     canvas.rotate(turns * (math.pi / 2));
     canvas.translate(-fw / 2, -fh / 2);
 
-    // Outer golden-rectangle border (the largest nested square's frame).
-    canvas.drawRect(rect, p);
+    // Outer rectangle border intentionally NOT drawn — it left stray edge lines
+    // (left/right in portrait, top/bottom in landscape). The spiral keeps its
+    // 1.0× size; only the inner golden-section dividers + the arc are drawn.
 
     // Start by cutting the right square so the spiral winds inward toward the
     // left, the eye settling near the lower-left golden-section point.
