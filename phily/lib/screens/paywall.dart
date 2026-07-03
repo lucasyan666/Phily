@@ -142,13 +142,22 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                         size: 26,
                       ),
                       const SizedBox(width: 10),
-                      Text(
-                        'Phily Pro',
-                        style: brandDisplay(
-                          size: 26,
-                          weight: FontWeight.w500,
-                          color: kPaper,
-                          letterSpacing: 0.2,
+                      // Gilded wordmark — paper melting into gold, like the loader.
+                      ShaderMask(
+                        shaderCallback: (r) => const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [kPaper, kGold],
+                          stops: [0.35, 1.0],
+                        ).createShader(r),
+                        child: Text(
+                          'Phily Pro',
+                          style: brandDisplay(
+                            size: 28,
+                            weight: FontWeight.w500,
+                            color: Colors.white, // recoloured by the shader
+                            letterSpacing: 0.2,
+                          ),
                         ),
                       ),
                     ],
@@ -184,7 +193,7 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                             child: Text(
                               b,
                               style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.85),
+                                color: kPaper.withValues(alpha: 0.86),
                                 fontSize: 13,
                                 height: 1.3,
                               ),
@@ -308,9 +317,18 @@ class _TierRow extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
-          color: selected
-              ? kGold.withValues(alpha: 0.12)
-              : Colors.white.withValues(alpha: 0.04),
+          color: selected ? null : Colors.white.withValues(alpha: 0.04),
+          // Selected tier fills with a soft gilt gradient and lifts on a gold glow.
+          gradient: selected
+              ? LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    kGold.withValues(alpha: 0.22),
+                    kGold.withValues(alpha: 0.06),
+                  ],
+                )
+              : null,
           borderRadius: BorderRadius.circular(kRadiusMd),
           border: Border.all(
             color: selected
@@ -318,6 +336,15 @@ class _TierRow extends StatelessWidget {
                 : Colors.white.withValues(alpha: 0.16),
             width: selected ? 1.6 : 1,
           ),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: kGold.withValues(alpha: 0.22),
+                    blurRadius: 18,
+                    spreadRadius: -3,
+                  ),
+                ]
+              : null,
         ),
         child: Row(
           children: [
@@ -337,10 +364,11 @@ class _TierRow extends StatelessWidget {
                     children: [
                       Text(
                         tier.name,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
+                        style: brandLabel(
+                          size: 15,
+                          weight: FontWeight.w600,
+                          color: kPaper,
+                          letterSpacing: 0.2,
                         ),
                       ),
                       if (tier.badge != null) ...[
@@ -386,10 +414,11 @@ class _TierRow extends StatelessWidget {
               children: [
                 Text(
                   price ?? '—',
-                  style: const TextStyle(
+                  style: brandDisplay(
+                    size: 17,
+                    weight: FontWeight.w600,
                     color: kGold,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.2,
                   ),
                 ),
                 Text(
@@ -450,20 +479,29 @@ class _PrimaryButton extends StatelessWidget {
         alignment: Alignment.center,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(kRadiusMd),
+          // Metallic gilt: a bright lit lip up top melting through gold into a
+          // deeper antique-gold base — reads as a polished bar, not a flat fill.
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [
-              kGold.withValues(alpha: enabled ? 0.95 : 0.35),
-              kGold.withValues(alpha: enabled ? 0.78 : 0.28),
-            ],
+            colors: enabled
+                ? [
+                    const Color(0xFFFBE6B4), // lit top lip
+                    kGold,
+                    kGoldDeep,
+                  ]
+                : [
+                    kGold.withValues(alpha: 0.32),
+                    kGold.withValues(alpha: 0.26),
+                  ],
+            stops: enabled ? const [0.0, 0.5, 1.0] : null,
           ),
           boxShadow: enabled
               ? [
                   BoxShadow(
-                    color: kGold.withValues(alpha: 0.30),
-                    blurRadius: 16,
-                    offset: const Offset(0, 6),
+                    color: kGold.withValues(alpha: 0.38),
+                    blurRadius: 20,
+                    offset: const Offset(0, 7),
                   ),
                 ]
               : null,

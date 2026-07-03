@@ -134,8 +134,8 @@ const List<CompositionSpec> kCompositionSpecs = [
     mode: CompositionMode.focalMass,
     label: 'Focal Mass',
     tip: 'One dominant subject against negative space — minimalism.',
-    orientation: CompoOrientation.portrait,
-    controls: {CompoControl.turn},
+    // No turn button — the cluster now follows the phone into landscape.
+    orientation: CompoOrientation.both,
   ),
   CompositionSpec(
     mode: CompositionMode.vArrangement,

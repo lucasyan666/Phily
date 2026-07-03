@@ -2768,158 +2768,163 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             left: 0,
             right: 0,
             bottom: 0,
-            child: Container(
-              key: _bottomPanelKey,
-              padding: const EdgeInsets.only(
-                left: 20,
-                right: 20,
-                bottom: 16,
-                top: 4,
-              ),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.48),
-                border: Border(
-                  top: BorderSide(
-                    color: Colors.white.withValues(alpha: 0.07),
-                    width: 0.5,
-                  ),
+            child: _frostedChrome(
+              Container(
+                key: _bottomPanelKey,
+                padding: const EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  bottom: 16,
+                  top: 4,
                 ),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Composition guide scrollable belt
-                  SizedBox(
-                    height: 45,
-                    child: PageView.builder(
-                      controller: _compositionPageController,
-                      onPageChanged: (index) {
-                        HapticFeedback.selectionClick();
-                        setState(() {
-                          _currentCompositionIndex = index;
-                          _compositionMode = _compositionModes[index];
-                          // Every mode starts fresh on (re-)entry: turn/flip
-                          // orientations reset to their defaults.
-                          _resetModeOrientations();
-                          if (_compositionMode == CompositionMode.cross) {
-                            _resetCross();
+                decoration: _chromeDecoration(top: false),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Composition guide scrollable belt
+                    SizedBox(
+                      height: 45,
+                      child: PageView.builder(
+                        controller: _compositionPageController,
+                        onPageChanged: (index) {
+                          HapticFeedback.selectionClick();
+                          setState(() {
+                            _currentCompositionIndex = index;
+                            _compositionMode = _compositionModes[index];
+                            // Every mode starts fresh on (re-)entry: turn/flip
+                            // orientations reset to their defaults.
+                            _resetModeOrientations();
+                            if (_compositionMode == CompositionMode.cross) {
+                              _resetCross();
+                            }
+                          });
+                          if (!_modeLocked) {
+                            _showCompositionTip(); // "best for" bubble (~3s)
+                          } else {
+                            _dismissTip();
                           }
-                        });
-                        if (!_modeLocked) {
-                          _showCompositionTip(); // "best for" bubble (~3s)
-                        } else {
-                          _dismissTip();
-                        }
-                        _syncFocalAnim(); // run the bubble clock only in Focal Mass
-                        _syncImageStream(); // stream/ML only in detection modes
-                      },
-                      itemCount: _compositionModes.length,
-                      itemBuilder: (context, index) {
-                        // Rebuild each label as the belt scrolls, driving its
-                        // pill + scale off the LIVE fractional page position so
-                        // the transition is continuous, not a settle-point swap.
-                        return AnimatedBuilder(
-                          animation: _compositionPageController,
-                          builder: (context, _) {
-                            final double page =
-                                (_compositionPageController.hasClients &&
-                                    _compositionPageController
-                                        .position
-                                        .haveDimensions)
-                                ? _compositionPageController.page!
-                                : _currentCompositionIndex.toDouble();
-                            // 1 at centre → 0 a full page away.
-                            final double t = (1.0 - (index - page).abs()).clamp(
-                              0.0,
-                              1.0,
-                            );
-                            return GestureDetector(
-                              // Tap a mode to jump (in addition to swiping);
-                              // opaque so the whole slot is tappable.
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => _goToCompositionIndex(index),
-                              child: Center(
-                                child: Transform.scale(
-                                  scale:
-                                      0.9 + 0.1 * Curves.easeOut.transform(t),
-                                  child: _buildCompositionButton(
-                                    _compositionModes[index].label,
-                                    t,
+                          _syncFocalAnim(); // run the bubble clock only in Focal Mass
+                          _syncImageStream(); // stream/ML only in detection modes
+                        },
+                        itemCount: _compositionModes.length,
+                        itemBuilder: (context, index) {
+                          // Rebuild each label as the belt scrolls, driving its
+                          // pill + scale off the LIVE fractional page position so
+                          // the transition is continuous, not a settle-point swap.
+                          return AnimatedBuilder(
+                            animation: _compositionPageController,
+                            builder: (context, _) {
+                              final double page =
+                                  (_compositionPageController.hasClients &&
+                                      _compositionPageController
+                                          .position
+                                          .haveDimensions)
+                                  ? _compositionPageController.page!
+                                  : _currentCompositionIndex.toDouble();
+                              // 1 at centre → 0 a full page away.
+                              final double t = (1.0 - (index - page).abs())
+                                  .clamp(0.0, 1.0);
+                              return GestureDetector(
+                                // Tap a mode to jump (in addition to swiping);
+                                // opaque so the whole slot is tappable.
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => _goToCompositionIndex(index),
+                                child: Center(
+                                  child: Transform.scale(
+                                    scale:
+                                        0.9 + 0.1 * Curves.easeOut.transform(t),
+                                    child: _buildCompositionButton(
+                                      _compositionModes[index].label,
+                                      t,
+                                    ),
                                   ),
                                 ),
-                              ),
-                            );
-                          },
-                        );
-                      },
+                              );
+                            },
+                          );
+                        },
+                      ),
                     ),
-                  ),
-                  if (MediaQuery.of(context).orientation ==
-                      Orientation.portrait) ...[
-                    const SizedBox(height: 2),
-                    if (_isInitialized) _buildZoomMeter(),
-                    const SizedBox(height: 10),
-                  ] else
-                    const SizedBox(height: 8),
-                  // Camera controls row. Flexible side regions keep the capture
-                  // button dead-centre even when the right slot holds two
-                  // controls (e.g. the spiral's turn + flip buttons).
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      // Gallery button (left, centred with capture button)
-                      Expanded(
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: GestureDetector(
-                            onTap: _isRecording ? null : _openGalleryViewer,
-                            child: Container(
-                              width: 52,
-                              height: 52,
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.30),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: Colors.white.withValues(alpha: 0.28),
-                                  width: 1.0,
-                                ),
-                              ),
-                              child: _latestThumbnail != null
-                                  ? ClipRRect(
-                                      borderRadius: BorderRadius.circular(9),
-                                      child: Image.memory(
-                                        _latestThumbnail!,
-                                        fit: BoxFit.cover,
+                    if (MediaQuery.of(context).orientation ==
+                        Orientation.portrait) ...[
+                      const SizedBox(height: 2),
+                      if (_isInitialized) _buildZoomMeter(),
+                      const SizedBox(height: 10),
+                    ] else
+                      const SizedBox(height: 8),
+                    // Camera controls row. Flexible side regions keep the capture
+                    // button dead-centre even when the right slot holds two
+                    // controls (e.g. the spiral's turn + flip buttons).
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // Gallery button (left, centred with capture button)
+                        Expanded(
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: GestureDetector(
+                              onTap: _isRecording ? null : _openGalleryViewer,
+                              child: Container(
+                                width: 52,
+                                height: 52,
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.30),
+                                  borderRadius: BorderRadius.circular(
+                                    kRadiusMd,
+                                  ),
+                                  // A softly gilded frame around the last shot, to
+                                  // rhyme with the gold capture ring beside it.
+                                  border: Border.all(
+                                    color: kGold.withValues(alpha: 0.34),
+                                    width: 1.0,
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(
+                                        alpha: 0.30,
                                       ),
-                                    )
-                                  : _rotated(
-                                      Icon(
-                                        Icons.photo_library_outlined,
-                                        color: Colors.white.withValues(
-                                          alpha: 0.55,
-                                        ),
-                                        size: 24,
-                                      ),
+                                      blurRadius: 10,
+                                      offset: const Offset(0, 3),
                                     ),
+                                  ],
+                                ),
+                                child: _latestThumbnail != null
+                                    ? ClipRRect(
+                                        borderRadius: BorderRadius.circular(
+                                          kRadiusMd - 1,
+                                        ),
+                                        child: Image.memory(
+                                          _latestThumbnail!,
+                                          fit: BoxFit.cover,
+                                        ),
+                                      )
+                                    : _rotated(
+                                        Icon(
+                                          Icons.photo_library_outlined,
+                                          color: kPaper.withValues(alpha: 0.6),
+                                          size: 24,
+                                        ),
+                                      ),
+                              ),
                             ),
                           ),
                         ),
-                      ),
 
-                      // Capture button (center) - tap for photo, hold for video
-                      _buildGlassCaptureButton(),
+                        // Capture button (center) - tap for photo, hold for video
+                        _buildGlassCaptureButton(),
 
-                      // Right slot: mode-specific control(s) — e.g. spiral
-                      // turn + flip — anchored right, mirroring the gallery.
-                      Expanded(
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: _buildRightSlotControl(),
+                        // Right slot: mode-specific control(s) — e.g. spiral
+                        // turn + flip — anchored right, mirroring the gallery.
+                        Expanded(
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: _buildRightSlotControl(),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                ],
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -3597,7 +3602,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// its own state/glyph. Empty for modes without one.
   Widget _turnButtonFor(CompositionMode m) => switch (m) {
     CompositionMode.fibonacciSpiral => _buildSpiralRotateButton(),
-    CompositionMode.focalMass => _buildFocalTurnButton(),
     CompositionMode.diagonal => _buildDiagonalTurnButton(),
     CompositionMode.lArrangement => _buildLTurnButton(),
     _ => const SizedBox.shrink(),
@@ -3713,12 +3717,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     swap: () => _spiralFlipped = !_spiralFlipped,
   );
 
-  /// Turn control (Focal Mass) — each tap rotates the cluster 90° CW.
-  Widget _buildFocalTurnButton() => _gridFlipButton(
-    icon: _rotatedTurns(_kTurnIcon, _focalTurns),
-    swap: () => _focalTurns = (_focalTurns + 1) & 3,
-  );
-
   /// Turn control (Diagonal) — each tap springs the fan from the next corner.
   Widget _buildDiagonalTurnButton() => _gridFlipButton(
     icon: _rotatedTurns(_kTurnIcon, _diagonalTurns),
@@ -3793,7 +3791,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               height: 70,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                // Outer glow shadow - animated during recording
+                // Outer glow — a warm gilded halo at rest that swells to a bright
+                // pulse while recording, plus a soft contact shadow for lift.
                 boxShadow: _isRecording
                     ? [
                         BoxShadow(
@@ -3804,13 +3803,23 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           spreadRadius: 4,
                         ),
                         BoxShadow(
-                          color: Colors.white.withValues(
-                            alpha: 0.4 * glowIntensity,
-                          ),
-                          blurRadius: 20,
+                          color: kGold.withValues(alpha: 0.45 * glowIntensity),
+                          blurRadius: 22,
+                          spreadRadius: 2,
                         ),
                       ]
-                    : null,
+                    : [
+                        BoxShadow(
+                          color: kGold.withValues(alpha: 0.30),
+                          blurRadius: 18,
+                          spreadRadius: 1,
+                        ),
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.35),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
               ),
               child: Stack(
                 children: [
@@ -3859,7 +3868,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     ),
                   ),
 
-                  // Main glass container - no blur
+                  // Gilded rim — a gold ring at rest (brightening to white while
+                  // recording); the reflections above lend it a metallic sheen.
                   Container(
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
@@ -3869,8 +3879,25 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                             ? Colors.white.withValues(
                                 alpha: 0.6 + (0.3 * glowIntensity),
                               )
-                            : Colors.white.withValues(alpha: 0.7),
+                            : kGold.withValues(alpha: 0.92),
                         width: 2.5,
+                      ),
+                    ),
+                  ),
+
+                  // Fine inner hairline — a second, glassier ring just inside the
+                  // gilt for a jewelled double-ring.
+                  Positioned.fill(
+                    child: Padding(
+                      padding: const EdgeInsets.all(4.5),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.28),
+                            width: 0.8,
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -4143,62 +4170,101 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
+  /// The preview-facing "glass lip" — a warm paper-white hairline that catches
+  /// the light along the edge where the chrome meets the live preview.
+  static const BorderSide _kChromeLip = BorderSide(
+    color: Color(0x26F6F1E7),
+    width: 0.8,
+  );
+
+  /// Whether the camera chrome uses a real [BackdropFilter] frost (true frosted
+  /// glass, but re-blurs the live preview every frame) or stays gradient-only.
+  /// Off by default: the live blur caused jank, so we keep the FPS-safe gradient
+  /// chrome. See [phily-fps-sensitivity]. Flip to true to try the real frost.
+  static const bool _kFrostedChrome = false;
+
+  /// Wraps a chrome [panel] in a real frosted-glass blur, clipped to its bounds.
+  /// The panel's own scrim gradient composites over the blur, so the result reads
+  /// as frosted glass rather than a plain blur. No-op when [_kFrostedChrome] off.
+  Widget _frostedChrome(Widget panel) => _kFrostedChrome
+      ? ClipRect(
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            child: panel,
+          ),
+        )
+      : panel;
+
+  /// Shared decoration for the top/bottom camera chrome: a refined vertical scrim
+  /// — deeper at the device edge for legibility, thinning toward the preview so a
+  /// little of the scene glows through — finished with the warm [_kChromeLip].
+  BoxDecoration _chromeDecoration({required bool top}) => BoxDecoration(
+    gradient: LinearGradient(
+      begin: top ? Alignment.topCenter : Alignment.bottomCenter,
+      end: top ? Alignment.bottomCenter : Alignment.topCenter,
+      colors: const [Color(0x910A0A0C), Color(0x4F0A0A0C)],
+    ),
+    border: Border(
+      top: top ? BorderSide.none : _kChromeLip,
+      bottom: top ? _kChromeLip : BorderSide.none,
+    ),
+  );
+
   Widget _buildTopSettingsPanel() {
     const Color gold = kGold;
-    return Container(
-      key: _topPanelKey,
-      padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + 10,
-        bottom: 14,
-        left: 20,
-        right: 20,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.48),
-        border: Border(
-          bottom: BorderSide(
-            color: Colors.white.withValues(alpha: 0.07),
-            width: 0.5,
-          ),
+    return _frostedChrome(
+      Container(
+        key: _topPanelKey,
+        padding: EdgeInsets.only(
+          top: MediaQuery.of(context).padding.top + 10,
+          bottom: 14,
+          left: 20,
+          right: 20,
         ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          // Flash control
-          _buildSettingButton(
-            icon: _flashMode == FlashMode.off
-                ? Icons.flash_off_rounded
-                : _flashMode == FlashMode.auto
-                ? Icons.flash_auto_rounded
-                : Icons.flash_on_rounded,
-            iconColor: _flashMode == FlashMode.off ? Colors.white : gold,
-            onTap: _toggleFlash,
-          ),
+        decoration: _chromeDecoration(top: true),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            // Flash control
+            _buildSettingButton(
+              icon: _flashMode == FlashMode.off
+                  ? Icons.flash_off_rounded
+                  : _flashMode == FlashMode.auto
+                  ? Icons.flash_auto_rounded
+                  : Icons.flash_on_rounded,
+              iconColor: _flashMode == FlashMode.off ? Colors.white : gold,
+              caption: _flashMode == FlashMode.off
+                  ? 'FLASH'
+                  : _flashMode == FlashMode.auto
+                  ? 'AUTO'
+                  : 'ON',
+              onTap: _toggleFlash,
+            ),
 
-          // Divider
-          Container(
-            height: 22,
-            width: 0.5,
-            color: Colors.white.withValues(alpha: 0.15),
-          ),
+            // Divider
+            Container(
+              height: 22,
+              width: 0.5,
+              color: kPaper.withValues(alpha: 0.14),
+            ),
 
-          // Format control
-          _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
+            // Format control
+            _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
 
-          // Divider
-          Container(
-            height: 22,
-            width: 0.5,
-            color: Colors.white.withValues(alpha: 0.15),
-          ),
+            // Divider
+            Container(
+              height: 22,
+              width: 0.5,
+              color: kPaper.withValues(alpha: 0.14),
+            ),
 
-          // Resolution control
-          _buildSettingButton(
-            label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
-            onTap: _toggleResolution,
-          ),
-        ],
+            // Resolution control
+            _buildSettingButton(
+              label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
+              onTap: _toggleResolution,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -4207,6 +4273,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     String? label,
     IconData? icon,
     Color? iconColor,
+    String? caption,
     required VoidCallback onTap,
   }) {
     final bool isIconActive =
@@ -4223,24 +4290,24 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     Icon(icon, color: iconColor ?? Colors.white, size: 18),
                     const SizedBox(height: 3),
                     Text(
-                      'FLASH',
-                      style: TextStyle(
+                      caption ?? '',
+                      style: brandLabel(
+                        size: 7.5,
+                        weight: FontWeight.w600,
                         color: isIconActive
                             ? kGold
-                            : Colors.white.withValues(alpha: 0.42),
-                        fontSize: 7.5,
-                        fontWeight: FontWeight.w300,
-                        letterSpacing: 1.6,
+                            : kPaper.withValues(alpha: 0.42),
+                        letterSpacing: 1.8,
                       ),
                     ),
                   ],
                 )
               : Text(
                   label!.toUpperCase(),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w300,
+                  style: brandLabel(
+                    size: 11,
+                    weight: FontWeight.w500,
+                    color: kPaper.withValues(alpha: 0.92),
                     letterSpacing: 1.8,
                   ),
                 ),

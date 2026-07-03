@@ -33,10 +33,8 @@ class _FrostBar extends StatelessWidget {
           ],
         ),
         border: Border(
-          bottom: BorderSide(
-            color: Colors.white.withValues(alpha: 0.10),
-            width: 0.5,
-          ),
+          // Warm "glass lip" hairline — matches the camera chrome's edge.
+          bottom: BorderSide(color: kPaper.withValues(alpha: 0.14), width: 0.8),
         ),
       ),
       child: child,
@@ -255,12 +253,25 @@ class _EmptyGallery extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.photo_library_outlined,
-            color: kPaper.withValues(alpha: 0.22),
-            size: 52,
+          // Soft gold aura behind the mark — the same warm glow as the loader.
+          Container(
+            width: 128,
+            height: 128,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(
+                colors: [kGold.withValues(alpha: 0.14), Colors.transparent],
+                stops: const [0.0, 0.72],
+              ),
+            ),
+            child: Icon(
+              Icons.photo_library_outlined,
+              color: kPaper.withValues(alpha: 0.30),
+              size: 52,
+            ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 14),
           Text(
             'No photos yet',
             style: brandDisplay(

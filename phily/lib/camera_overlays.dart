@@ -972,10 +972,10 @@ class _CompositionPainter extends CustomPainter {
         _drawCross(canvas, grid);
         break;
       case CompositionMode.focalMass:
-        _drawFocalMass(canvas, grid);
+        _drawOriented(canvas, grid, _drawFocalMass);
         break;
       case CompositionMode.vArrangement:
-        _drawVArrangement(canvas, grid);
+        _drawOriented(canvas, grid, _drawVArrangement);
         break;
       case CompositionMode.diagonal:
         _drawDiagonal(canvas, grid);
@@ -984,13 +984,13 @@ class _CompositionPainter extends CustomPainter {
         _drawRadial(canvas, grid);
         break;
       case CompositionMode.lArrangement:
-        _drawLArrangement(canvas, grid);
+        _drawOriented(canvas, grid, _drawLArrangement);
         break;
       case CompositionMode.compoundCurve:
-        _drawCompoundCurve(canvas, grid);
+        _drawOriented(canvas, grid, _drawCompoundCurve);
         break;
       case CompositionMode.pyramid:
-        _drawPyramid(canvas, grid);
+        _drawOriented(canvas, grid, _drawPyramid);
         break;
       case CompositionMode.circular:
         _drawCircular(canvas, grid);
@@ -999,7 +999,10 @@ class _CompositionPainter extends CustomPainter {
         _drawSymmetry(canvas, grid);
         break;
       case CompositionMode.aspectRatio:
-        _drawAspectRatio(canvas, grid);
+        // The crop keeps its ratio's natural shape (16:9 wide, 4:5 tall) and
+        // _drawOriented rotates it with the device: 16:9 is a wide letterbox in
+        // portrait and a tall frame in landscape (dark bands rotate left/right).
+        _drawOriented(canvas, grid, _drawAspectRatio);
         break;
     }
 
@@ -1439,6 +1442,31 @@ class _CompositionPainter extends CustomPainter {
       canvas.drawLine(a + dir * d, a + dir * end, paint);
       d = end + gap;
     }
+  }
+
+  /// Draws [draw] rotated to follow the current device hold, so orientation-aware
+  /// compositions (Pyramid, V / L-Arrangement, Focal Mass, Compound Curve, Aspect
+  /// Ratio) stay upright — and correctly proportioned — for the user's view when
+  /// the phone is turned to landscape, instead of staying locked to portrait. For
+  /// odd turns the frame is swapped (w↔h) so the composition is designed for the
+  /// landscape aspect the user actually sees. Portrait (turns 0) is a fast path.
+  void _drawOriented(
+    Canvas canvas,
+    Size grid,
+    void Function(Canvas, Size) draw,
+  ) {
+    final int q = (-deviceTurns) & 3; // quarter-turns that keep content upright
+    if (q == 0) {
+      draw(canvas, grid);
+      return;
+    }
+    canvas.save();
+    canvas.translate(grid.width / 2, grid.height / 2);
+    canvas.rotate(q * (math.pi / 2));
+    final Size s2 = q.isOdd ? Size(grid.height, grid.width) : grid;
+    canvas.translate(-s2.width / 2, -s2.height / 2);
+    draw(canvas, s2);
+    canvas.restore();
   }
 
   // ── Rule of Thirds ──────────────────────────────────────────────────────────
@@ -1998,6 +2026,9 @@ class _CompositionPainter extends CustomPainter {
   // crop of that ratio centred in the band and dims everything outside it, so the
   // user can frame for 1:1 / 4:5 / 16:9 social or print output.
   void _drawAspectRatio(Canvas canvas, Size s) {
+    // The largest crop of the selected ratio, centred in the frame [s]. The frame
+    // itself is rotated to the device hold by _drawOriented, so the ratio keeps
+    // its natural shape (16:9 stays widescreen) and simply turns with the phone.
     final double r = aspect <= 0 ? 1.0 : aspect;
     double w, h;
     if (s.width / s.height > r) {

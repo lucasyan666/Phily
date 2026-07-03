@@ -105,19 +105,26 @@ class _BrandedLoaderState extends State<BrandedLoader>
                   alignment: Alignment.center,
                   clipBehavior: Clip.none,
                   children: [
-                    Container(
-                      width: 160,
-                      height: 160,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [
-                            gold.withValues(alpha: 0.16),
-                            Colors.transparent,
-                          ],
-                          stops: const [0.0, 0.72],
-                        ),
-                      ),
+                    // Warm aura, slowly breathing so the mark feels alive.
+                    AnimatedBuilder(
+                      animation: _spin,
+                      builder: (_, _) {
+                        final double b = 0.5 + 0.5 * sin(_spin.value * 2 * pi);
+                        return Container(
+                          width: 170,
+                          height: 170,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: RadialGradient(
+                              colors: [
+                                gold.withValues(alpha: 0.12 + 0.09 * b),
+                                Colors.transparent,
+                              ],
+                              stops: [0.0, 0.60 + 0.14 * b],
+                            ),
+                          ),
+                        );
+                      },
                     ),
                     AnimatedBuilder(
                       animation: _spin,
