@@ -19,6 +19,7 @@ import 'dart:ui' as ui;
 import 'package:phily/theme.dart';
 
 part 'camera_overlays.dart';
+part 'compositions.dart';
 
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
@@ -127,6 +128,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // "Best for" tip bubble shown briefly when the composition mode changes.
   bool _showTip = false;
   Timer? _tipTimer;
+  // Drives the tip's entrance/exit. Replayed from 0 on every show so the advice
+  // always animates in cleanly — even switching straight from one mode to the
+  // next (an AnimatedSwitcher would cross-fade in place and read as "no anim").
+  late final AnimationController _tipAnim = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 440),
+    reverseDuration: const Duration(milliseconds: 260),
+  );
   // Composition belt order — most commonly used first, niche patterns last.
   static const List<CompositionMode> _compositionModes = [
     CompositionMode.none,
@@ -301,48 +310,48 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// portrait-locked, so MediaQuery can't tell us). Updates [_deviceTurns]:
   /// 0 = portrait, 1 = landscape (rotated CW), 2 = upside-down, 3 = landscape (CCW).
   void _startOrientationListener() {
-    _accelSub =
-        accelerometerEventStream(
-          samplingPeriod: SensorInterval.gameInterval,
-        ).listen((e) {
-          // Low-pass the gravity vector → smooth, jitter-free roll/pitch for the
-          // gravity-based horizon line. (Raw e.* is still used for orientation.)
-          if (!_gravInit) {
-            _gravX = e.x;
-            _gravY = e.y;
-            _gravZ = e.z;
-            _gravInit = true;
-          } else {
-            const double a = 0.2;
-            _gravX += (e.x - _gravX) * a;
-            _gravY += (e.y - _gravY) * a;
-            _gravZ += (e.z - _gravZ) * a;
-          }
+    _accelSub = accelerometerEventStream(samplingPeriod: SensorInterval.gameInterval).listen((
+      e,
+    ) {
+      // Low-pass the gravity vector → smooth, jitter-free roll/pitch for the
+      // gravity-based horizon line. (Raw e.* is still used for orientation.)
+      if (!_gravInit) {
+        _gravX = e.x;
+        _gravY = e.y;
+        _gravZ = e.z;
+        _gravInit = true;
+      } else {
+        const double a = 0.2;
+        _gravX += (e.x - _gravX) * a;
+        _gravY += (e.y - _gravY) * a;
+        _gravZ += (e.z - _gravZ) * a;
+      }
 
-          // Use only in-plane gravity (x,y); ignore z (tilt toward/away from scene).
-          final ax = e.x.abs(), ay = e.y.abs();
-          // Need a clear dominant in-plane axis (hysteresis) to avoid flip-flopping
-          // near 45°. Require the dominant axis to beat the other by a margin.
-          const margin = 2.0;
-          int? turns;
-          if (ax > ay + margin) {
-            turns = e.x > 0 ? 3 : 1; // landscape (two directions)
-          } else if (ay > ax + margin) {
-            turns = e.y > 0 ? 0 : 2; // portrait up / upside-down
-          }
-          if (turns != null && turns != _deviceTurns) {
-            setState(
-              () => _deviceTurns = turns!,
-            ); // rebuild so UI controls rotate
-          }
+      // Use only in-plane gravity (x,y); ignore z (tilt toward/away from scene).
+      final ax = e.x.abs(), ay = e.y.abs();
+      // Need a clear dominant in-plane axis (hysteresis) to avoid flip-flopping
+      // near 45°. Require the dominant axis to beat the other by a margin.
+      const margin = 2.0;
+      int? turns;
+      if (ax > ay + margin) {
+        turns = e.x > 0 ? 3 : 1; // landscape (two directions)
+      } else if (ay > ax + margin) {
+        turns = e.y > 0 ? 0 : 2; // portrait up / upside-down
+      }
+      if (turns != null && turns != _deviceTurns) {
+        setState(() => _deviceTurns = turns!); // rebuild so UI controls rotate
+        // Re-seed the gravity horizon at the new hold so its eased angle
+        // snaps to the rotated frame instead of wobbling across the 90° jump.
+        _hzInit = false;
+      }
 
-          // Drive the gravity horizon while Horizon Grid is active.
-          if (_compositionMode == CompositionMode.horizonGrid) {
-            _updateHorizonFromMotion();
-          }
-          // Drive the "hold it level" attitude dial (Horizon + the people modes).
-          _updateLevelAttitude();
-        });
+      // Drive the gravity horizon while Horizon Grid is active.
+      if (_compositionMode == CompositionMode.horizonGrid) {
+        _updateHorizonFromMotion();
+      }
+      // Drive the "hold it level" attitude dial (Horizon + the people modes).
+      _updateLevelAttitude();
+    });
   }
 
   /// Wraps a UI control so it rotates (smoothly) to stay upright for how the
@@ -827,6 +836,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _gridFlipController?.dispose();
     _focalAnim.dispose();
     _crossSpinCtl.dispose();
+    _tipAnim.dispose();
     _eyeRepaint.dispose();
     _alignLevel.dispose();
     _horizon.dispose();
@@ -1145,72 +1155,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   /// Compact "best for" blurb for the current mode, or null when there's
   /// nothing worth saying (None).
-  String? get _compositionTip {
-    switch (_compositionMode) {
-      case CompositionMode.none:
-        return null;
-      case CompositionMode.horizonGrid:
-        return 'Landscapes & seascapes — a true gravity level. Hold your phone completely straight to level the horizon.';
-      case CompositionMode.ruleOfThirds:
-        return 'Everyday shots — people, landscapes, street. Put your subject on a dot.';
-      case CompositionMode.goldenSection:
-        return 'Portraits & fine-art landscapes — subject a touch more central.';
-      case CompositionMode.goldenTriangles:
-        return 'Scenes with strong diagonals — roads, stairs, reclining poses.';
-      case CompositionMode.fibonacciSpiral:
-        return 'Flowing scenes — rivers, paths, shells. Lead the eye to the centre.';
-      case CompositionMode.cross:
-        return 'Symmetrical, centred subjects — reflections, formal architecture.';
-      case CompositionMode.focalMass:
-        return 'One dominant subject against negative space — minimalism.';
-      case CompositionMode.vArrangement:
-        return 'Group portraits, valleys, converging lines.';
-      case CompositionMode.diagonal:
-        return 'Energy & motion — street, action, leading lines.';
-      case CompositionMode.radial:
-        return 'Flowers, wheels, sunbursts, tunnels, spiral staircases.';
-      case CompositionMode.lArrangement:
-        return 'Product & still life — frame a subject in a corner.';
-      case CompositionMode.compoundCurve:
-        return 'Winding rivers & roads, the S-curve of the figure.';
-      case CompositionMode.pyramid:
-        return 'Groups of people, mountains, stable still life.';
-      case CompositionMode.circular:
-        return 'Round plates of food, groups in a circle, round subjects.';
-      case CompositionMode.symmetry:
-        return 'Reflections, faces, doorways — centre on the line.';
-      case CompositionMode.aspectRatio:
-        return 'Frame for social or print — tap to cycle 1:1 · 4:5 · 16:9.';
-    }
-  }
+  /// "Best for" blurb for the current mode (registry-sourced); null → no bubble.
+  String? get _compositionTip => kCompositionByMode[_compositionMode]!.tip;
 
   /// Which way to hold the phone for this mode — a quick portrait / landscape /
   /// both hint shown beside the tip. Null where it doesn't apply.
-  String? get _compositionOrientation {
-    switch (_compositionMode) {
-      case CompositionMode.none:
-      case CompositionMode.aspectRatio:
-        return null;
-      case CompositionMode.goldenSection:
-      case CompositionMode.symmetry:
-      case CompositionMode.cross:
-      case CompositionMode.focalMass:
-      case CompositionMode.vArrangement:
-        return 'Portrait';
-      case CompositionMode.horizonGrid:
-      case CompositionMode.goldenTriangles:
-      case CompositionMode.fibonacciSpiral:
-      case CompositionMode.diagonal:
-      case CompositionMode.compoundCurve:
-      case CompositionMode.pyramid:
-        return 'Landscape';
-      case CompositionMode.ruleOfThirds:
-      case CompositionMode.lArrangement:
-      case CompositionMode.radial:
-      case CompositionMode.circular:
-        return 'Both';
-    }
-  }
+  String? get _compositionOrientation =>
+      kCompositionByMode[_compositionMode]!.orientation.label;
 
   /// Show the "best for" bubble for ~3s. Re-arms the timer on each call so a
   /// quick scrub through modes keeps the latest bubble visible.
@@ -1221,15 +1172,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
     _tipTimer?.cancel();
     setState(() => _showTip = true);
-    _tipTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _showTip = false);
-    });
+    // Replay from 0 so the advice always animates in fresh, even mode-to-mode.
+    _tipAnim.forward(from: 0);
+    _tipTimer = Timer(const Duration(seconds: 3), _dismissTip);
   }
 
   /// Hide the bubble immediately (swipe-up, or moving to a tip-less mode).
   void _dismissTip() {
     _tipTimer?.cancel();
-    if (_showTip && mounted) setState(() => _showTip = false);
+    if (!mounted) return;
+    if (_showTip) setState(() => _showTip = false);
+    _tipAnim.reverse(); // slide the bubble back out
   }
 
   void _triggerBounceAnimation(File capturedFile) {
@@ -1360,6 +1313,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     setState(() {
       _isRecording = true;
     });
+    _dismissTip(); // clear the advice bubble out of the shot while filming
 
     // Trigger bop animation
     _buttonBopController!.forward(from: 0);
@@ -1636,6 +1590,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     double vert; // normalised vertical deflection for the dial
     bool isLevel;
     if (m == CompositionMode.horizonGrid) {
+      // The dial's tilt reads relative to the hold too, so its mini-horizon sits
+      // level exactly when the grid does (never sideways in a landscape hold).
+      roll = _relativeRoll.abs() < 0.018 ? 0.0 : _relativeRoll;
       // Track the true-horizon's offset from the best-spot guide (the grid's own
       // value), so "dial centred" means "horizon on the best spot" — not plumb.
       final double dy = _horizon.value?.dy ?? 0.0; // signed screen fraction
@@ -1672,19 +1629,26 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
+  /// Gravity roll measured RELATIVE to the current hold (≈0 when the phone is
+  /// level for however it's being held), normalised to [-π, π]. Shared by the
+  /// Horizon Grid's true-horizon line and its "hold it level" dial so the two
+  /// always agree, in any orientation.
+  double get _relativeRoll {
+    final double r = math.atan2(_gravX, _gravY) + _deviceTurns * (math.pi / 2);
+    return math.atan2(math.sin(r), math.cos(r));
+  }
+
   void _updateHorizonFromMotion() {
     final double gx = _gravX, gy = _gravY, gz = _gravZ;
 
-    // Roll: phone tilt around the optical axis. Gravity (as measured, points
-    // opposite real gravity) is ≈(0, +g, 0) when upright portrait.
-    final double roll = math.atan2(gx, gy);
     // Pitch: camera elevation above the true horizon (+ = aimed up at sky).
     final double pitch = math.atan2(gz, math.sqrt(gx * gx + gy * gy));
 
-    // On-screen line angle — the horizon counter-rotates against the phone roll
-    // so it stays aligned with the real world (a true level). Small deadzone so a
-    // near-level hold reads dead-flat.
-    double ang = roll;
+    // Angle RELATIVE to the current hold, so "level" means level for however the
+    // phone is held (portrait, landscape, upside-down). The painter re-adds the
+    // hold's base angle to draw the line at its true on-screen angle. Small
+    // deadzone so a near-level hold reads dead-flat.
+    double ang = _relativeRoll;
     if (ang.abs() < 0.02) ang = 0.0;
 
     // Vertical position from camera pitch. ay = 0.5 at the optical centre and
@@ -1958,22 +1922,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   static const double _hzPosGain = 1.0;
 
   // Rule-of-Thirds power points (normalised) — intersections of the 1/3 lines.
-  static const List<List<double>> _powerPoints = [
-    [1 / 3, 1 / 3],
-    [2 / 3, 1 / 3],
-    [1 / 3, 2 / 3],
-    [2 / 3, 2 / 3],
-  ];
-  // Phi-Grid power points — intersections of the golden-section lines at
-  // 1/φ² ≈ 0.382 and 1/φ ≈ 0.618.
-  static const double _phiLo = 0.3819660113;
-  static const double _phiHi = 0.6180339887;
-  static const List<List<double>> _phiPoints = [
-    [_phiLo, _phiLo],
-    [_phiHi, _phiLo],
-    [_phiLo, _phiHi],
-    [_phiHi, _phiHi],
-  ];
+  // Fixed alignment power points now live in the composition registry
+  // (kThirdsPoints / kPhiPoints) so each mode's ratios are declared in one place.
+  // Kept here as the Rule-of-Thirds default used by the alignment fallback.
+  static const List<List<double>> _powerPoints = kThirdsPoints;
   // Forgiveness margin when testing whether a power point falls inside a box
   // (fraction of the box half-size). 0.15 = box bounds + 15%. → "Almost".
   static const double _alignMargin = 0.15;
@@ -1987,26 +1939,23 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Phi Grid have alignment for now — other models are being (re)built one by
   /// one.
   List<List<double>>? get _modePowerPoints {
-    switch (_compositionMode) {
-      case CompositionMode.ruleOfThirds:
-        return _powerPoints;
-      case CompositionMode.goldenSection:
-        return _phiPoints;
-      case CompositionMode.fibonacciSpiral:
-        // Single target: the spiral's eye (convergence point), as a band
-        // fraction so it matches the dot the painter draws.
-        if (_bandW <= 0 || _bandH <= 0) return null; // band not measured yet
-        final eye = _goldenSpiralEyePx(
-          Size(_bandW, _bandH),
-          _spiralTurnsEffective,
-          _CompositionPainter._goldenSpiralFill,
-        );
-        return [
-          [eye.dx / _bandW, eye.dy / _bandH],
-        ];
-      default:
-        return null;
+    // Fibonacci's target is computed at runtime — it depends on the measured band
+    // and the turn count — so it can't be a fixed spec value; every other mode's
+    // targets are the constant ratios declared in its CompositionSpec.
+    if (_compositionMode == CompositionMode.fibonacciSpiral) {
+      // Single target: the spiral's eye (convergence point), as a band fraction
+      // so it matches the dot the painter draws.
+      if (_bandW <= 0 || _bandH <= 0) return null; // band not measured yet
+      final eye = _goldenSpiralEyePx(
+        Size(_bandW, _bandH),
+        _spiralTurnsEffective,
+        _CompositionPainter._goldenSpiralFill,
+      );
+      return [
+        [eye.dx / _bandW, eye.dy / _bandH],
+      ];
     }
+    return kCompositionByMode[_compositionMode]!.powerPoints;
   }
 
   /// The active power points expressed in the same full-screen-normalised space
@@ -2584,6 +2533,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           crossGlow: _crossGlow,
                           aspect: _aspectRatios[_aspectIndex].ratio,
                           horizon: _horizon,
+                          deviceTurns: _deviceTurns,
                           eyePoints: _eyePoints,
                           repaint: Listenable.merge([
                             _faceAnim,
@@ -3142,7 +3092,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                   curve: Curves.easeOutCubic,
                   child: AnimatedPadding(
                     padding: _bannerInset(
-                      MediaQuery.of(context).padding.top + 92,
+                      MediaQuery.of(context).padding.top + 86,
                     ),
                     duration: const Duration(milliseconds: 340),
                     curve: Curves.easeOutCubic,
@@ -3184,7 +3134,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                   (_topInset > 0
                           ? _topInset
                           : MediaQuery.of(context).padding.top + 56) +
-                      8,
+                      2,
                 ),
                 duration: const Duration(milliseconds: 340),
                 curve: Curves.easeOutCubic,
@@ -3325,7 +3275,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       1 => const EdgeInsets.only(left: gap),
       2 => const EdgeInsets.only(bottom: gap),
       3 => const EdgeInsets.only(right: gap),
-      _ => EdgeInsets.only(top: portraitTop),
+      // Portrait: a small right inset nudges the centred bubble left of dead
+      // centre (half the inset), consistently regardless of the pill's width.
+      _ => EdgeInsets.only(top: portraitTop, right: 24),
     };
   }
 
@@ -3336,138 +3288,110 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     const gold = kGold;
     return IgnorePointer(
       ignoring: !visible,
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 420),
-        // Drops in gently (settle), retracts upward with a touch of acceleration.
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInCubic,
-        // Slide + scale only (no opacity layer) so the frosted backdrop blur
-        // stays live throughout; the panel-edge clip handles disappearance.
-        transitionBuilder: (child, anim) => FadeTransition(
-          // Fade with the slide so it retracts cleanly (no clip needed now that
-          // the bubble follows the device rotation instead of tucking).
-          opacity: anim,
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(0, -0.6),
-              end: Offset.zero,
-            ).animate(anim),
-            child: ScaleTransition(
-              scale: Tween<double>(begin: 0.96, end: 1.0).animate(anim),
-              alignment: Alignment.topCenter,
-              child: child,
+      // Controller-driven so the entrance replays cleanly on every show — see
+      // _showCompositionTip (forward-from-0) and _dismissTip (reverse). An
+      // AnimatedSwitcher cross-faded in place on mode-to-mode changes, which
+      // read as "no animation"; this always drops the fresh advice in.
+      child: AnimatedBuilder(
+        animation: _tipAnim,
+        builder: (context, child) {
+          final double t = Curves.easeOutCubic.transform(
+            _tipAnim.value.clamp(0.0, 1.0),
+          );
+          if (t <= 0.001 || child == null) return const SizedBox.shrink();
+          return Opacity(
+            opacity: t,
+            child: Transform.translate(
+              offset: Offset(0, (1 - t) * -14), // drop in from just above
+              child: Transform.scale(
+                scale: 0.96 + 0.04 * t,
+                alignment: Alignment.topCenter,
+                child: child,
+              ),
             ),
-          ),
-        ),
-        child: !visible
-            ? const SizedBox.shrink(key: ValueKey('noTip'))
+          );
+        },
+        child: tip == null
+            ? null
             : GestureDetector(
-                key: ValueKey(_compositionMode),
                 behavior: HitTestBehavior.opaque,
                 onVerticalDragEnd: (d) {
                   if ((d.primaryVelocity ?? 0) < 0) _dismissTip(); // swipe up
                 },
                 onTap: _dismissTip,
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 32),
-                  // Soft drop shadow for lift off the preview.
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.28),
-                        blurRadius: 20,
-                        offset: const Offset(0, 8),
+                child: Padding(
+                  // The app's shared frosted glass — same material as the
+                  // gallery/paywall chrome (real blur + specular bloom + rim).
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: ConstrainedBox(
+                    // Cap the width so long tips wrap to a tidy block and, when
+                    // rotated for landscape, never overrun the screen edge.
+                    constraints: const BoxConstraints(maxWidth: 300),
+                    child: GlassSurface(
+                      borderRadius: BorderRadius.circular(kRadiusLg),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 11,
                       ),
-                    ],
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    // Frost the camera behind the pill.
-                    child: BackdropFilter(
-                      filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 15,
-                          vertical: 10,
-                        ),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(20),
-                          // Top sheen → dark base: glassy, and keeps white text
-                          // legible over any camera scene.
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.white.withValues(alpha: 0.14),
-                              Colors.black.withValues(alpha: 0.34),
-                            ],
-                          ),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.30),
-                            width: 0.8,
-                          ),
-                        ),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Gold eyebrow.
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.auto_awesome_rounded,
-                                  color: gold,
-                                  size: 11,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Gold eyebrow.
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.auto_awesome_rounded,
+                                color: gold,
+                                size: 11,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'BEST FOR',
+                                style: brandLabel(
+                                  size: 8.5,
+                                  weight: FontWeight.w600,
+                                  color: gold.withValues(alpha: 0.85),
+                                  letterSpacing: 2.4,
                                 ),
-                                const SizedBox(width: 6),
+                              ),
+                              // Portrait / Landscape / Both recommendation.
+                              if (orient != null) ...[
+                                const SizedBox(width: 9),
+                                Icon(
+                                  orient == 'Portrait'
+                                      ? Icons.stay_current_portrait_rounded
+                                      : orient == 'Landscape'
+                                      ? Icons.stay_current_landscape_rounded
+                                      : Icons.screen_rotation_rounded,
+                                  color: gold.withValues(alpha: 0.7),
+                                  size: 10,
+                                ),
+                                const SizedBox(width: 3),
                                 Text(
-                                  'BEST FOR',
+                                  orient.toUpperCase(),
                                   style: brandLabel(
                                     size: 8.5,
                                     weight: FontWeight.w600,
-                                    color: gold.withValues(alpha: 0.85),
-                                    letterSpacing: 2.4,
+                                    color: gold.withValues(alpha: 0.7),
+                                    letterSpacing: 1.6,
                                   ),
                                 ),
-                                // Portrait / Landscape / Both recommendation.
-                                if (orient != null) ...[
-                                  const SizedBox(width: 9),
-                                  Icon(
-                                    orient == 'Portrait'
-                                        ? Icons.stay_current_portrait_rounded
-                                        : orient == 'Landscape'
-                                        ? Icons.stay_current_landscape_rounded
-                                        : Icons.screen_rotation_rounded,
-                                    color: gold.withValues(alpha: 0.7),
-                                    size: 10,
-                                  ),
-                                  const SizedBox(width: 3),
-                                  Text(
-                                    orient.toUpperCase(),
-                                    style: brandLabel(
-                                      size: 8.5,
-                                      weight: FontWeight.w600,
-                                      color: gold.withValues(alpha: 0.7),
-                                      letterSpacing: 1.6,
-                                    ),
-                                  ),
-                                ],
                               ],
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              tip,
-                              textAlign: TextAlign.center,
-                              style: brandLabel(
-                                size: 12,
-                                weight: FontWeight.w400,
-                                color: kPaper.withValues(alpha: 0.95),
-                                letterSpacing: 0.2,
-                              ).copyWith(height: 1.25),
-                            ),
-                          ],
-                        ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            tip,
+                            textAlign: TextAlign.center,
+                            style: brandLabel(
+                              size: 12,
+                              weight: FontWeight.w400,
+                              color: kPaper.withValues(alpha: 0.95),
+                              letterSpacing: 0.2,
+                            ).copyWith(height: 1.25),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -3522,19 +3446,23 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(kRadiusLg),
+          // Same diagonal sheen→dark recipe as the app's GlassSurface (a touch
+          // darker at the base for legibility, since there's no real blur here).
           gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
             colors: [
-              Colors.white.withValues(alpha: 0.18),
-              Colors.black.withValues(alpha: 0.52),
+              Colors.white.withValues(alpha: 0.20),
+              Colors.white.withValues(alpha: 0.06),
+              Colors.black.withValues(alpha: 0.42),
             ],
+            stops: const [0.0, 0.45, 1.0],
           ),
           border: Border.all(
             color: emphasis
-                ? gold.withValues(alpha: 0.45 + 0.40 * pulse)
-                : Colors.white.withValues(alpha: 0.28),
+                ? gold.withValues(alpha: 0.5 + 0.4 * pulse)
+                : Colors.white.withValues(alpha: 0.35),
             width: emphasis ? 1.0 : 0.8,
           ),
           boxShadow: [
@@ -3646,41 +3574,43 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// one applies (spiral rotate / aspect-ratio cycle), else empty space sized to
   /// match the gallery button so the capture button stays centred.
   Widget _buildRightSlotControl() {
-    switch (_compositionMode) {
-      case CompositionMode.fibonacciSpiral:
-        // Two controls: flip (mirror) beside the turn button.
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildSpiralFlipButton(),
-            const SizedBox(width: 10),
-            _buildSpiralRotateButton(),
-          ],
-        );
-      case CompositionMode.goldenTriangles:
-        return _buildTrianglesFlipButton();
-      case CompositionMode.focalMass:
-        return _buildFocalTurnButton();
-      case CompositionMode.vArrangement:
-        return _buildVFlipButton();
-      case CompositionMode.diagonal:
-        return _buildDiagonalTurnButton();
-      case CompositionMode.lArrangement:
-        // Two controls: flip (mirror) beside the turn button.
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildLFlipButton(),
-            const SizedBox(width: 10),
-            _buildLTurnButton(),
-          ],
-        );
-      case CompositionMode.aspectRatio:
-        return _buildAspectRatioButton();
-      default:
-        return const SizedBox(width: 52);
+    final controls = kCompositionByMode[_compositionMode]!.controls;
+    if (controls.contains(CompoControl.aspectCycle)) {
+      return _buildAspectRatioButton();
     }
+    // Flip sits to the left of turn (consistent across Spiral + L-Arrangement).
+    final buttons = <Widget>[
+      if (controls.contains(CompoControl.flip))
+        _flipButtonFor(_compositionMode),
+      if (controls.contains(CompoControl.turn))
+        _turnButtonFor(_compositionMode),
+    ];
+    if (buttons.isEmpty) return const SizedBox(width: 52);
+    if (buttons.length == 1) return buttons.single;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [buttons.first, const SizedBox(width: 10), buttons.last],
+    );
   }
+
+  /// The turn (rotate) control for [m] — the mode-specific button that toggles
+  /// its own state/glyph. Empty for modes without one.
+  Widget _turnButtonFor(CompositionMode m) => switch (m) {
+    CompositionMode.fibonacciSpiral => _buildSpiralRotateButton(),
+    CompositionMode.focalMass => _buildFocalTurnButton(),
+    CompositionMode.diagonal => _buildDiagonalTurnButton(),
+    CompositionMode.lArrangement => _buildLTurnButton(),
+    _ => const SizedBox.shrink(),
+  };
+
+  /// The flip (mirror) control for [m]. Empty for modes without one.
+  Widget _flipButtonFor(CompositionMode m) => switch (m) {
+    CompositionMode.fibonacciSpiral => _buildSpiralFlipButton(),
+    CompositionMode.goldenTriangles => _buildTrianglesFlipButton(),
+    CompositionMode.vArrangement => _buildVFlipButton(),
+    CompositionMode.lArrangement => _buildLFlipButton(),
+    _ => const SizedBox.shrink(),
+  };
 
   /// Aspect-ratio cycle control (Aspect Ratio mode). Each tap advances the crop
   /// ratio (1:1 → 4:5 → 16:9); the current label is shown on the button.

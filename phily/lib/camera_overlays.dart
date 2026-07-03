@@ -398,44 +398,8 @@ enum CompositionMode {
   symmetry,
   aspectRatio;
 
-  String get label {
-    switch (this) {
-      case CompositionMode.none:
-        return 'None';
-      case CompositionMode.horizonGrid:
-        return 'Horizon Grid';
-      case CompositionMode.ruleOfThirds:
-        return 'Rule of Thirds';
-      case CompositionMode.goldenSection:
-        return 'Phi Grid';
-      case CompositionMode.goldenTriangles:
-        return 'Golden Triangles';
-      case CompositionMode.fibonacciSpiral:
-        return 'Fibonacci Spiral';
-      case CompositionMode.cross:
-        return 'Cross';
-      case CompositionMode.focalMass:
-        return 'Focal Mass';
-      case CompositionMode.vArrangement:
-        return 'V Arrangement';
-      case CompositionMode.diagonal:
-        return 'Diagonal';
-      case CompositionMode.radial:
-        return 'Radial';
-      case CompositionMode.lArrangement:
-        return 'L Arrangement';
-      case CompositionMode.compoundCurve:
-        return 'Compound Curve';
-      case CompositionMode.pyramid:
-        return 'Pyramid';
-      case CompositionMode.circular:
-        return 'Circular';
-      case CompositionMode.symmetry:
-        return 'Symmetry';
-      case CompositionMode.aspectRatio:
-        return 'Aspect Ratio';
-    }
-  }
+  /// Display name — sourced from the composition registry (see compositions.dart).
+  String get label => kCompositionByMode[this]!.label;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -857,6 +821,11 @@ class _CompositionPainter extends CustomPainter {
   /// Selected crop ratio (W/H) for the Aspect Ratio mode.
   final double aspect;
 
+  /// How the phone is currently held (0 = portrait, 1/3 = landscape, 2 = upside
+  /// down). Only the Horizon Grid uses it — its guide + true-horizon rotate with
+  /// the hold so the mode works sideways; every other overlay ignores it.
+  final int deviceTurns;
+
   /// Detected horizon (preview space): roll angle + an anchor point on the line
   /// (full-screen normalised) + fade opacity + alignment-with-guide [0..1], or
   /// null. Drawn in Horizon Grid mode.
@@ -893,6 +862,7 @@ class _CompositionPainter extends CustomPainter {
     this.vFlipped = false,
     this.aspect = 1.0,
     this.horizon,
+    this.deviceTurns = 0,
     List<Offset>? eyePoints,
     super.repaint,
   }) : glowSegs = glowSegs ?? const [],
@@ -1100,19 +1070,50 @@ class _CompositionPainter extends CustomPainter {
     // plus the live detected horizon that glows gold as it lands on the guide. ──
     if (mode == CompositionMode.horizonGrid) {
       const gold = kGold;
+      final int turns = deviceTurns & 3;
       final double bandSpan = size.height - topInset - bottomInset;
-      final double guideY = topInset + bandSpan * _horizonGuideRatio;
+      final Offset centre = Offset(size.width / 2, size.height / 2);
+
+      // Screen-space unit vectors for the user's frame at this hold, derived from
+      // the (verified) _userTopAlign mapping: turns 1 → the user's "up" is the
+      // screen's LEFT edge, turns 3 → the RIGHT edge. So the whole grid pivots to
+      // stay upright for the viewer, no matter how the phone is turned.
+      final Offset userDown = switch (turns) {
+        1 => const Offset(1, 0),
+        2 => const Offset(0, -1),
+        3 => const Offset(-1, 0),
+        _ => const Offset(0, 1),
+      };
+      // The level line's along-direction (user's "right") = user-up rotated 90°.
+      final Offset userRight = Offset(-userDown.dy, userDown.dx);
+      final double baseAngle = math.atan2(userRight.dy, userRight.dx);
+      final double labelRot = -turns * (math.pi / 2); // keep tags readable
+      // Screen extent along the level line (width in portrait, height sideways).
+      final double alongExtent =
+          userRight.dx.abs() * size.width + userRight.dy.abs() * size.height;
+
+      // Golden guide: signed distance from centre (along userDown), matching the
+      // portrait placement exactly so detection (which reads the same ratio) and
+      // the drawn line always agree.
+      final double guideOff =
+          topInset + bandSpan * _horizonGuideRatio - centre.dy;
+      final Offset guideC = centre + userDown * guideOff;
+      final Offset gspan = userRight * (size.longestSide);
+      final Offset gA = guideC - gspan, gB = guideC + gspan;
+
       final hz = horizon?.value;
-      // Alignment with the guide is computed once in the ticker (single source
-      // of truth — also drives the message bubble + haptic). Labels live in the
-      // shared top message bubble, not on the line.
       final double aligned = hz?.aligned ?? 0;
+
+      // Clip the whole grid to the camera-visible band so rotated/tilted lines
+      // never bleed under the top/bottom chrome panels.
+      canvas.save();
+      canvas.clipRect(Rect.fromLTWH(0, topInset, size.width, bandSpan));
 
       // Guide line: dashed gold, always visible; blooms when aligned.
       if (aligned > 0.02) {
         canvas.drawLine(
-          Offset(0, guideY),
-          Offset(size.width, guideY),
+          gA,
+          gB,
           Paint()
             ..color = gold.withValues(alpha: 0.55 * aligned)
             ..strokeWidth = 4.0
@@ -1122,8 +1123,8 @@ class _CompositionPainter extends CustomPainter {
       }
       _drawDashedLine(
         canvas,
-        Offset(0, guideY),
-        Offset(size.width, guideY),
+        gA,
+        gB,
         Paint()
           ..color = gold.withValues(
             alpha: (0.42 + 0.5 * aligned).clamp(0.0, 1.0),
@@ -1133,28 +1134,29 @@ class _CompositionPainter extends CustomPainter {
         dash: 9,
         gap: 7,
       );
-      // Guide tag, on the right so it never collides with the TRUE HORIZON tag
-      // (which sits on the left). Always visible; brightens as the line nears.
+      // Guide tag, toward one end so it never collides with the TRUE HORIZON tag.
       _drawHzLabel(
         canvas,
         'BEST SPOT',
-        Offset(size.width * 0.76, guideY - 13),
+        guideC + userRight * (alongExtent * 0.26) + userDown * -13,
         (0.72 + 0.28 * aligned).clamp(0.0, 1.0),
+        rot: labelRot,
       );
 
-      // Detected horizon line (fades with op). Clipped to the camera-visible
-      // band so a tilted line never bleeds into the top/bottom panels.
+      // Detected horizon line (fades with op).
       if (hz != null && hz.op > 0.01) {
         final double op = hz.op;
-        final Offset c = Offset(hz.ax * size.width, hz.ay * size.height);
-        final double L = size.width * 1.6; // extend well past both edges
-        final Offset dir = Offset(math.cos(hz.angle), math.sin(hz.angle));
+        // Position: offset from centre along userDown by the pitch amount; the
+        // stored angle is RELATIVE to the hold, so add the hold's base angle back
+        // to get the true on-screen angle.
+        final Offset c = centre + userDown * ((hz.ay - 0.5) * size.height);
+        final double L = size.longestSide * 1.2;
+        final double ang = baseAngle + hz.angle;
+        final Offset dir = Offset(math.cos(ang), math.sin(ang));
         final p1 = c - dir * L;
         final p2 = c + dir * L;
-        // Level cue: gold intensifies as the line approaches horizontal.
+        // Level cue: gold intensifies as the line approaches the hold's level.
         final level = (1 - (hz.angle.abs() / 0.20)).clamp(0.0, 1.0);
-        canvas.save();
-        canvas.clipRect(Rect.fromLTWH(0, topInset, size.width, bandSpan));
         canvas.drawLine(
           p1,
           p2,
@@ -1173,19 +1175,27 @@ class _CompositionPainter extends CustomPainter {
             ..strokeCap = StrokeCap.round
             ..isAntiAlias = true,
         );
-        // Plain-English tag so anyone knows what the line is — a small pill
-        // riding just above the line, toward the left so it clears the subject.
-        final double slope = dir.dx.abs() < 0.05 ? 0.0 : dir.dy / dir.dx;
-        final double xLabel = size.width * 0.24;
-        final double yLabel = c.dy + (xLabel - c.dx) * slope;
-        _drawHzLabel(canvas, 'TRUE HORIZON', Offset(xLabel, yLabel - 13), op);
-        canvas.restore();
+        // Plain-English tag riding just above the line, toward the far end.
+        _drawHzLabel(
+          canvas,
+          'TRUE HORIZON',
+          c - dir * (alongExtent * 0.26) + userDown * -13,
+          op,
+          rot: labelRot,
+        );
       }
+      canvas.restore();
 
       // Directional nudge: an animated arrow showing which way to move the phone
       // so the true horizon lands on the best-spot guide.
       if (hz != null) {
-        _drawHzArrow(canvas, size, hz.dy, hz.op, topInset, bandSpan);
+        _drawHzArrow(
+          canvas,
+          hz.dy,
+          hz.op,
+          userDown,
+          Offset(size.width / 2, topInset + bandSpan / 2),
+        );
       }
     }
 
@@ -1304,11 +1314,10 @@ class _CompositionPainter extends CustomPainter {
   /// the gap and out as the line nears the guide.
   void _drawHzArrow(
     Canvas canvas,
-    Size size,
     double dy,
     double op,
-    double topInset,
-    double bandSpan,
+    Offset userDown,
+    Offset centre,
   ) {
     final double mag = dy.abs() - 0.02; // small dead-zone around the guide
     if (mag <= 0) return;
@@ -1316,8 +1325,6 @@ class _CompositionPainter extends CustomPainter {
     if (aOp <= 0.02) return;
 
     final bool up = dy < 0; // true horizon above the guide → nudge phone up
-    final double cx = size.width / 2;
-    final double cy = topInset + bandSpan * 0.5;
     // Gentle bob in the pointing direction (the painter repaints ~60fps here).
     final double t = DateTime.now().millisecondsSinceEpoch / 1000.0;
     final double bob = (math.sin(t * 4.0) * 0.5 + 0.5) * 6.0 * (up ? -1 : 1);
@@ -1341,21 +1348,33 @@ class _CompositionPainter extends CustomPainter {
       final double apexY = up ? yc - h / 2 : yc + h / 2;
       final double endY = up ? yc + h / 2 : yc - h / 2;
       final path = Path()
-        ..moveTo(cx - w / 2, endY)
-        ..lineTo(cx, apexY)
-        ..lineTo(cx + w / 2, endY);
+        ..moveTo(-w / 2, endY)
+        ..lineTo(0, apexY)
+        ..lineTo(w / 2, endY);
       canvas.drawPath(path, glow);
       canvas.drawPath(path, stroke);
     }
 
-    final double base = cy + bob;
+    // Rotate the frame so screen-down maps onto the user's "down" for this hold,
+    // then draw the (vertical) chevrons — they point along the user's up/down.
+    canvas.save();
+    canvas.translate(centre.dx, centre.dy);
+    canvas.rotate(math.atan2(userDown.dy, userDown.dx) - math.pi / 2);
     // Two stacked chevrons → a clear directional "move" cue.
-    chevron(base - gap / 2);
-    chevron(base + gap / 2);
+    chevron(bob - gap / 2);
+    chevron(bob + gap / 2);
+    canvas.restore();
   }
 
   /// Small frosted gold pill label riding the horizon line. Fades with [op].
-  void _drawHzLabel(Canvas canvas, String text, Offset center, double op) {
+  /// [rot] rotates the pill so its text stays upright for the current hold.
+  void _drawHzLabel(
+    Canvas canvas,
+    String text,
+    Offset center,
+    double op, {
+    double rot = 0,
+  }) {
     if (op <= 0.02) return;
     const gold = kGold;
     final tp = TextPainter(
@@ -1370,6 +1389,11 @@ class _CompositionPainter extends CustomPainter {
       ),
       textDirection: TextDirection.ltr,
     )..layout();
+    // Rotate the pill about its centre so the tag reads upright for the hold.
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(rot);
+    canvas.translate(-center.dx, -center.dy);
     final Rect r = Rect.fromCenter(
       center: center,
       width: tp.width + 18,
@@ -1394,6 +1418,7 @@ class _CompositionPainter extends CustomPainter {
       canvas,
       Offset(r.center.dx - tp.width / 2, r.center.dy - tp.height / 2),
     );
+    canvas.restore();
   }
 
   /// Draws a dashed line from [a] to [b] (used by the Horizon Grid guide line).
@@ -2019,5 +2044,6 @@ class _CompositionPainter extends CustomPainter {
       old.trianglesFlipped != trianglesFlipped ||
       old.vFlipped != vFlipped ||
       old.aspect != aspect ||
+      old.deviceTurns != deviceTurns ||
       old.eyePoints != eyePoints;
 }
