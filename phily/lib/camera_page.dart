@@ -103,6 +103,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double _crossGlow = 0; // selection glow 0..1 (eased)
   bool _rotatingCross = false; // handle currently grabbed
   int _lastDetent = 0; // last 90° step crossed (for haptic ticks)
+  // Rendered cross state, pushed by the 60fps easing ticker. A ValueNotifier so
+  // each tick repaints only the guide painter + the two small cross controls —
+  // a setState here used to rebuild the ENTIRE camera Stack every frame while
+  // the cross was dragged or still settling.
+  final ValueNotifier<({double y, double angle, double glow})> _crossN =
+      ValueNotifier((y: kCrossDefaultY, angle: 0.0, glow: 0.0));
   // How far below the vertical-arm tip the rotate handle sits (px). Keeps the
   // grip clear of the arm and a little lower on screen.
   static const double _kCrossHandleDrop = 22;
@@ -187,10 +193,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Timer? _focusHideTimer; // auto-hides the focus UI when idle
   bool _aeAfLocked = false;
   double _exposureOffset = 0; // current EV offset
+  // Mirrors _exposureOffset for the EV slider readout — same reasoning as
+  // [_zoomN]: the drag updates only the slider, not the whole page.
+  final ValueNotifier<double> _evN = ValueNotifier(0);
   double _minExposure = 0, _maxExposure = 0; // device EV range
 
   // Zoom
   double _currentZoom = 1.0;
+  // Mirrors _currentZoom for display. The zoom meter/labels listen to this, so
+  // a pinch or meter drag repaints only those few widgets — the old setState
+  // per pointer move rebuilt the whole camera Stack at gesture rate.
+  final ValueNotifier<double> _zoomN = ValueNotifier(1.0);
   double _baseZoom = 1.0;
   int _lastZoomTick = 5; // 1.0× / 0.2 — last 0.2× step that fired a haptic
   double _minZoom = 1.0;
@@ -662,6 +675,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom);
         await _CameraZoomChannel.instance.setZoom(_currentZoom);
       }
+      _zoomN.value = _currentZoom; // seed the display notifier
       debugLog(
         'Zoom range: $_minZoom – $_maxZoom | ultra-wide: ${_ultraWideCamera?.name}',
       );
@@ -839,6 +853,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _tipAnim.dispose();
     _eyeRepaint.dispose();
     _alignLevel.dispose();
+    _crossN.dispose();
+    _zoomN.dispose();
+    _evN.dispose();
     _horizon.dispose();
     _hzLevel.dispose();
     _levelAttitude.dispose();
@@ -877,6 +894,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       }
     } catch (_) {}
     if (locked) _haptic('medium');
+    _evN.value = 0;
     setState(() {
       _focusPoint = pos;
       _focusShown = true;
@@ -917,7 +935,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       _maxExposure,
     );
     if ((next - _exposureOffset).abs() < 0.001) return;
-    setState(() => _exposureOffset = next);
+    // Notifier (not setState): the drag repaints only the EV slider readout.
+    _exposureOffset = next;
+    _evN.value = next;
     try {
       await _controller!.setExposureOffset(next);
     } catch (_) {}
@@ -969,6 +989,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _rotatingCross = false;
     _slidingCross = false;
     if (_crossSpinCtl.isAnimating) _crossSpinCtl.stop();
+    _crossN.value = (y: _crossY, angle: 0.0, glow: 0.0);
   }
 
   // ── Cross slider (move the crossbar) ─────────────────────────────────────
@@ -1059,7 +1080,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     if (aSettled) _crossAngle = effective;
     if (ySettled) _crossY = _crossYTarget;
     if (gSettled) _crossGlow = gTarget;
-    if (mounted) setState(() {});
+    // Notifier (not setState): repaints only the guide + the cross controls.
+    _crossN.value = (y: _crossY, angle: _crossAngle, glow: _crossGlow);
     if (!_rotatingCross && !_slidingCross && aSettled && ySettled && gSettled) {
       _crossSpinCtl.stop();
     }
@@ -1435,6 +1457,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // reuse it for both ML Kit (faces) and Vision (subjects) — one synchronous
     // pixel loop on the UI isolate per frame.
     int qt = _qtCache[turns] ?? 0;
+    // reuse: the steady-state path writes into the shared _rotBuf — zero
+    // per-frame allocation. Probe rotations below allocate fresh buffers so a
+    // losing candidate can never overwrite the winner's bytes.
     var (winBytes, winOw, winOh) = _rotatedBytes(
       plane.bytes,
       w,
@@ -1442,6 +1467,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       plane.bytesPerRow,
       qt,
       scale: detScale,
+      reuse: true,
     );
     List<Face> faces = await _faceDetector.processImage(
       _inputFromBytes(winBytes, winOw, winOh),
@@ -1707,11 +1733,22 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
+  // Reused output buffer for the per-frame detection rotation. All four
+  // rotations of the same downsample share one pixel count (sw·sh), so a single
+  // buffer serves every orientation; it's only re-allocated on a size change.
+  // Probe rotations must NOT reuse it (they'd alias the winner) — see caller.
+  Uint32List? _rotBuf;
+
   /// Downsample (by [scale]) + physically rotate ([qt] quarter-turns CW) a BGRA
   /// buffer so subjects are upright. Returns tightly-packed bytes plus the output
   /// dimensions. Copies a whole BGRA pixel as one 32-bit word (≈4× fewer indexed
   /// ops than per-byte, and no per-byte bounds checks) — this loop runs on the UI
   /// isolate every frame, so its speed directly affects preview smoothness.
+  ///
+  /// Each quarter-turn mapping is affine, so the source index is walked with a
+  /// precomputed start + column/row step instead of per-pixel switch/multiplies:
+  /// the inner loop is a bare strided copy. [reuse] writes into the shared
+  /// [_rotBuf] (the steady-state per-frame path — no per-frame allocation).
   (Uint8List, int, int) _rotatedBytes(
     Uint8List src,
     int w,
@@ -1719,12 +1756,20 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     int srcBpr,
     int qt, {
     int scale = _detScale,
+    bool reuse = false,
   }) {
     final int s = scale;
     final int sw = w ~/ s, sh = h ~/ s;
     final int outW = (qt == 1 || qt == 3) ? sh : sw;
     final int outH = (qt == 1 || qt == 3) ? sw : sh;
-    final out32 = Uint32List(outW * outH);
+    final int len = outW * outH;
+    final Uint32List out32;
+    if (reuse && _rotBuf != null && _rotBuf!.length == len) {
+      out32 = _rotBuf!;
+    } else {
+      out32 = Uint32List(len);
+      if (reuse) _rotBuf = out32;
+    }
 
     // Fast path: view source + destination as 32-bit pixels. Requires the source
     // to be word-aligned (camera BGRA rows always are). Falls back to bytes if not.
@@ -1734,62 +1779,80 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         src.lengthInBytes ~/ 4,
       );
       final int srcStride = srcBpr ~/ 4;
-      for (var dy = 0; dy < outH; dy++) {
-        int di = dy * outW;
-        for (var dx = 0; dx < outW; dx++) {
-          final int sx, sy;
-          switch (qt) {
-            case 1:
-              sx = dy * s;
-              sy = h - 1 - dx * s;
-              break;
-            case 3:
-              sx = w - 1 - dy * s;
-              sy = dx * s;
-              break;
-            case 2:
-              sx = w - 1 - dx * s;
-              sy = h - 1 - dy * s;
-              break;
-            default:
-              sx = dx * s;
-              sy = dy * s;
-          }
-          out32[di++] = src32[sy * srcStride + sx];
-        }
+      final int start, colStep, rowStep; // in 32-bit pixels
+      switch (qt) {
+        case 1: // sx = dy·s, sy = h−1−dx·s
+          start = (h - 1) * srcStride;
+          colStep = -s * srcStride;
+          rowStep = s;
+          break;
+        case 3: // sx = w−1−dy·s, sy = dx·s
+          start = w - 1;
+          colStep = s * srcStride;
+          rowStep = -s;
+          break;
+        case 2: // sx = w−1−dx·s, sy = h−1−dy·s
+          start = (h - 1) * srcStride + (w - 1);
+          colStep = -s;
+          rowStep = -s * srcStride;
+          break;
+        default: // sx = dx·s, sy = dy·s
+          start = 0;
+          colStep = s;
+          rowStep = s * srcStride;
       }
-      return (out32.buffer.asUint8List(), outW, outH);
+      int base = start, di = 0;
+      for (var dy = 0; dy < outH; dy++) {
+        int si = base;
+        for (var dx = 0; dx < outW; dx++) {
+          out32[di++] = src32[si];
+          si += colStep;
+        }
+        base += rowStep;
+      }
+      return (
+        out32.buffer.asUint8List(out32.offsetInBytes, len * 4),
+        outW,
+        outH,
+      );
     }
 
-    // Byte fallback (unaligned source).
-    final bytes = out32.buffer.asUint8List();
+    // Byte fallback (unaligned source) — same affine walk, in byte offsets.
+    final bytes = out32.buffer.asUint8List(out32.offsetInBytes, len * 4);
+    final int start, colStep, rowStep; // in bytes
+    switch (qt) {
+      case 1:
+        start = (h - 1) * srcBpr;
+        colStep = -s * srcBpr;
+        rowStep = s * 4;
+        break;
+      case 3:
+        start = (w - 1) * 4;
+        colStep = s * srcBpr;
+        rowStep = -s * 4;
+        break;
+      case 2:
+        start = (h - 1) * srcBpr + (w - 1) * 4;
+        colStep = -s * 4;
+        rowStep = -s * srcBpr;
+        break;
+      default:
+        start = 0;
+        colStep = s * 4;
+        rowStep = s * srcBpr;
+    }
+    int base = start, di = 0;
     for (var dy = 0; dy < outH; dy++) {
+      int si = base;
       for (var dx = 0; dx < outW; dx++) {
-        final int sx, sy;
-        switch (qt) {
-          case 1:
-            sx = dy * s;
-            sy = h - 1 - dx * s;
-            break;
-          case 3:
-            sx = w - 1 - dy * s;
-            sy = dx * s;
-            break;
-          case 2:
-            sx = w - 1 - dx * s;
-            sy = h - 1 - dy * s;
-            break;
-          default:
-            sx = dx * s;
-            sy = dy * s;
-        }
-        final si = sy * srcBpr + sx * 4;
-        final di = (dy * outW + dx) * 4;
         bytes[di] = src[si];
         bytes[di + 1] = src[si + 1];
         bytes[di + 2] = src[si + 2];
         bytes[di + 3] = src[si + 3];
+        di += 4;
+        si += colStep;
       }
+      base += rowStep;
     }
     return (bytes, outW, outH);
   }
@@ -2528,9 +2591,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           diagonalTurns: _diagonalTurns,
                           lTurns: _lTurns,
                           lFlipped: _lFlipped,
-                          crossY: _crossY,
-                          crossAngle: _crossAngle,
-                          crossGlow: _crossGlow,
+                          cross: _crossN,
                           aspect: _aspectRatios[_aspectIndex].ratio,
                           horizon: _horizon,
                           deviceTurns: _deviceTurns,
@@ -2541,6 +2602,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                             _eyeRepaint,
                             _gridFlipController,
                             _focalAnim,
+                            _crossN,
                           ]),
                         ),
                       ),
@@ -2724,43 +2786,48 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
           // Zoom level indicator — thin right-edge tag. Sits dead-centre, but
           // lifts above the cross slider (also right-centred) when that's shown,
-          // so the two never overlap on any screen size.
-          if (_currentZoom > _minZoom + 0.05)
-            Positioned(
-              top: 0,
-              bottom: 0,
-              right: 12,
-              child: Align(
-                alignment: _paintedMode == CompositionMode.cross
-                    ? const Alignment(0, -0.5)
-                    : Alignment.center,
-                child: IgnorePointer(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.35),
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.10),
-                        width: 0.5,
+          // so the two never overlap on any screen size. Zoom-notifier-driven
+          // (visibility included) so pinches never rebuild the page.
+          Positioned(
+            top: 0,
+            bottom: 0,
+            right: 12,
+            child: ValueListenableBuilder<double>(
+              valueListenable: _zoomN,
+              builder: (context, zoom, _) => zoom <= _minZoom + 0.05
+                  ? const SizedBox.shrink()
+                  : Align(
+                      alignment: _paintedMode == CompositionMode.cross
+                          ? const Alignment(0, -0.5)
+                          : Alignment.center,
+                      child: IgnorePointer(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.35),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.10),
+                              width: 0.5,
+                            ),
+                          ),
+                          child: Text(
+                            '${zoom.toStringAsFixed(1)}×',
+                            style: const TextStyle(
+                              color: kGold,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w300,
+                              letterSpacing: 0.8,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-                    child: Text(
-                      '${_currentZoom.toStringAsFixed(1)}×',
-                      style: const TextStyle(
-                        color: kGold,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w300,
-                        letterSpacing: 0.8,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
             ),
+          ),
 
           // Bottom controls overlay
           Positioned(
@@ -3991,49 +4058,62 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   /// Vertical exposure (EV) slider with a draggable sun knob. Drag up = brighter.
+  /// EV-notifier-driven: the on-screen exposure drag moves only this readout.
   Widget _buildExposureSlider(double h) {
     const gold = kGold;
     final range = _maxExposure - _minExposure;
-    final frac = range > 0
-        ? ((_exposureOffset - _minExposure) / range).clamp(0.0, 1.0)
-        : 0.5;
     const knob = 24.0;
-    return SizedBox(
-      width: 34,
-      height: h,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          // Track.
-          Container(
-            width: 2,
-            height: h,
-            decoration: BoxDecoration(
-              color: gold.withValues(alpha: 0.4),
-              borderRadius: BorderRadius.circular(1),
-              boxShadow: const [
-                BoxShadow(color: Colors.black54, blurRadius: 3),
-              ],
-            ),
-          ),
-          // Sun knob.
-          Positioned(
-            bottom: frac * (h - knob),
-            child: Container(
-              width: knob,
-              height: knob,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.black.withValues(alpha: 0.35),
-                boxShadow: [
-                  BoxShadow(color: gold.withValues(alpha: 0.4), blurRadius: 8),
-                ],
+    return ValueListenableBuilder<double>(
+      valueListenable: _evN,
+      builder: (context, ev, _) {
+        final frac = range > 0
+            ? ((ev - _minExposure) / range).clamp(0.0, 1.0)
+            : 0.5;
+        return SizedBox(
+          width: 34,
+          height: h,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Track.
+              Container(
+                width: 2,
+                height: h,
+                decoration: BoxDecoration(
+                  color: gold.withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(1),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black54, blurRadius: 3),
+                  ],
+                ),
               ),
-              child: const Icon(Icons.wb_sunny_rounded, color: gold, size: 16),
-            ),
+              // Sun knob.
+              Positioned(
+                bottom: frac * (h - knob),
+                child: Container(
+                  width: knob,
+                  height: knob,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black.withValues(alpha: 0.35),
+                    boxShadow: [
+                      BoxShadow(
+                        color: gold.withValues(alpha: 0.4),
+                        blurRadius: 8,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.wb_sunny_rounded,
+                    color: gold,
+                    size: 16,
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -4058,44 +4138,51 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // pivot by the angle.
     final double l =
         bandH * (kCrossBottomFrac - kCrossTopFrac) / 2 + _kCrossHandleDrop;
-    final double hx = cx - l * math.sin(_crossAngle);
-    final double hy = pivotY + l * math.cos(_crossAngle);
-    final double g = _crossGlow;
-    final double size = 36 + 6 * g;
-    return Positioned(
-      left: hx - size / 2,
-      top: hy - size / 2,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onPanDown: (_) => _onCrossGrab(),
-        onPanUpdate: _onCrossSpin,
-        onPanEnd: (_) => _onCrossRelease(),
-        onPanCancel: _onCrossRelease,
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.black.withValues(alpha: 0.35 + 0.15 * g),
-            border: Border.all(
-              color: kGold.withValues(alpha: 0.55 + 0.45 * g),
-              width: 1.2 + 0.8 * g,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: kGold.withValues(alpha: 0.22 + 0.5 * g),
-                blurRadius: 6 + 18 * g,
-                spreadRadius: 0.5 + 2 * g,
+    // Listens to the cross ticker directly, so orbiting/glowing repaints only
+    // this small handle — never the page.
+    return ValueListenableBuilder<({double y, double angle, double glow})>(
+      valueListenable: _crossN,
+      builder: (context, c, _) {
+        final double hx = cx - l * math.sin(c.angle);
+        final double hy = pivotY + l * math.cos(c.angle);
+        final double g = c.glow;
+        final double size = 36 + 6 * g;
+        return Positioned(
+          left: hx - size / 2,
+          top: hy - size / 2,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanDown: (_) => _onCrossGrab(),
+            onPanUpdate: _onCrossSpin,
+            onPanEnd: (_) => _onCrossRelease(),
+            onPanCancel: _onCrossRelease,
+            child: Container(
+              width: size,
+              height: size,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.black.withValues(alpha: 0.35 + 0.15 * g),
+                border: Border.all(
+                  color: kGold.withValues(alpha: 0.55 + 0.45 * g),
+                  width: 1.2 + 0.8 * g,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: kGold.withValues(alpha: 0.22 + 0.5 * g),
+                    blurRadius: 6 + 18 * g,
+                    spreadRadius: 0.5 + 2 * g,
+                  ),
+                ],
               ),
-            ],
+              child: Icon(
+                Icons.cached_rounded,
+                color: kGold.withValues(alpha: 0.85 + 0.15 * g),
+                size: 18 + 3 * g,
+              ),
+            ),
           ),
-          child: Icon(
-            Icons.cached_rounded,
-            color: kGold.withValues(alpha: 0.85 + 0.15 * g),
-            size: 18 + 3 * g,
-          ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -4103,8 +4190,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     const double trackH = 150;
     const double knob = 22;
     const double range = kCrossBottomFrac - kCrossTopFrac;
-    final double frac = ((_crossY - kCrossTopFrac) / range).clamp(0.0, 1.0);
-    final double g = _crossGlow; // selection glow drives the knob bloom
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       // Double-tap smoothly eases the cross back (recentre bar + straighten).
@@ -4118,54 +4203,63 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       onVerticalDragUpdate: (d) => _onCrossSlide((d.delta.dy / trackH) * range),
       onVerticalDragEnd: (_) => _onCrossSlideEnd(),
       onVerticalDragCancel: _onCrossSlideEnd,
-      child: SizedBox(
-        width: 36,
-        height: trackH,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // Track — brightens a touch while in use.
-            Container(
-              width: 2,
-              height: trackH,
-              decoration: BoxDecoration(
-                color: kGold.withValues(alpha: 0.4 + 0.4 * g),
-                borderRadius: BorderRadius.circular(1),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black54, blurRadius: 3),
-                ],
-              ),
-            ),
-            // Knob — glows + haloes while sliding.
-            Positioned(
-              top: frac * (trackH - knob),
-              child: Container(
-                width: knob,
-                height: knob,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.black.withValues(alpha: 0.4),
-                  border: Border.all(
-                    color: kGold.withValues(alpha: 0.3 + 0.5 * g),
-                    width: 1,
+      // Knob position + glow ride the cross ticker via the notifier, so a slide
+      // repaints only this little track.
+      child: ValueListenableBuilder<({double y, double angle, double glow})>(
+        valueListenable: _crossN,
+        builder: (context, c, _) {
+          final double frac = ((c.y - kCrossTopFrac) / range).clamp(0.0, 1.0);
+          final double g = c.glow; // selection glow drives the knob bloom
+          return SizedBox(
+            width: 36,
+            height: trackH,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Track — brightens a touch while in use.
+                Container(
+                  width: 2,
+                  height: trackH,
+                  decoration: BoxDecoration(
+                    color: kGold.withValues(alpha: 0.4 + 0.4 * g),
+                    borderRadius: BorderRadius.circular(1),
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black54, blurRadius: 3),
+                    ],
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: kGold.withValues(alpha: 0.35 + 0.45 * g),
-                      blurRadius: 8 + 12 * g,
-                      spreadRadius: 0.5 + 1.5 * g,
+                ),
+                // Knob — glows + haloes while sliding.
+                Positioned(
+                  top: frac * (trackH - knob),
+                  child: Container(
+                    width: knob,
+                    height: knob,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.black.withValues(alpha: 0.4),
+                      border: Border.all(
+                        color: kGold.withValues(alpha: 0.3 + 0.5 * g),
+                        width: 1,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: kGold.withValues(alpha: 0.35 + 0.45 * g),
+                          blurRadius: 8 + 12 * g,
+                          spreadRadius: 0.5 + 1.5 * g,
+                        ),
+                      ],
                     ),
-                  ],
+                    child: const Icon(
+                      Icons.unfold_more_rounded,
+                      color: kGold,
+                      size: 14,
+                    ),
+                  ),
                 ),
-                child: const Icon(
-                  Icons.unfold_more_rounded,
-                  color: kGold,
-                  size: 14,
-                ),
-              ),
+              ],
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -4434,13 +4528,20 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     await nc.setFlashMode(_flashMode);
     _minZoom = await nc.getMinZoomLevel();
     _maxZoom = (await nc.getMaxZoomLevel()).clamp(0, _zoomMax).toDouble();
-    _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom);
+    _setZoomState(_currentZoom.clamp(_minZoom, _maxZoom));
     _isUsingUltraWide = false;
     _controller = nc;
     _recordRefAspect();
     _isSwitchingLens = false;
     if (mounted) setState(() {});
     await _startImageStream();
+  }
+
+  /// Records a zoom change: updates the logic-side field and pushes the display
+  /// notifier, so only the meter/labels repaint — no page rebuild per move.
+  void _setZoomState(double z) {
+    _currentZoom = z;
+    _zoomN.value = z;
   }
 
   /// A whisper-light tick each 0.2× as the zoom scrubs past a step, so the bar
@@ -4467,13 +4568,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final double clamped = value.clamp(_minZoom, _maxZoom);
       try {
         await _CameraZoomChannel.instance.setZoom(clamped);
-        if (mounted) setState(() => _currentZoom = clamped);
+        if (mounted) _setZoomState(clamped);
       } catch (e) {
         // Native channel unavailable — fall back to plugin path.
         debugLog('_setCameraZoom native failed ($e) — using plugin fallback');
         try {
           await _controller!.setZoomLevel(clamped);
-          if (mounted) setState(() => _currentZoom = clamped);
+          if (mounted) _setZoomState(clamped);
         } catch (e2) {
           debugLog('_setCameraZoom plugin: $e2');
         }
@@ -4495,7 +4596,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           try {
             await _controller!.setZoomLevel(clamped);
           } catch (_) {}
-          if (mounted) setState(() => _currentZoom = clamped);
+          if (mounted) _setZoomState(clamped);
           return;
         }
       }
@@ -4505,7 +4606,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       );
       try {
         await _controller!.setZoomLevel(physical);
-        if (mounted) setState(() => _currentZoom = v);
+        if (mounted) _setZoomState(v);
       } catch (e) {
         debugLog('_setCameraZoom ultra-wide: $e');
       }
@@ -4517,7 +4618,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final double clamped = v.clamp(_minZoom, _maxZoom);
       try {
         await _controller!.setZoomLevel(clamped);
-        if (mounted) setState(() => _currentZoom = clamped);
+        if (mounted) _setZoomState(clamped);
       } catch (e) {
         debugLog('_setCameraZoom main: $e');
       }
@@ -4580,18 +4681,22 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Widget _buildZoomMeter() {
     const double pxPerUnit = 36.0;
-    final double clampedZoom = _currentZoom.clamp(_zoomLo, _zoomHi);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(
-          '${clampedZoom.toStringAsFixed(1)}×',
-          style: const TextStyle(
-            color: kGold,
-            fontSize: 13,
-            fontWeight: FontWeight.w300,
-            letterSpacing: 1.4,
+        // Readout + tick wheel listen to the zoom notifier, so scrubbing the
+        // meter (or pinching) repaints just these two, not the page.
+        ValueListenableBuilder<double>(
+          valueListenable: _zoomN,
+          builder: (context, zoom, _) => Text(
+            '${zoom.clamp(_zoomLo, _zoomHi).toStringAsFixed(1)}×',
+            style: const TextStyle(
+              color: kGold,
+              fontSize: 13,
+              fontWeight: FontWeight.w300,
+              letterSpacing: 1.4,
+            ),
           ),
         ),
         const SizedBox(height: 1),
@@ -4603,7 +4708,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             GestureDetector(
               onHorizontalDragStart: (d) {
                 _meterDragStart = d.localPosition.dx;
-                _zoomAtDragStart = clampedZoom;
+                // Read the live field — the meter no longer rebuilds per move,
+                // so a value captured at build time could be stale.
+                _zoomAtDragStart = _currentZoom.clamp(_zoomLo, _zoomHi);
               },
               onHorizontalDragUpdate: (d) {
                 final double delta = d.localPosition.dx - _meterDragStart;
@@ -4615,13 +4722,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               child: SizedBox(
                 width: double.infinity,
                 height: 36,
-                child: CustomPaint(
-                  painter: _ZoomMeterPainter(
-                    zoom: clampedZoom,
-                    minZoom: _zoomLo,
-                    maxZoom: _zoomHi,
-                    pxPerUnit: pxPerUnit,
-                    switchoverFactors: _switchoverFactors,
+                child: ValueListenableBuilder<double>(
+                  valueListenable: _zoomN,
+                  builder: (context, zoom, _) => CustomPaint(
+                    painter: _ZoomMeterPainter(
+                      zoom: zoom.clamp(_zoomLo, _zoomHi),
+                      minZoom: _zoomLo,
+                      maxZoom: _zoomHi,
+                      pxPerUnit: pxPerUnit,
+                      switchoverFactors: _switchoverFactors,
+                    ),
                   ),
                 ),
               ),
@@ -4646,7 +4756,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     const double h = 220.0;
     const double w =
         68.0; // radius of the semicircle = protrusion from screen edge
-    final double clampedZoom = _currentZoom.clamp(0.5, _zoomMax);
 
     return ClipPath(
       clipper: _SemicircleFromRightClipper(),
@@ -4657,7 +4766,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         child: GestureDetector(
           onVerticalDragStart: (d) {
             _meterDragStart = d.localPosition.dy;
-            _zoomAtDragStart = clampedZoom;
+            // Live field, not a build-time capture (no per-move rebuilds now).
+            _zoomAtDragStart = _currentZoom.clamp(0.5, _zoomMax);
           },
           onVerticalDragUpdate: (d) {
             final delta = d.localPosition.dy - _meterDragStart;
@@ -4669,12 +4779,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             _setCameraZoom(newZoom);
           },
           onVerticalDragEnd: (_) {},
-          child: CustomPaint(
-            painter: _VerticalZoomMeterPainter(
-              zoom: clampedZoom,
-              maxZoom: _zoomMax,
-              pxPerUnit: pxPerUnit,
-              switchoverFactors: _switchoverFactors,
+          child: ValueListenableBuilder<double>(
+            valueListenable: _zoomN,
+            builder: (context, zoom, _) => CustomPaint(
+              painter: _VerticalZoomMeterPainter(
+                zoom: zoom.clamp(0.5, _zoomMax),
+                maxZoom: _zoomMax,
+                pxPerUnit: pxPerUnit,
+                switchoverFactors: _switchoverFactors,
+              ),
             ),
           ),
         ),

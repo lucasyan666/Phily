@@ -792,16 +792,12 @@ class _CompositionPainter extends CustomPainter {
   /// L-Arrangement: mirror horizontally (swap which side the L opens to).
   final bool lFlipped;
 
-  /// Cross composition: crossbar position as a fraction of the frame height,
-  /// clamped within the fixed vertical-arm track.
-  final double crossY;
-
-  /// Cross composition: rotation (radians) about the centre of the vertical arm.
-  final double crossAngle;
-
-  /// Cross composition: selection-glow strength (0..1) while the rotate handle
-  /// is held — brightens + blooms the cross lines.
-  final double crossGlow;
+  /// Cross composition: live rendered state — crossbar y (fraction of the frame
+  /// height, clamped to the arm track), rotation (radians) about the arm centre,
+  /// and selection-glow strength (0..1) while the handle is held. Read at paint
+  /// time (like [horizon]) so the 60fps easing ticker triggers repaints via
+  /// [repaint] without rebuilding the page. Null (warm-up) → resting cross.
+  final ValueNotifier<({double y, double angle, double glow})>? cross;
 
   /// Drives the guide-flip transition (spiral + triangles): 0 = settled; sweeps
   /// 0..1 on a flip, dipping the guide's opacity to a trough at 0.5 that hides
@@ -854,9 +850,7 @@ class _CompositionPainter extends CustomPainter {
     this.diagonalTurns = 0,
     this.lTurns = 0,
     this.lFlipped = false,
-    this.crossY = kCrossDefaultY,
-    this.crossAngle = 0,
-    this.crossGlow = 0,
+    this.cross,
     this.gridFlip,
     this.trianglesFlipped = false,
     this.vFlipped = false,
@@ -876,6 +870,11 @@ class _CompositionPainter extends CustomPainter {
   /// Fraction of the frame the golden-spiral rectangle fills (1.0 = edge-to-
   /// edge like the reference; lower for more breathing room).
   static const double _goldenSpiralFill = 1.0;
+
+  /// Height fraction of a height-limited Aspect Ratio crop (the floating-window
+  /// look for 1:1 / 5:4 in landscape) — small enough that the top/bottom
+  /// letterbox strips clearly read, close enough to 1 that the crop stays big.
+  static const double _kAspectWindowFrac = 0.88;
 
   /// Where the Horizon Grid's guide line sits, as a fraction of the camera band
   /// from the top. Nudged just above the golden-section "low horizon" (1/φ ≈
@@ -1667,13 +1666,15 @@ class _CompositionPainter extends CustomPainter {
   // ── Cross ───────────────────────────────────────────────────────────────────
   void _drawCross(Canvas canvas, Size s) {
     final p = _p;
+    // Live rendered state from the easing ticker (default when warming up).
+    final c = cross?.value ?? (y: kCrossDefaultY, angle: 0.0, glow: 0.0);
 
     // Christian cross — centered horizontally. The vertical arm is a FIXED
-    // track; the user slides the crossbar up/down within it (crossY).
+    // track; the user slides the crossbar up/down within it (c.y).
     final double cx = s.width * 0.50;
     final double top = s.height * kCrossTopFrac;
     final double bottom = s.height * kCrossBottomFrac;
-    final double cy = (s.height * crossY).clamp(top, bottom);
+    final double cy = (s.height * c.y).clamp(top, bottom);
 
     // Horizontal crossbar: symmetric, does not reach screen edges.
     final double armLeft = s.width * 0.18;
@@ -1682,9 +1683,9 @@ class _CompositionPainter extends CustomPainter {
     // Hold-to-rotate spins the whole cross about the vertical arm's centre.
     final double pivotY = (top + bottom) / 2;
     canvas.save();
-    if (crossAngle != 0) {
+    if (c.angle != 0) {
       canvas.translate(cx, pivotY);
-      canvas.rotate(crossAngle);
+      canvas.rotate(c.angle);
       canvas.translate(-cx, -pivotY);
     }
     final Offset vTop = Offset(cx, top);
@@ -1694,14 +1695,14 @@ class _CompositionPainter extends CustomPainter {
 
     // Selection glow: two soft, blurred gold halos that fade outward — a gentle
     // bloom rather than a hard outline. Only active briefly while held.
-    if (crossGlow > 0.01) {
+    if (c.glow > 0.01) {
       for (final layer in const [
         (width: 13.0, alpha: 0.16, blur: 9.0),
         (width: 5.0, alpha: 0.38, blur: 4.0),
       ]) {
         final bloom = Paint()
-          ..color = _gold.withValues(alpha: layer.alpha * crossGlow)
-          ..strokeWidth = _sw + layer.width * crossGlow
+          ..color = _gold.withValues(alpha: layer.alpha * c.glow)
+          ..strokeWidth = _sw + layer.width * c.glow
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round
           ..maskFilter = MaskFilter.blur(BlurStyle.normal, layer.blur);
@@ -2026,13 +2027,23 @@ class _CompositionPainter extends CustomPainter {
   // crop of that ratio centred in the band and dims everything outside it, so the
   // user can frame for 1:1 / 4:5 / 16:9 social or print output.
   void _drawAspectRatio(Canvas canvas, Size s) {
-    // The largest crop of the selected ratio, centred in the frame [s]. The frame
-    // itself is rotated to the device hold by _drawOriented, so the ratio keeps
-    // its natural shape (16:9 stays widescreen) and simply turns with the phone.
-    final double r = aspect <= 0 ? 1.0 : aspect;
+    // The largest crop of the selected ratio, centred in the frame [s], which
+    // _drawOriented has already rotated to the device hold. In a landscape hold
+    // the ratio is oriented to the frame the user sees, so a portrait ratio (4:5)
+    // is drawn as its landscape form (5:4) — reading widescreen like 16:9 instead
+    // of a tall sliver with fat side bars. 16:9 (already wide) and 1:1 are
+    // unaffected, and a portrait hold keeps every ratio as authored.
+    double r = aspect <= 0 ? 1.0 : aspect;
+    if (deviceTurns.isOdd && r < 1) r = 1 / r;
     double w, h;
     if (s.width / s.height > r) {
-      h = s.height;
+      // Height-limited: the crop is narrower than the view (1:1 / 5:4 in a
+      // landscape hold), so a full-height crop would dim ONLY the side pillars.
+      // Inset it into a floating window instead — the dim then frames the crop
+      // on all four sides, giving the top/bottom letterbox strips that 16:9
+      // shows, while the ratio stays true. Width-limited crops (16:9 here, and
+      // every ratio in portrait) are untouched: full width, top/bottom bars.
+      h = s.height * _kAspectWindowFrac;
       w = h * r;
     } else {
       w = s.width;
@@ -2069,9 +2080,6 @@ class _CompositionPainter extends CustomPainter {
       old.diagonalTurns != diagonalTurns ||
       old.lTurns != lTurns ||
       old.lFlipped != lFlipped ||
-      old.crossY != crossY ||
-      old.crossAngle != crossAngle ||
-      old.crossGlow != crossGlow ||
       old.trianglesFlipped != trianglesFlipped ||
       old.vFlipped != vFlipped ||
       old.aspect != aspect ||
