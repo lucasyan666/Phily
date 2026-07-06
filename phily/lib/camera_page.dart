@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:phily/debug.dart';
+import 'package:flutter/physics.dart' show FrictionSimulation;
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
@@ -206,6 +207,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   final ValueNotifier<double> _zoomN = ValueNotifier(1.0);
   double _baseZoom = 1.0;
   int _lastZoomTick = 5; // 1.0× / 0.2 — last 0.2× step that fired a haptic
+  double _lastFeltZoom = 1.0; // previous zoom seen by the feel dispatcher
+  bool _zoomAtStop = false; // debounce: one thud per visit to a range end
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
   // Lens mode for the zoom bar: false → normal (1.0×–25×), true → ultra-wide
@@ -213,7 +216,38 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   bool _ultraZoomMode = false;
   bool get _hasUltraWide => _ultraWideCamera != null || _minZoom < 0.99;
   double get _zoomLo => _ultraZoomMode ? 0.5 : 1.0;
-  double get _zoomHi => _ultraZoomMode ? 1.0 : _zoomMax;
+  // Ultra-wide tops out JUST under 1.0×: at exactly 1.0 the camera switches
+  // back to the main lens (a jarring controller swap mid-scrub). The readout
+  // caps at 0.9× (see _zoomLabel) so it never shows a misleading "1.0×".
+  double get _zoomHi => _ultraZoomMode ? 0.99999 : _zoomMax;
+
+  // ── Zoom belt "feel" ─────────────────────────────────────────────────────
+  // Readout pop on labelled stops, tick-wheel swell while a finger is down,
+  // coasting fling on release, and the dial-density morph between lens modes.
+  // All notifier/painter-driven — none of these rebuild the page per frame.
+  late final AnimationController _readoutPop = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 240),
+  );
+  late final AnimationController _beltEngage = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 180),
+  );
+  late final AnimationController _zoomFling = AnimationController.unbounded(
+    vsync: this,
+  )..addListener(_onZoomFling);
+  late final AnimationController _dialMorph = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 260),
+    value: 1.0,
+  );
+  double _pxFrom = 36.0, _pxTo = 36.0;
+
+  /// The belt's live px-per-zoom-unit — tweened between lens modes (36 on the
+  /// 1–25× belt, 320 on the 0.5 dial) so the tick wheel visibly stretches /
+  /// compresses instead of snapping density.
+  double get _beltPxNow =>
+      ui.lerpDouble(_pxFrom, _pxTo, kEaseOut.transform(_dialMorph.value))!;
 
   // Swipe-to-switch-composition tracking (single-finger horizontal swipe on the
   // preview). Kept separate from pinch-zoom via the max-pointer-count check.
@@ -851,6 +885,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _focalAnim.dispose();
     _crossSpinCtl.dispose();
     _tipAnim.dispose();
+    _readoutPop.dispose();
+    _beltEngage.dispose();
+    _zoomFling.dispose();
+    _dialMorph.dispose();
     _eyeRepaint.dispose();
     _alignLevel.dispose();
     _crossN.dispose();
@@ -953,6 +991,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   void _onScaleStart(ScaleStartDetails details) {
+    _zoomFling.stop(); // a fresh touch takes over from any coasting fling
+    _zoomAtStop = false; // re-arm the range-end thud
     _baseZoom = _currentZoom;
     _swipeStartX = _swipeLastX = details.focalPoint.dx;
     _swipeStartY = _swipeLastY = details.focalPoint.dy;
@@ -1095,9 +1135,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _swipeLastY = details.focalPoint.dy;
     if (_controller == null || !_controller!.value.isInitialized) return;
 
-    // Two fingers → pinch zoom, constrained to the active lens range.
+    // Two fingers → pinch zoom, constrained to the active lens range (with a
+    // firm thud when the pinch hits either end of it).
     if (details.pointerCount > 1) {
-      final double newZoom = (_baseZoom * details.scale).clamp(
+      final double newZoom = _clampWithStopThud(
+        _baseZoom * details.scale,
         _zoomLo,
         _zoomHi,
       );
@@ -1271,6 +1313,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   Future<void> _capturePhoto() async {
     if (_controller == null || !_controller!.value.isInitialized) return;
 
+    // Shutter weight — the press lands with real heft.
+    HapticFeedback.heavyImpact();
+
     // Show shutter flash immediately for instant feedback
     setState(() {
       _showShutterFlash = true;
@@ -1311,6 +1356,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         await Gal.putImage(filePath, album: 'Phily');
       }
 
+      // Save landed — a settled confirmation as the media reaches the library
+      // (the bounce animation is the visual half of this moment).
+      HapticFeedback.mediumImpact();
+
       // Refresh thumbnail after save completes
       _loadLatestThumbnail();
     } catch (e) {
@@ -1324,6 +1373,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         _isRecording) {
       return;
     }
+
+    // The "REC" clunk — a quick double tick, like a mechanical record switch.
+    HapticFeedback.lightImpact();
+    Future.delayed(
+      const Duration(milliseconds: 70),
+      HapticFeedback.lightImpact,
+    );
 
     // Trigger animations immediately for instant feedback
     _recordingStopwatch
@@ -1362,6 +1418,13 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Future<void> _stopVideoRecording() async {
     if (_controller == null || !_isRecording) return;
+
+    // Matching double tick on the way out of recording.
+    HapticFeedback.lightImpact();
+    Future.delayed(
+      const Duration(milliseconds: 70),
+      HapticFeedback.lightImpact,
+    );
 
     _recordingTimer?.cancel();
     _recordingStopwatch.stop();
@@ -1953,6 +2016,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // 2 = level on the guide. Drives the shared top hint bubble + the haptic.
   final ValueNotifier<int> _hzLevel = ValueNotifier(0);
   int _hzPrevLevel = 0;
+  // Zero-cross detent state: armed once the horizon has tilted meaningfully,
+  // fires one crisp tick as it sweeps through level, then waits for the next
+  // real tilt (so jitter around 0° can't machine-gun it).
+  bool _hzZeroArmed = false;
+  double _hzZeroPrev = 0;
 
   // ── Hold-it-straight level cue ──────────────────────────────────────────────
   // Attitude for the jet-style "keep the camera level" dial, or null when the
@@ -2193,6 +2261,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ? 3
           : (anyAlmost ? 1 : 0);
     }
+    // Losing "perfect" gets a barely-there tick — drift is felt, not punished
+    // (the reward for LANDING it stays the big alignmentPing above).
+    if (level < 2 && _alignLevel.value >= 2) HapticFeedback.selectionClick();
     _alignLevel.value = level;
 
     if (_faceBoxes.isNotEmpty && !(_faceAnim?.isAnimating ?? false)) {
@@ -2305,8 +2376,26 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       if (lvl != _hzLevel.value) _hzLevel.value = lvl;
       if (lvl == 2 && _hzPrevLevel != 2) {
         _haptic('alignmentPing', intensity: 1.0);
+      } else if (lvl != 2 && _hzPrevLevel == 2) {
+        // Losing "Level" gets a barely-there tick — drift felt, not punished.
+        HapticFeedback.selectionClick();
       }
       _hzPrevLevel = lvl;
+
+      // Zero-cross detent: arm once the line has tilted past ~3°, fire one
+      // crisp tick the instant it sweeps through 0° — you can level the phone
+      // by feel alone — then re-arm on the next real tilt.
+      if (_hzDOp > 0.4) {
+        if (_hzDAngle.abs() > 0.05) _hzZeroArmed = true;
+        if (_hzZeroArmed &&
+            _hzZeroPrev != 0 &&
+            _hzDAngle != 0 &&
+            (_hzDAngle < 0) != (_hzZeroPrev < 0)) {
+          _hzZeroArmed = false;
+          HapticFeedback.selectionClick();
+        }
+        _hzZeroPrev = _hzDAngle;
+      }
     } else if (_hzLevel.value != 0) {
       _hzLevel.value = 0;
       _hzPrevLevel = 0;
@@ -2806,16 +2895,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                             horizontal: 7,
                             vertical: 4,
                           ),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.35),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.10),
-                              width: 0.5,
-                            ),
-                          ),
+                          decoration: glassChipDecoration(radius: 7),
                           child: Text(
-                            '${zoom.toStringAsFixed(1)}×',
+                            _zoomLabel(zoom),
                             style: const TextStyle(
                               color: kGold,
                               fontSize: 11,
@@ -2835,164 +2917,178 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             left: 0,
             right: 0,
             bottom: 0,
-            child: _frostedChrome(
-              Container(
-                key: _bottomPanelKey,
-                padding: const EdgeInsets.only(
-                  left: 20,
-                  right: 20,
-                  bottom: 16,
-                  top: 4,
-                ),
-                decoration: _chromeDecoration(top: false),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Composition guide scrollable belt
-                    SizedBox(
-                      height: 45,
-                      child: PageView.builder(
-                        controller: _compositionPageController,
-                        onPageChanged: (index) {
-                          HapticFeedback.selectionClick();
-                          setState(() {
-                            _currentCompositionIndex = index;
-                            _compositionMode = _compositionModes[index];
-                            // Every mode starts fresh on (re-)entry: turn/flip
-                            // orientations reset to their defaults.
-                            _resetModeOrientations();
-                            if (_compositionMode == CompositionMode.cross) {
-                              _resetCross();
-                            }
-                          });
-                          if (!_modeLocked) {
-                            _showCompositionTip(); // "best for" bubble (~3s)
-                          } else {
-                            _dismissTip();
-                          }
-                          _syncFocalAnim(); // run the bubble clock only in Focal Mass
-                          _syncImageStream(); // stream/ML only in detection modes
-                        },
-                        itemCount: _compositionModes.length,
-                        itemBuilder: (context, index) {
-                          // Rebuild each label as the belt scrolls, driving its
-                          // pill + scale off the LIVE fractional page position so
-                          // the transition is continuous, not a settle-point swap.
-                          return AnimatedBuilder(
-                            animation: _compositionPageController,
-                            builder: (context, _) {
-                              final double page =
-                                  (_compositionPageController.hasClients &&
-                                      _compositionPageController
-                                          .position
-                                          .haveDimensions)
-                                  ? _compositionPageController.page!
-                                  : _currentCompositionIndex.toDouble();
-                              // 1 at centre → 0 a full page away.
-                              final double t = (1.0 - (index - page).abs())
-                                  .clamp(0.0, 1.0);
-                              return GestureDetector(
-                                // Tap a mode to jump (in addition to swiping);
-                                // opaque so the whole slot is tappable.
-                                behavior: HitTestBehavior.opaque,
-                                onTap: () => _goToCompositionIndex(index),
-                                child: Center(
-                                  child: Transform.scale(
-                                    scale:
-                                        0.9 + 0.1 * Curves.easeOut.transform(t),
-                                    child: _buildCompositionButton(
-                                      _compositionModes[index].label,
-                                      t,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Gold-leaf edge where the chrome meets the preview.
+                const GildedHairline(opacity: 0.55),
+                _frostedChrome(
+                  Container(
+                    key: _bottomPanelKey,
+                    padding: const EdgeInsets.only(
+                      left: 20,
+                      right: 20,
+                      bottom: 16,
+                      top: 4,
+                    ),
+                    decoration: _chromeDecoration(top: false),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Composition guide scrollable belt
+                        SizedBox(
+                          height: 45,
+                          child: PageView.builder(
+                            controller: _compositionPageController,
+                            onPageChanged: (index) {
+                              HapticFeedback.selectionClick();
+                              setState(() {
+                                _currentCompositionIndex = index;
+                                _compositionMode = _compositionModes[index];
+                                // Every mode starts fresh on (re-)entry: turn/flip
+                                // orientations reset to their defaults.
+                                _resetModeOrientations();
+                                if (_compositionMode == CompositionMode.cross) {
+                                  _resetCross();
+                                }
+                              });
+                              if (!_modeLocked) {
+                                _showCompositionTip(); // "best for" bubble (~3s)
+                              } else {
+                                _dismissTip();
+                              }
+                              _syncFocalAnim(); // run the bubble clock only in Focal Mass
+                              _syncImageStream(); // stream/ML only in detection modes
+                            },
+                            itemCount: _compositionModes.length,
+                            itemBuilder: (context, index) {
+                              // Rebuild each label as the belt scrolls, driving its
+                              // pill + scale off the LIVE fractional page position so
+                              // the transition is continuous, not a settle-point swap.
+                              return AnimatedBuilder(
+                                animation: _compositionPageController,
+                                builder: (context, _) {
+                                  final double page =
+                                      (_compositionPageController.hasClients &&
+                                          _compositionPageController
+                                              .position
+                                              .haveDimensions)
+                                      ? _compositionPageController.page!
+                                      : _currentCompositionIndex.toDouble();
+                                  // 1 at centre → 0 a full page away.
+                                  final double t = (1.0 - (index - page).abs())
+                                      .clamp(0.0, 1.0);
+                                  return GestureDetector(
+                                    // Tap a mode to jump (in addition to swiping);
+                                    // opaque so the whole slot is tappable.
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: () => _goToCompositionIndex(index),
+                                    child: Center(
+                                      child: Transform.scale(
+                                        scale:
+                                            0.9 +
+                                            0.1 * Curves.easeOut.transform(t),
+                                        child: _buildCompositionButton(
+                                          _compositionModes[index].label,
+                                          t,
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                ),
+                                  );
+                                },
                               );
                             },
-                          );
-                        },
-                      ),
-                    ),
-                    if (MediaQuery.of(context).orientation ==
-                        Orientation.portrait) ...[
-                      const SizedBox(height: 2),
-                      if (_isInitialized) _buildZoomMeter(),
-                      const SizedBox(height: 10),
-                    ] else
-                      const SizedBox(height: 8),
-                    // Camera controls row. Flexible side regions keep the capture
-                    // button dead-centre even when the right slot holds two
-                    // controls (e.g. the spiral's turn + flip buttons).
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        // Gallery button (left, centred with capture button)
-                        Expanded(
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: GestureDetector(
-                              onTap: _isRecording ? null : _openGalleryViewer,
-                              child: Container(
-                                width: 52,
-                                height: 52,
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.30),
-                                  borderRadius: BorderRadius.circular(
-                                    kRadiusMd,
-                                  ),
-                                  // A softly gilded frame around the last shot, to
-                                  // rhyme with the gold capture ring beside it.
-                                  border: Border.all(
-                                    color: kGold.withValues(alpha: 0.34),
-                                    width: 1.0,
-                                  ),
-                                  boxShadow: [
-                                    BoxShadow(
+                          ),
+                        ),
+                        if (MediaQuery.of(context).orientation ==
+                            Orientation.portrait) ...[
+                          const SizedBox(height: 2),
+                          if (_isInitialized) _buildZoomMeter(),
+                          const SizedBox(height: 10),
+                        ] else
+                          const SizedBox(height: 8),
+                        // Camera controls row. Flexible side regions keep the capture
+                        // button dead-centre even when the right slot holds two
+                        // controls (e.g. the spiral's turn + flip buttons).
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            // Gallery button (left, centred with capture button)
+                            Expanded(
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: GestureDetector(
+                                  onTap: _isRecording
+                                      ? null
+                                      : _openGalleryViewer,
+                                  child: Container(
+                                    width: 52,
+                                    height: 52,
+                                    decoration: BoxDecoration(
                                       color: Colors.black.withValues(
                                         alpha: 0.30,
                                       ),
-                                      blurRadius: 10,
-                                      offset: const Offset(0, 3),
-                                    ),
-                                  ],
-                                ),
-                                child: _latestThumbnail != null
-                                    ? ClipRRect(
-                                        borderRadius: BorderRadius.circular(
-                                          kRadiusMd - 1,
-                                        ),
-                                        child: Image.memory(
-                                          _latestThumbnail!,
-                                          fit: BoxFit.cover,
-                                        ),
-                                      )
-                                    : _rotated(
-                                        Icon(
-                                          Icons.photo_library_outlined,
-                                          color: kPaper.withValues(alpha: 0.6),
-                                          size: 24,
-                                        ),
+                                      borderRadius: BorderRadius.circular(
+                                        kRadiusMd,
                                       ),
+                                      // A softly gilded frame around the last shot, to
+                                      // rhyme with the gold capture ring beside it.
+                                      border: Border.all(
+                                        color: kGold.withValues(alpha: 0.34),
+                                        width: 1.0,
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(
+                                            alpha: 0.30,
+                                          ),
+                                          blurRadius: 10,
+                                          offset: const Offset(0, 3),
+                                        ),
+                                      ],
+                                    ),
+                                    child: _latestThumbnail != null
+                                        ? ClipRRect(
+                                            borderRadius: BorderRadius.circular(
+                                              kRadiusMd - 1,
+                                            ),
+                                            child: Image.memory(
+                                              _latestThumbnail!,
+                                              fit: BoxFit.cover,
+                                            ),
+                                          )
+                                        : _rotated(
+                                            Icon(
+                                              Icons.photo_library_outlined,
+                                              color: kPaper.withValues(
+                                                alpha: 0.6,
+                                              ),
+                                              size: 24,
+                                            ),
+                                          ),
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                        ),
 
-                        // Capture button (center) - tap for photo, hold for video
-                        _buildGlassCaptureButton(),
+                            // Capture button (center) - tap for photo, hold for video
+                            _buildGlassCaptureButton(),
 
-                        // Right slot: mode-specific control(s) — e.g. spiral
-                        // turn + flip — anchored right, mirroring the gallery.
-                        Expanded(
-                          child: Align(
-                            alignment: Alignment.centerRight,
-                            child: _buildRightSlotControl(),
-                          ),
+                            // Right slot: mode-specific control(s) — e.g. spiral
+                            // turn + flip — anchored right, mirroring the gallery.
+                            Expanded(
+                              child: Align(
+                                alignment: Alignment.centerRight,
+                                child: _buildRightSlotControl(),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                  ],
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
 
@@ -3172,10 +3268,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                       duration: const Duration(milliseconds: 280),
                       transitionBuilder: (child, anim) =>
                           FadeTransition(opacity: anim, child: child),
+                      // No keys — the types differ, and explicit keys crash the
+                      // switcher with "Duplicate keys" if _showTip flips twice
+                      // within 280ms (fast belt scrolling).
                       child: _showTip
-                          ? const SizedBox.shrink(key: ValueKey('hintHidden'))
+                          ? const SizedBox.shrink()
                           : RepaintBoundary(
-                              key: const ValueKey('hint'),
                               child: ValueListenableBuilder<int>(
                                 valueListenable:
                                     _compositionMode ==
@@ -3219,8 +3317,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           if (_showShutterFlash)
             Positioned.fill(child: Container(color: Colors.white)),
 
-          // FPS counter (testing) — top right. Gated by the master debug flag.
-          if (kPhilyDebug)
+          // FPS counter (testing) — top right. Disabled by default; toggle kShowFPS.
+          if (kPhilyDebug && kShowFPS)
             Positioned(
               top: MediaQuery.of(context).padding.top + 60,
               right: 12,
@@ -3302,11 +3400,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               return Positioned.fill(
                 child: AbsorbPointer(
                   absorbing: loading,
+                  // NOTE: deliberately NO keys on the children. The types
+                  // differ, so the switcher still sees every change — but with
+                  // explicit keys, a quick loading→ready→loading flip (lens
+                  // switch re-inits in <450ms) puts two same-keyed children in
+                  // the switcher's stack at once → "Duplicate keys" crash.
+                  // Keyless children fall back to a unique per-entry key.
                   child: AnimatedSwitcher(
                     duration: const Duration(milliseconds: 450),
                     child: loading
-                        ? const BrandedLoader(key: ValueKey('loader'))
-                        : const SizedBox.shrink(key: ValueKey('ready')),
+                        ? const BrandedLoader()
+                        : const SizedBox.shrink(),
                   ),
                 ),
               );
@@ -3326,9 +3430,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// pills FOLLOW the rotation and sit along the edge that has become "up".
   /// Rotate the phone clockwise → its left edge becomes the top → pills go left.
   Alignment get _userTopAlign => switch (_deviceTurns & 3) {
-    1 => Alignment.centerLeft,
+    // Landscape: the banner is vertically centred on the physical edge; the y
+    // offset nudges it along the user's horizontal (toward their left). The two
+    // holds get opposite signs because their physical vertical axes are flipped.
+    1 => const Alignment(-1, 0.08),
     2 => Alignment.bottomCenter,
-    3 => Alignment.centerRight,
+    3 => const Alignment(1, -0.08),
     _ => Alignment.topCenter,
   };
 
@@ -3349,7 +3456,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       3 => const EdgeInsets.only(right: gap),
       // Portrait: a small right inset nudges the centred bubble left of dead
       // centre (half the inset), consistently regardless of the pill's width.
-      _ => EdgeInsets.only(top: portraitTop, right: 24),
+      _ => EdgeInsets.only(top: portraitTop, right: 8),
     };
   }
 
@@ -3473,11 +3580,21 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
+  // Every hint appearance gets a FRESH key (level + sequence): with stable
+  // per-level keys, a level flapping A→B→A within the switch duration puts two
+  // same-keyed children in the AnimatedSwitcher's stack → "Duplicate keys" crash.
+  int _hintSeq = 0;
+  int _hintLastLevel = -1;
+
   /// Top hint for Rule of Thirds. Smoothly morphs between three states:
   ///   0 — translucent instruction pill
   ///   1 — "Almost" (subject's box is on a point, but off-centre)
   ///   2 — "Perfect" (point near the box centre), ambient breathing gold glow.
   Widget _buildCompositionHint(int level) {
+    if (level != _hintLastLevel) {
+      _hintLastLevel = level;
+      _hintSeq++;
+    }
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 340),
       switchInCurve: Curves.easeOut,
@@ -3489,12 +3606,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           child: child,
         ),
       ),
-      child: switch (level) {
-        2 => _perfectBadge(),
-        3 => _eyeLevelBadge(),
-        1 => _almostBadge(),
-        _ => _instructionPill(),
-      },
+      child: KeyedSubtree(
+        key: ValueKey('hint-$level#$_hintSeq'),
+        child: switch (level) {
+          2 => _perfectBadge(),
+          3 => _eyeLevelBadge(),
+          1 => _almostBadge(),
+          _ => _instructionPill(),
+        },
+      ),
     );
   }
 
@@ -3696,14 +3816,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       child: Container(
         width: 52,
         height: 52,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.30),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.28),
-            width: 1.0,
-          ),
-        ),
+        decoration: glassChipDecoration(radius: 10),
         child: Center(
           child: _rotated(
             Text(
@@ -3935,22 +4048,26 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     ),
                   ),
 
-                  // Gilded rim — a gold ring at rest (brightening to white while
-                  // recording); the reflections above lend it a metallic sheen.
-                  Container(
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.transparent,
-                      border: Border.all(
-                        color: _isRecording
-                            ? Colors.white.withValues(
-                                alpha: 0.6 + (0.3 * glowIntensity),
-                              )
-                            : kGold.withValues(alpha: 0.92),
-                        width: 2.5,
+                  // Gilded rim — at rest, a machined-metal bezel (sweep-gradient
+                  // champagne→gold→antique, like a polished watch ring catching
+                  // light); while recording it brightens to a pulsing white ring.
+                  if (_isRecording)
+                    Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.transparent,
+                        border: Border.all(
+                          color: Colors.white.withValues(
+                            alpha: 0.6 + (0.3 * glowIntensity),
+                          ),
+                          width: 2.5,
+                        ),
                       ),
+                    )
+                  else
+                    const Positioned.fill(
+                      child: CustomPaint(painter: MetalRingPainter(width: 2.5)),
                     ),
-                  ),
 
                   // Fine inner hairline — a second, glassier ring just inside the
                   // gilt for a jewelled double-ring.
@@ -4029,29 +4146,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         HapticFeedback.selectionClick();
         setState(() => _gridVisible = !_gridVisible);
       },
-      child: ClipOval(
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.black.withValues(alpha: on ? 0.26 : 0.40),
-              border: Border.all(
-                color: on
-                    ? gold.withValues(alpha: 0.65)
-                    : Colors.white.withValues(alpha: 0.20),
-                width: on ? 1.0 : 0.8,
-              ),
-            ),
-            child: Icon(
-              on ? Icons.grid_3x3_rounded : Icons.grid_off,
-              color: on ? gold : Colors.white.withValues(alpha: 0.6),
-              size: 20,
-            ),
-          ),
+      // Smoked-glass chip (gradient-faked): its old BackdropFilter re-blurred
+      // the live preview behind it EVERY frame — this looks the same and is free.
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        width: 42,
+        height: 42,
+        decoration: glassChipDecoration(circle: true, active: on),
+        child: Icon(
+          on ? Icons.grid_3x3_rounded : Icons.grid_off,
+          color: on ? gold : Colors.white.withValues(alpha: 0.6),
+          size: 20,
         ),
       ),
     );
@@ -4264,10 +4369,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     );
   }
 
-  /// The preview-facing "glass lip" — a warm paper-white hairline that catches
-  /// the light along the edge where the chrome meets the live preview.
+  /// The preview-facing "glass lip" — a whisper of paper-white where the chrome
+  /// meets the live preview. Kept very faint: the statement edge is the
+  /// [GildedHairline] laid along it — gold leaf catching light on the glass rim.
   static const BorderSide _kChromeLip = BorderSide(
-    color: Color(0x26F6F1E7),
+    color: Color(0x14F6F1E7),
     width: 0.8,
   );
 
@@ -4289,14 +4395,20 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         )
       : panel;
 
-  /// Shared decoration for the top/bottom camera chrome: a refined vertical scrim
-  /// — deeper at the device edge for legibility, thinning toward the preview so a
-  /// little of the scene glows through — finished with the warm [_kChromeLip].
+  /// Shared decoration for the top/bottom camera chrome: a smoked-glass scrim —
+  /// deepest at the device edge for legibility, easing off toward the preview so
+  /// the scene glows through the slab — finished with the warm [_kChromeLip].
+  /// Pure gradients: zero per-frame cost over the live preview.
   BoxDecoration _chromeDecoration({required bool top}) => BoxDecoration(
     gradient: LinearGradient(
       begin: top ? Alignment.topCenter : Alignment.bottomCenter,
       end: top ? Alignment.bottomCenter : Alignment.topCenter,
-      colors: const [Color(0x910A0A0C), Color(0x4F0A0A0C)],
+      colors: const [
+        Color(0xB30A0A0C), // deep smoked base at the device edge
+        Color(0x850A0A0C),
+        Color(0x2E0A0A0C), // thins out — the scene breathes through the glass
+      ],
+      stops: const [0.0, 0.55, 1.0],
     ),
     border: Border(
       top: top ? BorderSide.none : _kChromeLip,
@@ -4306,6 +4418,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Widget _buildTopSettingsPanel() {
     const Color gold = kGold;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildTopPanelBody(gold),
+        // Gold-leaf edge where the chrome meets the preview.
+        const GildedHairline(opacity: 0.55),
+      ],
+    );
+  }
+
+  Widget _buildTopPanelBody(Color gold) {
     return _frostedChrome(
       Container(
         key: _topPanelKey,
@@ -4425,20 +4548,26 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(kRadiusLg),
+        // Champagne-lit gilded glass: a lit top lip melting into a whisper of
+        // gold — the pill reads as a jewelled chip, not a tinted box. Alphas all
+        // ride [e], so it materialises into the centred label and dissolves out
+        // of the leaving one. Still pure gradients (belt animates every frame).
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [
-            kGold.withValues(alpha: 0.085 * e),
-            kGold.withValues(alpha: 0.015 * e),
+            kGoldLit.withValues(alpha: 0.16 * e),
+            kGold.withValues(alpha: 0.075 * e),
+            kGold.withValues(alpha: 0.012 * e),
           ],
+          stops: const [0.0, 0.38, 1.0],
         ),
-        border: Border.all(color: kGold.withValues(alpha: 0.45 * e)),
+        border: Border.all(color: kGold.withValues(alpha: 0.5 * e)),
         boxShadow: e > 0.02
             ? [
                 BoxShadow(
-                  color: kGold.withValues(alpha: 0.08 * e),
-                  blurRadius: 9,
+                  color: kGold.withValues(alpha: 0.12 * e),
+                  blurRadius: 11,
                   offset: const Offset(0, 2),
                 ),
               ]
@@ -4544,15 +4673,91 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _zoomN.value = z;
   }
 
-  /// A whisper-light tick each 0.2× as the zoom scrubs past a step, so the bar
-  /// has a tactile "notched" feel. Uses the lightest selection haptic.
+  /// Zoom readout text. Below 1.0× the ultra-wide lens is active and its range
+  /// tops out just under 1.0× (hitting 1.0 switches back to the main lens), so
+  /// the displayed value is capped at 0.9× — the label never claims "1.0×"
+  /// while still on the ultra-wide (0.99999 would round up to exactly that).
+  String _zoomLabel(double zoom) =>
+      '${(zoom < 1.0 ? math.min(zoom, 0.9) : zoom).toStringAsFixed(1)}×';
+
+  /// The zoom "feel" dispatcher — called on every zoom change (drag, pinch,
+  /// fling). Three tiers of feedback:
+  ///  • crossing a hardware switchover stop (the gold ticks) → a firmer
+  ///    lightImpact detent + readout pop;
+  ///  • crossing any labelled stop (majors on the 1–25× belt, every 0.1× on
+  ///    the ultra dial) → readout pop;
+  ///  • every 0.2× (0.05× on the ultra dial) → a whisper selectionClick tick.
   void _zoomHapticTick(double targetZoom) {
-    final double z = targetZoom.clamp(_minZoom, _maxZoom);
-    final int step = (z / 0.2).round();
-    if (step != _lastZoomTick) {
+    // Static bounds (not _minZoom/_maxZoom — those hold the active
+    // controller's PHYSICAL range, which on the two-controller ultra-wide path
+    // starts at 1.0 and would swallow every sub-1× tick).
+    final double z = targetZoom.clamp(0.5, _zoomMax);
+    final double prev = _lastFeltZoom;
+    if (z == prev) return;
+    _lastFeltZoom = z;
+
+    // Detent: swept across a hardware lens-switchover factor?
+    bool detent = false;
+    for (final s in _switchoverFactors) {
+      if ((prev < s) != (z < s)) {
+        detent = true;
+        break;
+      }
+    }
+
+    // Labelled-stop crossing → pop the readout (synced with the detent).
+    bool crossedLabel = detent;
+    if (!crossedLabel) {
+      if (z < 1.0 || prev < 1.0) {
+        crossedLabel = (prev * 10).floor() != (z * 10).floor();
+      } else {
+        for (final m in const [1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 25.0]) {
+          if ((prev < m) != (z < m)) {
+            crossedLabel = true;
+            break;
+          }
+        }
+      }
+    }
+    if (crossedLabel) _readoutPop.forward(from: 0);
+
+    // Finer notches below 1.0× — the ultra-wide belt spans only 0.5 units, so
+    // 0.2× steps would tick just twice across the whole scrub.
+    final double notch = z < 1.0 ? 0.05 : 0.2;
+    final int step = (z / notch).round();
+    if (detent) {
+      HapticFeedback.lightImpact(); // deeper notch at the meaningful stops
+      _lastZoomTick = step; // swallow the whisper tick for this crossing
+    } else if (step != _lastZoomTick) {
       _lastZoomTick = step;
       HapticFeedback.selectionClick();
     }
+  }
+
+  /// Clamp a scrub value to the belt range, landing one firm "hard stop" thud
+  /// the moment the finger pushes past either end — the range ends feel like a
+  /// physical dial hitting its stop. Re-arms once the value comes back inside.
+  double _clampWithStopThud(double raw, double lo, double hi) {
+    final bool atStop = raw < lo - 1e-9 || raw > hi + 1e-9;
+    if (atStop && !_zoomAtStop) HapticFeedback.mediumImpact();
+    _zoomAtStop = atStop;
+    return raw.clamp(lo, hi);
+  }
+
+  /// Fling coast: the belt keeps spinning with friction after release, ticks
+  /// firing as it passes stops, and lands a hard-stop thud if it reaches an
+  /// end of the range.
+  void _onZoomFling() {
+    final double v = _zoomFling.value;
+    final double lo = _zoomLo, hi = _zoomHi;
+    if (v <= lo || v >= hi) {
+      _zoomFling.stop();
+      if (!_zoomAtStop) {
+        _zoomAtStop = true;
+        HapticFeedback.mediumImpact();
+      }
+    }
+    _setCameraZoom(v.clamp(lo, hi));
   }
 
   Future<void> _setCameraZoom(double value) async {
@@ -4634,6 +4839,12 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   void _setLensMode(bool ultra) {
     if (_ultraZoomMode == ultra || (ultra && !_hasUltraWide)) return;
     HapticFeedback.selectionClick();
+    _zoomFling.stop();
+    // Morph the dial density (36↔320 px/unit) instead of snapping — the ticks
+    // visibly stretch apart / compress like a mechanical zoom ring.
+    _pxFrom = _beltPxNow;
+    _pxTo = ultra ? 320.0 : 36.0;
+    _dialMorph.forward(from: 0);
     setState(() => _ultraZoomMode = ultra);
     _setCameraZoom(ultra ? 0.5 : 1.0);
   }
@@ -4680,22 +4891,27 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   }
 
   Widget _buildZoomMeter() {
-    const double pxPerUnit = 36.0;
-
+    // Drag leverage lives in _beltPxNow: 36px ≈ 1× on the 1–25× belt, 320 on
+    // the 0.5-unit ultra dial, tweened between them on lens-mode switches.
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         // Readout + tick wheel listen to the zoom notifier, so scrubbing the
         // meter (or pinching) repaints just these two, not the page.
-        ValueListenableBuilder<double>(
-          valueListenable: _zoomN,
-          builder: (context, zoom, _) => Text(
-            '${zoom.clamp(_zoomLo, _zoomHi).toStringAsFixed(1)}×',
-            style: const TextStyle(
-              color: kGold,
-              fontSize: 13,
-              fontWeight: FontWeight.w300,
-              letterSpacing: 1.4,
+        AnimatedBuilder(
+          animation: Listenable.merge([_zoomN, _readoutPop]),
+          builder: (context, _) => Transform.scale(
+            // A quick 12% pop as the readout crosses a labelled stop, synced
+            // with the detent haptic.
+            scale: 1 + 0.12 * math.sin(math.pi * _readoutPop.value),
+            child: Text(
+              _zoomLabel(_zoomN.value.clamp(_zoomLo, _zoomHi)),
+              style: const TextStyle(
+                color: kGold,
+                fontSize: 13,
+                fontWeight: FontWeight.w300,
+                letterSpacing: 1.4,
+              ),
             ),
           ),
         ),
@@ -4707,6 +4923,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           children: [
             GestureDetector(
               onHorizontalDragStart: (d) {
+                _zoomFling.stop(); // a fresh grab takes over from coasting
+                _zoomAtStop = false; // re-arm the range-end thud
+                _beltEngage.forward(); // the wheel swells under the finger
                 _meterDragStart = d.localPosition.dx;
                 // Read the live field — the meter no longer rebuilds per move,
                 // so a value captured at build time could be stale.
@@ -4714,23 +4933,47 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               },
               onHorizontalDragUpdate: (d) {
                 final double delta = d.localPosition.dx - _meterDragStart;
-                final double newZoom = (_zoomAtDragStart - delta / pxPerUnit)
-                    .clamp(_zoomLo, _zoomHi);
-                _setCameraZoom(newZoom);
+                _setCameraZoom(
+                  _clampWithStopThud(
+                    _zoomAtDragStart - delta / _beltPxNow,
+                    _zoomLo,
+                    _zoomHi,
+                  ),
+                );
               },
-              onHorizontalDragEnd: (_) {},
+              onHorizontalDragEnd: (d) {
+                _beltEngage.reverse();
+                // Fling: the wheel keeps spinning with friction after release,
+                // ticks firing as it coasts — a real jog dial.
+                final double vz = -(d.primaryVelocity ?? 0) / _beltPxNow;
+                if (vz.abs() < 0.3) return;
+                _zoomAtStop = false;
+                _zoomFling.value = _currentZoom.clamp(_zoomLo, _zoomHi);
+                _zoomFling.animateWith(
+                  FrictionSimulation(0.135, _zoomFling.value, vz),
+                );
+              },
+              onHorizontalDragCancel: () => _beltEngage.reverse(),
               child: SizedBox(
                 width: double.infinity,
                 height: 36,
-                child: ValueListenableBuilder<double>(
-                  valueListenable: _zoomN,
-                  builder: (context, zoom, _) => CustomPaint(
+                child: AnimatedBuilder(
+                  // Repaints on zoom changes, the engage swell, and the
+                  // lens-mode density morph — still painter-only, never a
+                  // page rebuild.
+                  animation: Listenable.merge([
+                    _zoomN,
+                    _beltEngage,
+                    _dialMorph,
+                  ]),
+                  builder: (context, _) => CustomPaint(
                     painter: _ZoomMeterPainter(
-                      zoom: zoom.clamp(_zoomLo, _zoomHi),
+                      zoom: _zoomN.value.clamp(_zoomLo, _zoomHi),
                       minZoom: _zoomLo,
                       maxZoom: _zoomHi,
-                      pxPerUnit: pxPerUnit,
+                      pxPerUnit: _beltPxNow,
                       switchoverFactors: _switchoverFactors,
+                      active: Curves.easeOut.transform(_beltEngage.value),
                     ),
                   ),
                 ),
@@ -4765,18 +5008,23 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         color: Colors.black.withValues(alpha: 0.50),
         child: GestureDetector(
           onVerticalDragStart: (d) {
+            _zoomFling.stop();
+            _zoomAtStop = false; // re-arm the range-end thud
             _meterDragStart = d.localPosition.dy;
             // Live field, not a build-time capture (no per-move rebuilds now).
             _zoomAtDragStart = _currentZoom.clamp(0.5, _zoomMax);
           },
           onVerticalDragUpdate: (d) {
             final delta = d.localPosition.dy - _meterDragStart;
-            // Up (negative delta) → zoom in; down → zoom out.
-            final newZoom = (_zoomAtDragStart - delta / pxPerUnit).clamp(
-              0.5,
-              _zoomMax,
+            // Up (negative delta) → zoom in; down → zoom out. Firm thud when
+            // the drag pushes past either end of the full range.
+            _setCameraZoom(
+              _clampWithStopThud(
+                _zoomAtDragStart - delta / pxPerUnit,
+                0.5,
+                _zoomMax,
+              ),
             );
-            _setCameraZoom(newZoom);
           },
           onVerticalDragEnd: (_) {},
           child: ValueListenableBuilder<double>(
@@ -4852,14 +5100,7 @@ class _GridActionButton extends StatelessWidget {
       child: Container(
         width: 52,
         height: 52,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.30),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.28),
-            width: 1.0,
-          ),
-        ),
+        decoration: glassChipDecoration(radius: 10),
         child: Center(child: child),
       ),
     );

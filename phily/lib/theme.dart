@@ -20,6 +20,15 @@ const Color kGold = Color(0xFFE5C158);
 /// A softer, antique-gold partner for fine rules, gradients and secondary marks.
 const Color kGoldDeep = Color(0xFFB8923D);
 
+/// Lit champagne — the highlight where light strikes polished gold. Tops the
+/// metallic gradients (CTA bar, capture ring, badges) so gold reads as metal
+/// catching light, never as a flat fill.
+const Color kGoldLit = Color(0xFFFBE6B4);
+
+/// Warm near-black for the smoked-glass chrome — a breath of warmth over pure
+/// black so panels read as dark glass rather than dead pixels.
+const Color kSmoke = Color(0xFF0A0A0C);
+
 /// Warm off-white for brand surfaces — more refined than pure white, and the
 /// primary text colour on the dark chrome.
 const Color kPaper = Color(0xFFF6F1E7);
@@ -102,6 +111,104 @@ const List<BoxShadow> kSoftShadow = [
   BoxShadow(color: Color(0x59000000), blurRadius: 24, offset: Offset(0, 10)),
   BoxShadow(color: Color(0x24000000), blurRadius: 6, offset: Offset(0, 2)),
 ];
+
+// ── Gilded details ───────────────────────────────────────────────────────────
+
+/// A fine gilded rule that burns brightest at the centre and dissolves to
+/// nothing at the ends — gold leaf catching light along an edge. Used as the
+/// camera chrome's preview-facing lip and as a section ornament on sheets.
+class GildedHairline extends StatelessWidget {
+  final double height;
+  final double opacity;
+  const GildedHairline({super.key, this.height = 1, this.opacity = 1});
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    child: Container(
+      height: height,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            kGold.withValues(alpha: 0),
+            kGold.withValues(alpha: 0.45 * opacity),
+            kGoldLit.withValues(alpha: 0.85 * opacity),
+            kGold.withValues(alpha: 0.45 * opacity),
+            kGold.withValues(alpha: 0),
+          ],
+          stops: const [0.0, 0.24, 0.5, 0.76, 1.0],
+        ),
+      ),
+    ),
+  );
+}
+
+/// Smoked-glass chip — the shared decoration for the camera's small floating
+/// controls (grid toggle, mode action buttons, zoom tag). Deliberately
+/// gradient-faked glass: a warm dark body under a diagonal sheen, finished with
+/// a gold-kissed ([active]) or paper hairline rim and a soft contact shadow.
+/// NO BackdropFilter — these chips float over the live preview, where a real
+/// blur re-rasterises every frame and costs FPS.
+BoxDecoration glassChipDecoration({
+  double radius = kRadiusMd,
+  bool circle = false,
+  bool active = false,
+}) => BoxDecoration(
+  shape: circle ? BoxShape.circle : BoxShape.rectangle,
+  borderRadius: circle ? null : BorderRadius.circular(radius),
+  gradient: LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [
+      Colors.white.withValues(alpha: active ? 0.16 : 0.10),
+      Colors.white.withValues(alpha: 0.03),
+      kSmoke.withValues(alpha: 0.52),
+    ],
+    stops: const [0.0, 0.42, 1.0],
+  ),
+  border: Border.all(
+    color: active
+        ? kGold.withValues(alpha: 0.65)
+        : Colors.white.withValues(alpha: 0.22),
+    width: active ? 1.0 : 0.8,
+  ),
+  boxShadow: [
+    BoxShadow(
+      color: Colors.black.withValues(alpha: 0.32),
+      blurRadius: 10,
+      offset: const Offset(0, 3),
+    ),
+    if (active) BoxShadow(color: kGold.withValues(alpha: 0.16), blurRadius: 12),
+  ],
+);
+
+/// Polished-metal ring — a sweep-gradient stroke that reads as a machined gold
+/// bezel: champagne where the light strikes (upper-left), deepening to antique
+/// gold around the band and back. One stroked circle, so it costs nothing.
+class MetalRingPainter extends CustomPainter {
+  final double width;
+  const MetalRingPainter({this.width = 2.5});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    canvas.drawCircle(
+      rect.center,
+      (size.shortestSide - width) / 2,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = width
+        ..isAntiAlias = true
+        ..shader = const SweepGradient(
+          transform: GradientRotation(-2.4), // light source ≈ upper-left
+          colors: [kGoldLit, kGold, kGoldDeep, kGold, kGoldLit],
+          stops: [0.0, 0.22, 0.55, 0.82, 1.0],
+        ).createShader(rect),
+    );
+  }
+
+  @override
+  bool shouldRepaint(MetalRingPainter old) => old.width != width;
+}
 
 // ── Glass ────────────────────────────────────────────────────────────────────
 

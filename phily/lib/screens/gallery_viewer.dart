@@ -1,3 +1,6 @@
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
@@ -16,6 +19,8 @@ const _gold = kGold;
 
 /// A frosted-look top bar. Uses a dark gradient (NOT a real BackdropFilter blur)
 /// so it's cheap to paint — a live blur here janks the open/close zoom badly.
+/// Warm smoked glass over the grid, finished with the camera chrome's gold-leaf
+/// lip so both screens read as the same slab of dark glass.
 class _FrostBar extends StatelessWidget {
   final Widget child;
   const _FrostBar({required this.child});
@@ -28,18 +33,79 @@ class _FrostBar extends StatelessWidget {
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [
-            Colors.black.withValues(alpha: 0.55),
-            Colors.black.withValues(alpha: 0.16),
+            kSmoke.withValues(alpha: 0.80),
+            kSmoke.withValues(alpha: 0.44),
+            kSmoke.withValues(alpha: 0.12),
           ],
-        ),
-        border: Border(
-          // Warm "glass lip" hairline — matches the camera chrome's edge.
-          bottom: BorderSide(color: kPaper.withValues(alpha: 0.14), width: 0.8),
+          stops: const [0.0, 0.62, 1.0],
         ),
       ),
-      child: child,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          child,
+          // Gold-leaf edge facing the photos — brightest at the centre, like
+          // the camera panels' preview-facing lip.
+          const GildedHairline(opacity: 0.55),
+        ],
+      ),
     );
   }
+}
+
+/// Gilded frost — the viewer's chrome material: a real BackdropFilter blur
+/// under a smoked-glass sheen, finished with a fine gold rim ([rimmed]) and the
+/// app's soft shadow. The full-screen viewer is mostly static, so unlike the
+/// grid's faked frost it can afford true blur; the gilding ties it to the
+/// camera's gold-leaf chrome. Sizes to its [child].
+class _GildedFrost extends StatelessWidget {
+  final Widget child;
+  final BorderRadius borderRadius;
+  final EdgeInsetsGeometry padding;
+  final bool rimmed; // false → caller draws its own rim (e.g. a metal bezel)
+  const _GildedFrost({
+    required this.child,
+    required this.borderRadius,
+    this.padding = EdgeInsets.zero,
+    this.rimmed = true,
+  });
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      borderRadius: borderRadius,
+      boxShadow: kSoftShadow,
+    ),
+    child: ClipRRect(
+      borderRadius: borderRadius,
+      clipBehavior: Clip.antiAliasWithSaveLayer,
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          padding: padding,
+          decoration: BoxDecoration(
+            borderRadius: borderRadius,
+            // Smoked glass: a champagne-warmed sheen at the light source
+            // melting into warm near-black, so the frost reads gilded, not grey.
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.white.withValues(alpha: 0.16),
+                Colors.white.withValues(alpha: 0.04),
+                kSmoke.withValues(alpha: 0.44),
+              ],
+              stops: const [0.0, 0.45, 1.0],
+            ),
+            border: rimmed
+                ? Border.all(color: kGold.withValues(alpha: 0.55), width: 0.9)
+                : null,
+          ),
+          child: child,
+        ),
+      ),
+    ),
+  );
 }
 
 /// Floating frosted-glass action button (share / bin in the pager): a real
@@ -110,7 +176,8 @@ class _GlassCircleButtonState extends State<_GlassCircleButton>
               clipBehavior: Clip.none,
               alignment: Alignment.center,
               children: [
-                // Tap ripple — a ring that expands past the button and fades.
+                // Tap ripple — a champagne ring that expands past the button
+                // and fades, echoing the app's gilded accents.
                 if (t > 0 && t < 1)
                   Transform.scale(
                     scale: 0.85 + 0.7 * ripple,
@@ -120,15 +187,17 @@ class _GlassCircleButtonState extends State<_GlassCircleButton>
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.7 * (1 - t)),
+                          color: kGoldLit.withValues(alpha: 0.75 * (1 - t)),
                           width: 2,
                         ),
                       ),
                     ),
                   ),
-                // Shared liquid-glass disc (blur + sheen + rim + shadow).
-                GlassSurface(
+                // Gilded frost disc — smoked blur, no flat rim: the machined
+                // bezel below is the edge.
+                _GildedFrost(
                   borderRadius: BorderRadius.circular(_d / 2),
+                  rimmed: false,
                   child: SizedBox(
                     width: _d,
                     height: _d,
@@ -137,7 +206,7 @@ class _GlassCircleButtonState extends State<_GlassCircleButton>
                         scale: pop,
                         child: Icon(
                           widget.icon,
-                          color: Colors.white,
+                          color: kPaper,
                           size: widget.iconSize,
                           shadows: const [
                             Shadow(color: Colors.black38, blurRadius: 4),
@@ -145,6 +214,14 @@ class _GlassCircleButtonState extends State<_GlassCircleButton>
                         ),
                       ),
                     ),
+                  ),
+                ),
+                // Machined-gold bezel — the same sweep-gradient ring the camera's
+                // capture button wears, catching light from the upper-left.
+                const IgnorePointer(
+                  child: CustomPaint(
+                    size: Size(_d, _d),
+                    painter: MetalRingPainter(width: 1.6),
                   ),
                 ),
               ],
@@ -160,7 +237,7 @@ Widget _spinner() => const Center(
   child: SizedBox(
     width: 26,
     height: 26,
-    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+    child: CircularProgressIndicator(color: kGold, strokeWidth: 2),
   ),
 );
 
@@ -225,27 +302,50 @@ class _SectionHeaderBar extends StatelessWidget {
     // Accent the most recent days in gold to tie in the app's accent.
     final recent = label == 'Today' || label == 'Yesterday';
     return Container(
-      height: 42,
+      height: 30,
       color: Colors.black,
       alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.only(left: 14, top: 12, bottom: 6),
-      child: Text(
-        label,
-        // Editorial serif for the date — reads like a photo journal.
-        style: brandDisplay(
-          size: 16,
-          weight: FontWeight.w500,
-          color: recent ? _gold : kPaper,
-          letterSpacing: 0.2,
-        ),
+      padding: const EdgeInsets.only(left: 14),
+      child: Row(
+        children: [
+          // A tiny gilded point marks the freshest days — a jewel, not a bullet.
+          if (recent)
+            Container(
+              width: 4,
+              height: 4,
+              margin: const EdgeInsets.only(right: 6),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [kGoldLit, kGoldDeep],
+                ),
+                boxShadow: [
+                  BoxShadow(color: kGold.withValues(alpha: 0.5), blurRadius: 6),
+                ],
+              ),
+            ),
+          Text(
+            // Tracked small-caps date — the camera chrome's label voice.
+            label.toUpperCase(),
+            style: brandLabel(
+              size: 11,
+              weight: FontWeight.w600,
+              color: recent ? _gold : kPaper.withValues(alpha: 0.85),
+              letterSpacing: 2.4,
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-/// Calm empty state when the library has no photos/videos yet.
+/// Calm empty state when the library (or the Phily filter) has nothing yet.
 class _EmptyGallery extends StatelessWidget {
-  const _EmptyGallery();
+  final bool phily; // true → the ALL/PHILY filter is on Phily
+  const _EmptyGallery({this.phily = false});
 
   @override
   Widget build(BuildContext context) {
@@ -273,7 +373,7 @@ class _EmptyGallery extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
-            'No photos yet',
+            phily ? 'No Phily shots yet' : 'No photos yet',
             style: brandDisplay(
               size: 21,
               weight: FontWeight.w500,
@@ -282,7 +382,9 @@ class _EmptyGallery extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            'Photos you capture will appear here',
+            phily
+                ? 'Photos you capture with Phily appear here'
+                : 'Photos you capture will appear here',
             style: brandLabel(
               size: 12.5,
               weight: FontWeight.w400,
@@ -306,25 +408,9 @@ class _ScrubBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            Colors.black.withValues(alpha: 0.82),
-            Colors.black.withValues(alpha: 0.62),
-          ],
-        ),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _gold.withValues(alpha: 0.55), width: 0.8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.35),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
+      // The camera's shared smoked-glass chip, gold-kissed (active) — the scrub
+      // bubble is a "live" control, so it wears the lit rim.
+      decoration: glassChipDecoration(radius: 14, active: true),
       child: Text(
         label,
         style: const TextStyle(
@@ -369,6 +455,9 @@ class _FastScrollThumbState extends State<_FastScrollThumb> {
   bool _active = false;
   double _dragFrac = 0;
   double _usable = 1;
+  // Last date shown in the scrub bubble — a ratchet tick fires each time it
+  // changes, so scrubbing through time feels detented (iOS Photos-style).
+  String _scrubLabel = '';
 
   @override
   Widget build(BuildContext context) {
@@ -404,6 +493,7 @@ class _FastScrollThumbState extends State<_FastScrollThumb> {
                     behavior: HitTestBehavior.opaque,
                     onPointerDown: (_) {
                       _dragFrac = f;
+                      _scrubLabel = widget.labelForFrac(f);
                       setState(() => _active = true);
                       widget.onGrab();
                     },
@@ -413,6 +503,12 @@ class _FastScrollThumbState extends State<_FastScrollThumb> {
                         1.0,
                       );
                       widget.onScrub(_dragFrac);
+                      // Ratchet tick each time the scrubbed-to date changes.
+                      final String l = widget.labelForFrac(_dragFrac);
+                      if (l != _scrubLabel) {
+                        _scrubLabel = l;
+                        HapticFeedback.selectionClick();
+                      }
                     },
                     onPointerUp: (_) {
                       if (_active) setState(() => _active = false);
@@ -462,6 +558,71 @@ class _FastScrollThumbState extends State<_FastScrollThumb> {
   }
 }
 
+/// ALL / PHILY segmented switch in the gallery's top bar — the whole library,
+/// or just the shots captured with the app. Same design language as the
+/// camera's .5×/1× lens toggle: a smoked pill whose active segment is a
+/// polished-gold chip with a soft glow.
+class _AlbumToggle extends StatelessWidget {
+  final bool philyOnly;
+  final ValueChanged<bool> onChanged;
+  const _AlbumToggle({required this.philyOnly, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget seg(String label, bool value) {
+      final bool active = philyOnly == value;
+      return GestureDetector(
+        onTap: () => onChanged(value),
+        child: AnimatedContainer(
+          duration: kDurFast,
+          curve: kEaseOut,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            gradient: active
+                ? const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [kGoldLit, kGold],
+                  )
+                : null,
+            borderRadius: BorderRadius.circular(kRadiusLg),
+            boxShadow: active
+                ? [
+                    BoxShadow(
+                      color: kGold.withValues(alpha: 0.35),
+                      blurRadius: 8,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Text(
+            label,
+            style: brandLabel(
+              size: 9.5,
+              weight: active ? FontWeight.w700 : FontWeight.w500,
+              color: active ? Colors.black : kPaper.withValues(alpha: 0.55),
+              letterSpacing: 1.6,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(kRadiusLg),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [seg('ALL', false), seg('PHILY', true)],
+      ),
+    );
+  }
+}
+
 /// A glassy grid of the library's photos & videos (most recent first). The asset
 /// list is loaded once and cached; tap a cell to open the full-screen pager.
 class GalleryGridPage extends StatefulWidget {
@@ -494,6 +655,15 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   // Multi-select: long-press to enter, tap to toggle, batch share/delete.
   bool _selectMode = false;
   final Set<String> _selectedIds = {};
+  // ALL / PHILY filter: everything in the library, or just the shots captured
+  // with the app (they save into the 'Phily' album — see _saveMediaInBackground
+  // on the camera page). The album handle is resolved lazily on first switch.
+  bool _philyOnly = false;
+  AssetPathEntity? _philyAlbum;
+  bool _philyAlbumResolved = false;
+  // Bumped on every filter switch; in-flight page loads compare against it and
+  // drop their results if the user has toggled again mid-await.
+  int _albumEpoch = 0;
   // Fast-scroll thumb: a tiny grabbable pill on the right edge. The controller
   // lets us jump the grid as you drag; the notifier feeds the thumb's position
   // (0..1) without rebuilding the grid.
@@ -544,13 +714,57 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
     super.dispose();
   }
 
+  /// The album the grid is currently reading from: the whole library, or the
+  /// app's own 'Phily' album when the filter is on (null until it's resolved —
+  /// or forever, if nothing has been captured with the app yet).
+  AssetPathEntity? get _activeAlbum => _philyOnly ? _philyAlbum : widget.album;
+
+  /// Switch the ALL / PHILY filter: resolve the Phily album on first use, then
+  /// reload the grid from page zero. Epoch-guarded so a quick double-toggle
+  /// can't interleave stale pages.
+  Future<void> _setPhilyOnly(bool v) async {
+    if (_philyOnly == v) return;
+    hapticTap();
+    _albumEpoch++;
+    setState(() {
+      _philyOnly = v;
+      _selectMode = false;
+      _selectedIds.clear();
+      _items = [];
+      _loadedPages = 0;
+      _hasMore = true;
+      _loadingMore = false;
+      _loading = true;
+    });
+    if (_scrollCtrl.hasClients) _scrollCtrl.jumpTo(0);
+    if (v && !_philyAlbumResolved) {
+      // Find the app's own album once (created by the first in-app capture).
+      final paths = await PhotoManager.getAssetPathList(
+        type: RequestType.common,
+      );
+      if (!mounted) return;
+      _philyAlbumResolved = true;
+      for (final p in paths) {
+        if (p.name == 'Phily') {
+          _philyAlbum = p;
+          break;
+        }
+      }
+    }
+    await _load();
+  }
+
   Future<void> _load() async {
+    final int epoch = _albumEpoch;
+    final AssetPathEntity? album = _activeAlbum;
+    if (album == null) {
+      // Phily filter on, but nothing captured with the app yet → empty state.
+      if (mounted && epoch == _albumEpoch) setState(() => _loading = false);
+      return;
+    }
     // Just the first page → grid appears right away.
-    final first = await widget.album.getAssetListPaged(
-      page: 0,
-      size: _pageSize,
-    );
-    if (!mounted) return;
+    final first = await album.getAssetListPaged(page: 0, size: _pageSize);
+    if (!mounted || epoch != _albumEpoch) return;
     setState(() {
       _items = first;
       _loadedPages = 1;
@@ -561,12 +775,15 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
 
   Future<void> _loadMore() async {
     if (_loadingMore || !_hasMore) return;
+    final int epoch = _albumEpoch;
+    final AssetPathEntity? album = _activeAlbum;
+    if (album == null) return;
     _loadingMore = true;
-    final next = await widget.album.getAssetListPaged(
+    final next = await album.getAssetListPaged(
       page: _loadedPages,
       size: _pageSize,
     );
-    if (!mounted) {
+    if (!mounted || epoch != _albumEpoch) {
       _loadingMore = false;
       return;
     }
@@ -663,6 +880,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
     final double past = -n.metrics.pixels;
     if (past > 110 && !_dismissing) {
       _dismissing = true;
+      HapticFeedback.lightImpact(); // the "released" click as it lets go
       Navigator.of(context).pop(); // pull past the top → close to the camera
       return true;
     }
@@ -739,7 +957,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
           if (_loading)
             const BrandedLoader()
           else if (_items.isEmpty)
-            const _EmptyGallery()
+            _EmptyGallery(phily: _philyOnly)
           else
             // Inset below the bar so pinned date headers sit under it, not behind.
             Padding(
@@ -870,23 +1088,27 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
             ),
             Expanded(
               child: Text(
-                '${_selectedIds.length} selected',
+                // Tracked small-caps — the brand's chrome-label voice.
+                '${_selectedIds.length} SELECTED',
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                ),
+                style: brandLabel(size: 12.5, letterSpacing: 2.2),
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.ios_share_rounded, color: Colors.white),
+              icon: Icon(
+                Icons.ios_share_rounded,
+                color: _selectedIds.isEmpty
+                    ? Colors.white.withValues(alpha: 0.35)
+                    : Colors.white,
+              ),
               onPressed: _selectedIds.isEmpty ? null : _shareSelected,
             ),
             IconButton(
-              icon: const Icon(
+              icon: Icon(
                 Icons.delete_outline_rounded,
-                color: Colors.white,
+                color: _selectedIds.isEmpty
+                    ? Colors.white.withValues(alpha: 0.35)
+                    : Colors.white,
               ),
               onPressed: _selectedIds.isEmpty ? null : _deleteSelected,
             ),
@@ -896,16 +1118,27 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
     }
     return Padding(
       padding: EdgeInsets.only(top: topInset, bottom: 10, left: 16, right: 16),
-      child: const Center(
-        child: Text(
-          'Photos',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 17,
-            fontWeight: FontWeight.w500,
-            letterSpacing: 0.3,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Tracked small-caps — the same chrome-label voice as the camera page.
+          Text(
+            'GALLERY',
+            style: brandLabel(
+              size: 13.5,
+              weight: FontWeight.w600,
+              letterSpacing: 3.2,
+            ),
           ),
-        ),
+          // ALL / PHILY filter, floated on the right edge of the bar.
+          Align(
+            alignment: Alignment.centerRight,
+            child: _AlbumToggle(
+              philyOnly: _philyOnly,
+              onChanged: _setPhilyOnly,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -970,12 +1203,24 @@ class _GridThumbState extends State<_GridThumb> {
             scale: widget.selected ? 0.86 : 1.0,
             duration: const Duration(milliseconds: 140),
             curve: Curves.easeOut,
-            child: ClipRRect(
-              borderRadius: radius,
-              child: Image.memory(
-                bytes,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
+            child: Container(
+              // A gold rim hugs the lifted cell while it's selected.
+              foregroundDecoration: widget.selected
+                  ? BoxDecoration(
+                      borderRadius: radius,
+                      border: Border.all(
+                        color: _gold.withValues(alpha: 0.75),
+                        width: 1.4,
+                      ),
+                    )
+                  : null,
+              child: ClipRRect(
+                borderRadius: radius,
+                child: Image.memory(
+                  bytes,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                ),
               ),
             ),
           ),
@@ -989,8 +1234,12 @@ class _GridThumbState extends State<_GridThumb> {
                   vertical: 1.5,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.42),
+                  color: kSmoke.withValues(alpha: 0.55),
                   borderRadius: BorderRadius.circular(kRadiusSm),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.16),
+                    width: 0.6,
+                  ),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -1014,8 +1263,8 @@ class _GridThumbState extends State<_GridThumb> {
                 ),
               ),
             ),
-          // Selection check (multi-select mode): gold filled when selected,
-          // hollow white otherwise.
+          // Selection check (multi-select mode): polished-gold metal when
+          // selected (champagne→antique, like the paywall badge), hollow otherwise.
           if (widget.selecting)
             Positioned(
               right: 6,
@@ -1025,15 +1274,22 @@ class _GridThumbState extends State<_GridThumb> {
                 height: 22,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
+                  gradient: widget.selected
+                      ? const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [kGoldLit, kGold, kGoldDeep],
+                        )
+                      : null,
                   color: widget.selected
-                      ? _gold
+                      ? null
                       : Colors.black.withValues(alpha: 0.3),
                   border: Border.all(color: Colors.white, width: 1.5),
                   boxShadow: widget.selected
                       ? [
                           BoxShadow(
-                            color: _gold.withValues(alpha: 0.5),
-                            blurRadius: 6,
+                            color: _gold.withValues(alpha: 0.55),
+                            blurRadius: 8,
                           ),
                         ]
                       : null,
@@ -1094,20 +1350,34 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
   bool _deleting = false;
   // Immersive viewing: tap a photo to hide the top bar + buttons.
   bool _chromeVisible = true;
+  // Whether the swipe-down drag is past the release-to-close threshold —
+  // debounces the threshold click so it fires once per crossing.
+  bool _pastDismiss = false;
+  // True once the open-zoom transition has settled. The gilded-frost chrome
+  // (three real BackdropFilter blurs) is NOT painted until then — a blur
+  // re-rasterises every frame while the page scales, which was the jitter in
+  // the open animation. Chrome fades in the moment the photo lands instead.
+  bool _entered = false;
+  Animation<double>? _enterAnim;
 
   void _toggleChrome() => setState(() => _chromeVisible = !_chromeVisible);
 
   // Fades a chrome element with the tap-to-hide toggle and blocks its taps once
-  // hidden. (The inner Opacity still handles the swipe-down/delete fades.)
-  Widget _chrome(Widget child) => IgnorePointer(
-    ignoring: !_chromeVisible,
-    child: AnimatedOpacity(
-      opacity: _chromeVisible ? 1.0 : 0.0,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-      child: child,
-    ),
-  );
+  // hidden; held at 0 (unpainted, so its blur costs nothing) until the open
+  // transition settles. (The inner Opacity still handles the swipe-down/delete
+  // fades.)
+  Widget _chrome(Widget child) {
+    final bool shown = _chromeVisible && _entered;
+    return IgnorePointer(
+      ignoring: !shown,
+      child: AnimatedOpacity(
+        opacity: shown ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        child: child,
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -1129,7 +1399,27 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_entered || _enterAnim != null) return;
+    final anim = ModalRoute.of(context)?.animation;
+    if (anim == null || anim.isCompleted) {
+      _entered = true;
+    } else {
+      _enterAnim = anim..addStatusListener(_onEnterStatus);
+    }
+  }
+
+  void _onEnterStatus(AnimationStatus s) {
+    if (s != AnimationStatus.completed) return;
+    _enterAnim?.removeStatusListener(_onEnterStatus);
+    _enterAnim = null;
+    if (mounted) setState(() => _entered = true);
+  }
+
+  @override
   void dispose() {
+    _enterAnim?.removeStatusListener(_onEnterStatus);
     _controller.dispose();
     _deleteCtrl.dispose();
     _springCtrl.dispose();
@@ -1176,9 +1466,15 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
     // isn't rebuilt mid-drag.
     final v = _drag.value + d.delta.dy;
     _drag.value = v < 0 ? 0 : v; // downward only
+    // One light click the moment the drag crosses the release-to-close
+    // threshold — you know it'll dismiss before you let go.
+    final bool past = _drag.value > 110;
+    if (past && !_pastDismiss) HapticFeedback.lightImpact();
+    _pastDismiss = past;
   }
 
   void _onDragEnd(DragEndDetails d) {
+    _pastDismiss = false;
     if (_drag.value > 110 || (d.primaryVelocity ?? 0) > 700) {
       Navigator.of(context).pop();
     } else {
@@ -1271,35 +1567,37 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                     Opacity(
                       opacity: chrome,
                       child: Center(
-                        child: GlassSurface(
+                        child: _GildedFrost(
                           borderRadius: BorderRadius.circular(kRadiusLg),
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 6,
+                            horizontal: 18,
+                            vertical: 7,
                           ),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
+                              // Chrome-label voice (matches the camera page);
+                              // the time glints in gold below the date.
                               Text(
                                 _dateLabel(
                                   widget.assets[_index].createDateTime,
                                 ),
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.3,
+                                style: brandLabel(
+                                  size: 12.5,
+                                  weight: FontWeight.w600,
+                                  letterSpacing: 0.6,
                                 ),
                               ),
+                              const SizedBox(height: 1),
                               Text(
                                 _timeLabel(
                                   widget.assets[_index].createDateTime,
                                 ),
-                                style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.7),
-                                  fontSize: 9.5,
-                                  fontWeight: FontWeight.w400,
-                                  letterSpacing: 0.4,
+                                style: brandLabel(
+                                  size: 9,
+                                  weight: FontWeight.w500,
+                                  color: kGold.withValues(alpha: 0.95),
+                                  letterSpacing: 1.6,
                                 ),
                               ),
                             ],
@@ -1387,6 +1685,8 @@ class _PhotoPageState extends State<_PhotoPage>
   // guards the smaller 1440px preview from clobbering it if it resolves later.
   bool _fullRequested = false;
   bool _fullLoaded = false;
+  bool _previewRequested = false;
+  Animation<double>? _routeAnim;
   final TransformationController _tc = TransformationController();
   bool _zoomed = false;
   late final AnimationController _zoomCtrl;
@@ -1403,9 +1703,36 @@ class _PhotoPageState extends State<_PhotoPage>
         )..addListener(() {
           if (_zoomAnim != null) _tc.value = _zoomAnim!.value;
         });
-    // Show the grid's already-decoded thumbnail instantly (no spinner, no work
-    // during the open transition), then sharpen to full-res in the background.
+    // Show the grid's already-decoded thumbnail instantly — zero work during
+    // the open transition. The 1440px sharpen is deferred until the zoom has
+    // settled (didChangeDependencies): decoding it mid-animation swapped the
+    // full-screen texture mid-zoom, which read as a jitter.
     _bytes = widget.placeholder;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_previewRequested || _routeAnim != null) return;
+    final anim = ModalRoute.of(context)?.animation;
+    if (anim == null || anim.isCompleted) {
+      _loadPreview();
+    } else {
+      _routeAnim = anim..addStatusListener(_onRouteStatus);
+    }
+  }
+
+  void _onRouteStatus(AnimationStatus s) {
+    if (s != AnimationStatus.completed) return;
+    _routeAnim?.removeStatusListener(_onRouteStatus);
+    _routeAnim = null;
+    _loadPreview();
+  }
+
+  // Sharpen from the grid thumbnail to a 1440px preview (post-transition).
+  void _loadPreview() {
+    if (_previewRequested) return;
+    _previewRequested = true;
     widget.asset
         .thumbnailDataWithSize(const ThumbnailSize(1440, 1440), quality: 90)
         .then((b) {
@@ -1437,6 +1764,7 @@ class _PhotoPageState extends State<_PhotoPage>
 
   @override
   void dispose() {
+    _routeAnim?.removeStatusListener(_onRouteStatus);
     _zoomCtrl.dispose();
     _tc.dispose();
     super.dispose();
@@ -1524,17 +1852,14 @@ class _VideoPage extends StatefulWidget {
 
 class _VideoPageState extends State<_VideoPage> {
   VideoPlayerController? _vc;
-  // Autoplay only once the open transition has settled — kicking the decoder off
-  // mid-animation janks the zoom-in. _enterDone flips true when the route's
-  // enter animation completes (or is already past it on a later swipe).
+  // The ENTIRE player init (file resolve + AVPlayer spin-up), not just
+  // autoplay, waits for the open transition to settle — initialising the
+  // decoder mid-animation janks the zoom-in. The grid thumbnail posters the
+  // page in the meantime. _enterDone flips true when the route's enter
+  // animation completes (or is already past it on a later swipe).
   bool _enterDone = false;
+  bool _initStarted = false;
   Animation<double>? _routeAnim;
-
-  @override
-  void initState() {
-    super.initState();
-    _init();
-  }
 
   @override
   void didChangeDependencies() {
@@ -1543,6 +1868,7 @@ class _VideoPageState extends State<_VideoPage> {
     final anim = ModalRoute.of(context)?.animation;
     if (anim == null || anim.isCompleted) {
       _enterDone = true;
+      _init();
     } else {
       _routeAnim = anim..addStatusListener(_onRouteStatus);
     }
@@ -1553,10 +1879,12 @@ class _VideoPageState extends State<_VideoPage> {
     _routeAnim?.removeStatusListener(_onRouteStatus);
     _routeAnim = null;
     _enterDone = true;
-    _tryPlay();
+    _init(); // _tryPlay fires from _init once the controller is ready
   }
 
   Future<void> _init() async {
+    if (_initStarted) return;
+    _initStarted = true;
     final file = await widget.asset.file;
     if (file == null || !mounted) return;
     final vc = VideoPlayerController.file(file);
@@ -1645,8 +1973,10 @@ class _VideoPageState extends State<_VideoPage> {
   }
 }
 
-/// A slim, minimalist video scrubber: gold played track, faint rail, a small
-/// round knob, with monospaced time labels either side. Tap or drag to seek.
+/// A minimal video scrubber — a single line of light (see [_GoldLinePainter]):
+/// molten-gold played thread with a breathing glow and drifting glint, paper
+/// hairline remainder, a glowing point of light at the playhead, and tabular
+/// time labels either side. Tap or drag to seek.
 class _Scrubber extends StatefulWidget {
   final VideoPlayerController controller;
   const _Scrubber({required this.controller});
@@ -1674,6 +2004,9 @@ class _ScrubberState extends State<_Scrubber> with TickerProviderStateMixin {
   bool _playing = false;
   bool _dragging = false; // the finger owns the bar while scrubbing
   final ValueNotifier<double> _frac = ValueNotifier(0);
+  // Bumped every vsync while playing so the shimmer band drifts smoothly even
+  // when the playhead fraction itself barely moves (long videos).
+  final ValueNotifier<int> _tickN = ValueNotifier(0);
 
   @override
   void initState() {
@@ -1698,6 +2031,7 @@ class _ScrubberState extends State<_Scrubber> with TickerProviderStateMixin {
     _press.dispose();
     _glow.dispose();
     _frac.dispose();
+    _tickN.dispose();
     super.dispose();
   }
 
@@ -1721,6 +2055,7 @@ class _ScrubberState extends State<_Scrubber> with TickerProviderStateMixin {
   }
 
   void _onTick(Duration _) {
+    _tickN.value++; // repaint every vsync while playing → the shimmer drifts
     if (_dragging) return;
     double ms = _lastPos.inMilliseconds.toDouble();
     if (_playing) ms += _watch.elapsedMilliseconds * _speed;
@@ -1770,26 +2105,48 @@ class _ScrubberState extends State<_Scrubber> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    const timeStyle = TextStyle(
-      color: Colors.white,
+    // Elapsed glints in champagne; the total rests in dim paper — both tabular
+    // so nothing shifts as the digits tick over, softly shadowed so they stay
+    // legible over bright footage (no chrome behind them, just the film).
+    const List<Shadow> legible = [Shadow(color: Colors.black54, blurRadius: 5)];
+    const TextStyle elapsedStyle = TextStyle(
+      color: kGoldLit,
+      fontSize: 11,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.6,
+      fontFeatures: [FontFeature.tabularFigures()],
+      shadows: legible,
+    );
+    final TextStyle totalStyle = TextStyle(
+      color: kPaper.withValues(alpha: 0.6),
       fontSize: 11,
       fontWeight: FontWeight.w400,
-      letterSpacing: 0.3,
-      fontFeatures: [FontFeature.tabularFigures()],
+      letterSpacing: 0.6,
+      fontFeatures: const [FontFeature.tabularFigures()],
+      shadows: legible,
     );
     return AnimatedBuilder(
-      animation: Listenable.merge([_frac, _press, _glow]),
+      animation: Listenable.merge([_frac, _press, _glow, _tickN]),
       builder: (context, _) {
         final frac = _frac.value;
         final active = Curves.easeOut.transform(_press.value);
-        // Pulsing glow while selected: breathes between ~0.55 and 1, faded by
-        // the swell so it eases out on release.
+        // Pulsing glow while selected: breathes between ~0.55 and 1, faded
+        // by the swell so it eases out on release.
         final glow = active * (0.55 + 0.45 * _glow.value);
+        // Wall-clock phase — drives the drifting glint AND the resting
+        // breath of the glow, one 2.8s cycle (the paywall CTA's cadence).
+        // Repaints ride the playback ticker, so all the light pauses
+        // gracefully with the film.
+        final double shimmer =
+            (DateTime.now().millisecondsSinceEpoch % 2800) / 2800.0;
         final posMs = (frac * _durMs).round();
         return Row(
           children: [
-            Text(_fmtDuration(Duration(milliseconds: posMs)), style: timeStyle),
-            const SizedBox(width: 10),
+            Text(
+              _fmtDuration(Duration(milliseconds: posMs)),
+              style: elapsedStyle,
+            ),
+            const SizedBox(width: 12),
             Expanded(
               child: LayoutBuilder(
                 builder: (context, c) {
@@ -1810,22 +2167,20 @@ class _ScrubberState extends State<_Scrubber> with TickerProviderStateMixin {
                     onHorizontalDragEnd: (_) => _release(),
                     onHorizontalDragCancel: _release,
                     child: SizedBox(
-                      height: 32,
+                      height: 30,
                       child: CustomPaint(
-                        size: Size(w, 32),
-                        painter: _GlassTubePainter(frac, active, glow),
+                        size: Size(w, 30),
+                        painter: _GoldLinePainter(frac, active, glow, shimmer),
                       ),
                     ),
                   );
                 },
               ),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 12),
             Text(
               _fmtDuration(Duration(milliseconds: _durMs)),
-              style: timeStyle.copyWith(
-                color: Colors.white.withValues(alpha: 0.6),
-              ),
+              style: totalStyle,
             ),
           ],
         );
@@ -1834,129 +2189,138 @@ class _ScrubberState extends State<_Scrubber> with TickerProviderStateMixin {
   }
 }
 
-/// A 3D glass-tube progress bar: a translucent capsule "tube" with cylinder
-/// shading (bright top edge, dark body, faint bottom reflection) that fills with
-/// glowing molten-gold liquid. While you scrub ([active] → 1) the tube swells and
-/// the fluid brightens, and a soft meniscus glow appears at the liquid's leading
-/// edge (the "wet" front you drag). No knob.
-class _GlassTubePainter extends CustomPainter {
+/// A single line of light. The played side is a fine molten-gold thread —
+/// champagne at its origin deepening to gold at the playhead — resting on a
+/// breathing bloom that inhales and exhales even at rest. A champagne glint
+/// ([shimmer]) drifts along the thread while the film plays, and the playhead
+/// itself is a small point of living light: a near-white core in a fine gold
+/// ring, haloed. While you scrub ([active] → 1) the line thickens and
+/// everything brightens. Minimal — one line, all glow.
+class _GoldLinePainter extends CustomPainter {
   final double frac;
   final double active; // 0 resting → 1 actively scrubbing
-  final double glow; // 0..1 pulsing halo while the bar is selected
-  const _GlassTubePainter(this.frac, this.active, this.glow);
+  final double glow; // 0..1 pulsing halo while the bar is held
+  final double shimmer; // 0..1 shared clock: drifting glint + resting breath
+  const _GoldLinePainter(this.frac, this.active, this.glow, this.shimmer);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final w = size.width;
-    final a = active.clamp(0.0, 1.0);
-    final th = 9.0 + 5.0 * a; // tube swells while scrubbing
-    final r = th / 2;
-    if (w <= th) return; // too narrow to draw a sane tube
-    final cy = size.height / 2;
-    final tubeRect = Rect.fromLTWH(0, cy - r, w, th);
-    final tube = RRect.fromRectAndRadius(tubeRect, Radius.circular(r));
+    final double w = size.width;
+    final double cy = size.height / 2;
+    final double a = active.clamp(0.0, 1.0);
+    const double inset = 4.0; // room for the round caps + playhead bloom
+    final double usable = w - inset * 2;
+    if (usable <= 0) return;
+    final double fx = inset + usable * frac.clamp(0.0, 1.0);
+    final double th = 2.0 + 1.6 * a; // the line swells under the finger
 
-    // 0) Pulsing halo around the filled liquid while the bar is selected.
-    final gw = (w * frac).clamp(0.0, w);
-    if (glow > 0.01 && gw > 0.5) {
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(
-          Rect.fromLTWH(0, cy - r, gw, th).inflate(2),
-          Radius.circular(r + 2),
-        ),
-        Paint()
-          ..color = Colors.white.withValues(alpha: 0.5 * glow)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 7 + 6 * glow),
-      );
-    }
+    // The resting breath — the glow gently inhales/exhales on the same clock
+    // as the drifting glint, so the line always feels alive, never static.
+    final double breath = 0.5 + 0.5 * math.sin(shimmer * 2 * math.pi);
 
-    // 1) Empty tube — cylinder shading: specular top, dark body, faint reflection.
-    canvas.drawRRect(
-      tube,
+    // 0) Soft dark under-shadow, so the light reads over bright footage.
+    canvas.drawLine(
+      Offset(inset, cy),
+      Offset(w - inset, cy),
       Paint()
-        ..shader = const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0x40FFFFFF), Color(0x73000000), Color(0x1AFFFFFF)],
-          stops: [0.0, 0.55, 1.0],
-        ).createShader(tubeRect),
+        ..color = Colors.black.withValues(alpha: 0.30)
+        ..strokeWidth = th + 3
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
     );
 
-    // 2) Molten-gold liquid, clipped to the tube and the filled fraction.
-    final fw = (w * frac).clamp(0.0, w);
-    if (fw > 0.5) {
-      canvas.save();
-      canvas.clipRRect(tube);
-      final fillRect = Rect.fromLTWH(0, cy - r, fw, th);
-      final fillRRect = RRect.fromRectAndRadius(fillRect, Radius.circular(r));
-      // Luminous halo beneath the liquid — the soft "angelic" glow, brighter
-      // while scrubbing.
-      canvas.drawRRect(
-        fillRRect,
+    // 1) The rail — the unplayed remainder, a bare paper hairline.
+    canvas.drawLine(
+      Offset(fx, cy),
+      Offset(w - inset, cy),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.22)
+        ..strokeWidth = 1.4
+        ..strokeCap = StrokeCap.round,
+    );
+
+    if (fx > inset + 0.5) {
+      // 2) Breathing golden bloom beneath the played thread — swelling
+      //    further with the held pulse ([glow]).
+      canvas.drawLine(
+        Offset(inset, cy),
+        Offset(fx, cy),
         Paint()
-          ..color = Colors.white.withValues(alpha: 0.5 + 0.35 * a)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6 + 5 * a),
+          ..color = kGold.withValues(alpha: 0.28 + 0.14 * breath + 0.35 * glow)
+          ..strokeWidth = th + 2.5
+          ..strokeCap = StrokeCap.round
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 5 + 4 * glow),
       );
-      // Liquid body — pure white sheen → cool near-white → pale, kept luminous
-      // (no grey) for an angelic look.
-      canvas.drawRRect(
-        fillRRect,
+
+      // 3) The molten thread itself — champagne at the origin deepening to
+      //    gold at the playhead.
+      final Rect lineRect = Rect.fromLTRB(inset, cy - th, fx, cy + th);
+      canvas.drawLine(
+        Offset(inset, cy),
+        Offset(fx, cy),
         Paint()
           ..shader = const LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFFFFFFFF), Color(0xFFF3F7FF), Color(0xFFDCE6F6)],
-            stops: [0.0, 0.55, 1.0],
-          ).createShader(fillRect),
+            colors: [kGoldLit, kGold],
+          ).createShader(lineRect)
+          ..strokeWidth = th
+          ..strokeCap = StrokeCap.round,
       );
-      // Glossy "wet" reflections — a bright highlight along the top + a faint
-      // lower one, so it reads as flowing liquid rather than a flat fill.
-      final specW = fw - th;
-      if (specW > 0) {
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromLTWH(r * 0.55, cy - r + 1.1, specW, th * 0.30),
-            Radius.circular(th * 0.18),
-          ),
+
+      // 4) Drifting champagne glint gliding along the thread.
+      final double played = fx - inset;
+      if (played > 24) {
+        final double bandW = math.min(70.0, played * 0.5);
+        final double bx = inset - bandW + (played + 2 * bandW) * shimmer;
+        final Rect band = Rect.fromLTWH(bx, cy - th, bandW, th * 2);
+        canvas.save();
+        canvas.clipRect(Rect.fromLTRB(inset, cy - th * 2, fx, cy + th * 2));
+        canvas.drawLine(
+          Offset(bx, cy),
+          Offset(bx + bandW, cy),
           Paint()
-            ..color = Colors.white.withValues(alpha: 0.85)
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 0.6),
+            ..shader = LinearGradient(
+              colors: [
+                Colors.white.withValues(alpha: 0),
+                Colors.white.withValues(alpha: 0.55),
+                Colors.white.withValues(alpha: 0),
+              ],
+            ).createShader(band)
+            ..strokeWidth = th
+            ..strokeCap = StrokeCap.round,
         );
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromLTWH(r * 0.55, cy + r * 0.4, specW, th * 0.16),
-            Radius.circular(th * 0.1),
-          ),
-          Paint()..color = Colors.white.withValues(alpha: 0.22),
-        );
+        canvas.restore();
       }
-      canvas.restore();
     }
 
-    // 3) Glass rim around the tube.
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(tubeRect.deflate(0.4), Radius.circular(r)),
+    // 5) The playhead — a point of living light: breathing champagne halo
+    //    around a near-white core in a fine gold ring.
+    final double orbR = 2.4 + 1.4 * a;
+    canvas.drawCircle(
+      Offset(fx, cy),
+      orbR + 4.0 + 1.8 * breath + 3.5 * a,
+      Paint()
+        ..color = kGoldLit.withValues(alpha: 0.20 + 0.12 * breath + 0.35 * glow)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+    canvas.drawCircle(
+      Offset(fx, cy),
+      orbR,
+      Paint()..color = const Color(0xFFFFF9E8),
+    );
+    canvas.drawCircle(
+      Offset(fx, cy),
+      orbR + 0.7,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 0.8
-        ..color = Colors.white.withValues(alpha: 0.22 + 0.18 * a),
+        ..strokeWidth = 1.0
+        ..color = kGold.withValues(alpha: 0.85),
     );
-
-    // 4) Meniscus — a soft glow at the liquid's leading edge, only while you're
-    //    scrubbing (no resting knob).
-    if (fw > 0.5 && a > 0.01) {
-      final ex = fw.clamp(r, w - r);
-      canvas.drawCircle(
-        Offset(ex, cy),
-        r * (0.85 + 0.6 * a),
-        Paint()
-          ..color = Colors.white.withValues(alpha: 0.7 * a)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 3 + 5 * a),
-      );
-    }
   }
 
   @override
-  bool shouldRepaint(_GlassTubePainter old) =>
-      old.frac != frac || old.active != active || old.glow != glow;
+  bool shouldRepaint(_GoldLinePainter old) =>
+      old.frac != frac ||
+      old.active != active ||
+      old.glow != glow ||
+      old.shimmer != shimmer;
 }

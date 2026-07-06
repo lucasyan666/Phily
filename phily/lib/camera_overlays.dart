@@ -98,6 +98,7 @@ class _ZoomMeterPainter extends CustomPainter {
   final double maxZoom; // upper bound of the active range
   final double pxPerUnit; // logical pixels per 1×
   final List<double> switchoverFactors; // hardware lens-switch boundaries
+  final double active; // 0 resting → 1 finger on the belt (swells the wheel)
 
   const _ZoomMeterPainter({
     required this.zoom,
@@ -105,6 +106,7 @@ class _ZoomMeterPainter extends CustomPainter {
     required this.pxPerUnit,
     this.minZoom = 0.5,
     this.switchoverFactors = const [],
+    this.active = 0,
   });
 
   static const Color _white = Color(0xFFFFFFFF);
@@ -141,35 +143,56 @@ class _ZoomMeterPainter extends CustomPainter {
       ..strokeWidth = 1.0
       ..strokeCap = StrokeCap.butt;
 
-    // Centre indicator line (gold)
+    // Centre indicator line (gold) — thickens and brightens while engaged.
     final Paint centrePaint = Paint()
       ..color = _gold
-      ..strokeWidth = 1.5
+      ..strokeWidth = 1.5 + 0.7 * active
       ..strokeCap = StrokeCap.butt;
+
+    // Engage swell: everything grows a touch under the finger, the same
+    // press-language as the video scrubber's tube.
+    final double swell = 1 + 0.22 * active;
 
     final TextPainter tp = TextPainter(
       textDirection: TextDirection.ltr,
       textAlign: TextAlign.center,
     );
 
-    // Iterate every 0.1× step in the visible range.
-    double v = (lo * 10).round() / 10;
-    while (v <= hi + 0.05) {
+    // Tick pitch. The ultra-wide dial (range under 1×) is spread out to
+    // ~320px/unit, so it gets fine 0.02× ticks with every 0.1× labelled; the
+    // 1–25× belt keeps classic 0.1× ticks labelled at the _major stops.
+    // Integer stepping avoids float drift at either pitch.
+    final bool ultraDial = maxZoom < 1.0;
+    final double step = ultraDial ? 0.02 : 0.1;
+    int i = (lo / step).round();
+    while (i * step <= hi + step / 2) {
+      final double v = i * step;
+      // Never draw past the range end: in ultra-wide the range tops out just
+      // under 1.0×, and a "1" tick there would advertise an unreachable stop
+      // (the loop's half-step slack would otherwise include it).
+      if (v > maxZoom + 1e-6) break;
       final double x = cx + (v - zoom) * pxPerUnit;
       if (x < 0 || x > size.width) {
-        v = (v * 10).round() / 10 + 0.1;
+        i++;
         continue;
       }
 
       // A tick is a hardware lens-switchover boundary if it matches one of the
       // virtualDeviceSwitchOverVideoZoomFactors reported by iOS. These get a
       // gold accent tick (like the native Camera app's 0.5×/1×/2× indicators).
+      // The tolerance shrinks on the fine-pitch dial so only the single
+      // nearest tick takes the accent.
       final bool isSwitchover = switchoverFactors.any(
-        (s) => (v - s).abs() < 0.08,
+        (s) => (v - s).abs() < (ultraDial ? 0.015 : 0.08),
       );
       final bool isMajor =
-          _major.any((m) => (v - m).abs() < 0.02) || isSwitchover;
-      final double tickH = isSwitchover ? 20.0 : (isMajor ? 16.0 : 8.0);
+          isSwitchover ||
+          (ultraDial
+              ? i % 5 ==
+                    0 // every 0.1× on the spread-out ultra dial
+              : _major.any((m) => (v - m).abs() < 0.02));
+      final double tickH =
+          (isSwitchover ? 20.0 : (isMajor ? 16.0 : 8.0)) * swell;
       final Paint p = isSwitchover
           ? (Paint()
               ..color = _gold.withValues(alpha: 0.75)
@@ -198,17 +221,21 @@ class _ZoomMeterPainter extends CustomPainter {
         tp.paint(canvas, Offset(x - tp.width / 2, cy - tickH - tp.height - 2));
       }
 
-      v = ((v * 10).round() / 10) + 0.1;
-      v = double.parse(v.toStringAsFixed(1)); // avoid float drift
+      i++;
     }
 
     // Centre indicator
-    canvas.drawLine(Offset(cx, cy - 22), Offset(cx, cy), centrePaint);
+    canvas.drawLine(Offset(cx, cy - 22 * swell), Offset(cx, cy), centrePaint);
   }
 
   @override
   bool shouldRepaint(_ZoomMeterPainter old) =>
-      old.zoom != zoom || old.switchoverFactors != switchoverFactors;
+      old.zoom != zoom ||
+      old.pxPerUnit != pxPerUnit ||
+      old.active != active ||
+      old.minZoom != minZoom ||
+      old.maxZoom != maxZoom ||
+      old.switchoverFactors != switchoverFactors;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
