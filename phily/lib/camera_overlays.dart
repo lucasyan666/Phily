@@ -674,38 +674,83 @@ List<_FocalDot> _buildFocalDots() {
 /// Standalone painter for the "hold it level" attitude dial. Kept in its own
 /// CustomPaint + RepaintBoundary so the ~50 Hz gravity updates repaint only this
 /// small dial — never the whole (expensive) composition overlay.
+///
+/// Reads FROSTY WHITE while the shot is off-level and crossfades to molten
+/// GOLD as it locks — the same two-state language as the rest of the chrome
+/// (paper/white at rest, gold for "aligned"). The face is drawn in the USER's
+/// frame and pinned to their bottom-left corner, so it works identically in
+/// portrait and both landscape holds.
 class _LevelDialPainter extends CustomPainter {
   final ValueNotifier<({double roll, double vert, bool level})?> attitude;
   final double bottomInset;
-  _LevelDialPainter(this.attitude, this.bottomInset) : super(repaint: attitude);
+  final double topInset;
+  final int deviceTurns;
+  // Eased 0..1 "aligned" — the frost→gold crossfade rides the ~50 Hz attitude
+  // repaints, so no extra ticker is needed. Seeded from the live verdict so a
+  // page rebuild doesn't replay the bloom.
+  double _litE;
+  _LevelDialPainter(
+    this.attitude,
+    this.bottomInset, {
+    this.topInset = 0,
+    this.deviceTurns = 0,
+  }) : _litE = (attitude.value?.level ?? false) ? 1.0 : 0.0,
+       super(repaint: attitude);
+
+  /// Frosty glass — a cool white against the app's warm golds, so "not yet
+  /// level" reads as ice waiting to be lit.
+  static const Color _frost = Color(0xFFE8F1F8);
 
   @override
   void paint(Canvas canvas, Size size) {
     final a = attitude.value;
     if (a == null) return;
-    const gold = kGold;
     const double r = 32, margin = 20;
-    final double cx = margin + r;
-    final double cy = (size.height - bottomInset) - margin - r;
-    final Offset c = Offset(cx, cy);
+    // Pin the dial to the USER's bottom-left corner for the current hold —
+    // portrait-space coordinates of that corner per quarter-turn.
+    final int t = deviceTurns & 3;
+    final double loY = (size.height - bottomInset) - margin - r;
+    final double hiY = topInset + margin + r;
+    final double lX = margin + r, rX = size.width - margin - r;
+    final Offset c = switch (t) {
+      1 => Offset(rX, loY), // CW landscape → portrait bottom-right
+      2 => Offset(rX, hiY), // upside down → portrait top-right
+      3 => Offset(lX, hiY), // CCW landscape → portrait top-left
+      _ => Offset(lX, loY), // portrait
+    };
+    final double cx = c.dx, cy = c.dy;
     final double roll = a.roll, vert = a.vert;
-    final bool level = a.level;
+
+    // Ease the aligned state so the dial crossfades frost→gold instead of
+    // snapping (~100ms at the 50 Hz attitude stream).
+    final double target = a.level ? 1.0 : 0.0;
+    _litE += (target - _litE) * 0.18;
+    if ((target - _litE).abs() < 0.01) _litE = target;
+    final double lit = _litE;
+    final Color tone = Color.lerp(_frost, kGold, lit)!;
 
     // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°).
     final double rollEx = (roll * 1.8).clamp(-1.3, 1.3);
     // Vertical deflection → horizon offset inside the dial (clamped to the face).
     final double pitchPx = (vert * r * 1.2).clamp(-r * 1.4, r * 1.4);
-    final double lit = level ? 1.0 : 0.0;
 
-    // Soft outer glow (a hint always; blooms when square).
+    // Everything below draws in the user's frame: rotate the whole face about
+    // its centre by the hold, so "up" on the dial is the user's up and the
+    // hold-relative roll/pitch read correctly in any orientation.
+    canvas.save();
+    canvas.translate(cx, cy);
+    canvas.rotate(-t * math.pi / 2);
+    canvas.translate(-cx, -cy);
+
+    // Soft outer glow — frosty breath while free, blooming gold when square.
     canvas.drawCircle(
       c,
       r + 1.5,
       Paint()
-        ..color = gold.withValues(alpha: 0.10 + 0.40 * lit)
+        ..color = tone.withValues(alpha: 0.16 + 0.34 * lit)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.5 + 1.5 * lit
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 3 * lit),
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 5 + 3 * lit),
     );
     // Dark instrument face.
     canvas.drawCircle(
@@ -727,7 +772,7 @@ class _LevelDialPainter extends CustomPainter {
       const Offset(-L, 0),
       const Offset(L, 0),
       Paint()
-        ..color = gold.withValues(alpha: 0.35 + 0.45 * lit)
+        ..color = tone.withValues(alpha: 0.35 + 0.45 * lit)
         ..strokeWidth = 3.5
         ..strokeCap = StrokeCap.round
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
@@ -736,14 +781,14 @@ class _LevelDialPainter extends CustomPainter {
       const Offset(-L, 0),
       const Offset(L, 0),
       Paint()
-        ..color = gold.withValues(alpha: 0.92)
+        ..color = tone.withValues(alpha: 0.92)
         ..strokeWidth = 1.6
         ..strokeCap = StrokeCap.round
         ..isAntiAlias = true,
     );
     // Pitch-ladder ticks (jet feel).
     final tick = Paint()
-      ..color = gold.withValues(alpha: 0.45)
+      ..color = tone.withValues(alpha: 0.45)
       ..strokeWidth = 1.2
       ..strokeCap = StrokeCap.round;
     for (final ty in const [-13.0, 13.0]) {
@@ -754,19 +799,19 @@ class _LevelDialPainter extends CustomPainter {
 
     // ── Fixed centre "aircraft" symbol (the phone) ──
     final ref = Paint()
-      ..color = gold.withValues(alpha: 0.95)
+      ..color = tone.withValues(alpha: 0.95)
       ..strokeWidth = 2.0
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(Offset(cx - 12, cy), Offset(cx - 4, cy), ref);
     canvas.drawLine(Offset(cx + 4, cy), Offset(cx + 12, cy), ref);
-    canvas.drawCircle(c, 1.8, Paint()..color = gold);
+    canvas.drawCircle(c, 1.8, Paint()..color = tone);
 
     // ── Bezel ring + fixed top roll index ──
     canvas.drawCircle(
       c,
       r,
       Paint()
-        ..color = gold.withValues(alpha: 0.55 + 0.35 * lit)
+        ..color = tone.withValues(alpha: 0.55 + 0.35 * lit)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.4,
     );
@@ -775,11 +820,16 @@ class _LevelDialPainter extends CustomPainter {
       ..lineTo(cx + 4, cy - r + 0.5)
       ..lineTo(cx, cy - r + 6)
       ..close();
-    canvas.drawPath(idx, Paint()..color = gold.withValues(alpha: 0.9));
+    canvas.drawPath(idx, Paint()..color = tone.withValues(alpha: 0.9));
+
+    canvas.restore(); // user-frame rotation
   }
 
   @override
-  bool shouldRepaint(_LevelDialPainter old) => old.bottomInset != bottomInset;
+  bool shouldRepaint(_LevelDialPainter old) =>
+      old.bottomInset != bottomInset ||
+      old.topInset != topInset ||
+      old.deviceTurns != deviceTurns;
 }
 
 class _CompositionPainter extends CustomPainter {
@@ -1135,8 +1185,9 @@ class _CompositionPainter extends CustomPainter {
 
       // Clip the whole grid to the camera-visible band so rotated/tilted lines
       // never bleed under the top/bottom chrome panels.
+      final Rect bandRect = Rect.fromLTWH(0, topInset, size.width, bandSpan);
       canvas.save();
-      canvas.clipRect(Rect.fromLTWH(0, topInset, size.width, bandSpan));
+      canvas.clipRect(bandRect);
 
       // Guide line: dashed gold, always visible; blooms when aligned.
       if (aligned > 0.02) {
@@ -1170,6 +1221,7 @@ class _CompositionPainter extends CustomPainter {
         guideC + userRight * (alongExtent * 0.26) + userDown * -13,
         (0.72 + 0.28 * aligned).clamp(0.0, 1.0),
         rot: labelRot,
+        keepWithin: bandRect.deflate(6),
       );
 
       // Detected horizon line (fades with op).
@@ -1211,6 +1263,7 @@ class _CompositionPainter extends CustomPainter {
           c - dir * (alongExtent * 0.26) + userDown * -13,
           op,
           rot: labelRot,
+          keepWithin: bandRect.deflate(6),
         );
       }
       canvas.restore();
@@ -1403,6 +1456,7 @@ class _CompositionPainter extends CustomPainter {
     Offset center,
     double op, {
     double rot = 0,
+    Rect? keepWithin,
   }) {
     if (op <= 0.02) return;
     const gold = kGold;
@@ -1418,6 +1472,21 @@ class _CompositionPainter extends CustomPainter {
       ),
       textDirection: TextDirection.ltr,
     )..layout();
+    // Keep the pill fully inside [keepWithin] (the camera band): in landscape
+    // the tag is rotated a quarter-turn, so its on-screen footprint runs
+    // VERTICALLY and a spot along the line can land under the chrome panels —
+    // where the band clip would slice it. Quarter-turn rotations just swap the
+    // pill's on-screen extents.
+    if (keepWithin != null) {
+      final double pw = tp.width + 18, ph = tp.height + 9;
+      final bool quarter = (rot / (math.pi / 2)).round().isOdd;
+      final double hx = (quarter ? ph : pw) / 2;
+      final double hy = (quarter ? pw : ph) / 2;
+      center = Offset(
+        center.dx.clamp(keepWithin.left + hx, keepWithin.right - hx),
+        center.dy.clamp(keepWithin.top + hy, keepWithin.bottom - hy),
+      );
+    }
     // Rotate the pill about its centre so the tag reads upright for the hold.
     canvas.save();
     canvas.translate(center.dx, center.dy);
