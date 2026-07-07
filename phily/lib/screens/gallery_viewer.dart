@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart' show VelocityTracker;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
@@ -1457,14 +1458,56 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
     await Share.shareXFiles([XFile(file.path)], sharePositionOrigin: origin);
   }
 
-  void _onDragStart(DragStartDetails _) {
-    if (_springCtrl.isAnimating) _springCtrl.stop();
+  // ── Swipe-down-to-dismiss, via RAW pointer events ──────────────────────────
+  // Deliberately NOT a GestureDetector drag: a drag recognizer that wins the
+  // gesture arena keeps every later-landing finger for itself, so a pinch only
+  // worked if both fingers touched down almost simultaneously. Raw Listener
+  // events sit outside the arena entirely — the InteractiveViewer's scale
+  // recognizer now always gets the pinch, however late the second finger
+  // arrives, while single-finger downward drags still drive the dismiss.
+  final Set<int> _livePointers = {};
+  int _primaryPointer = -1;
+  bool _dismissTracking = false;
+  Offset _pointerDownPos = Offset.zero;
+  VelocityTracker? _vt;
+  // True while the current page is pinch-zoomed — its pan owns vertical drags,
+  // so the dismiss must stand down (reported up by the photo/video pages).
+  bool _pageZoomed = false;
+
+  void _onPointerDown(PointerDownEvent e) {
+    _livePointers.add(e.pointer);
+    if (_livePointers.length == 1) {
+      _primaryPointer = e.pointer;
+      _pointerDownPos = e.position;
+      _vt = VelocityTracker.withKind(e.kind)
+        ..addPosition(e.timeStamp, e.position);
+      if (_springCtrl.isAnimating) _springCtrl.stop();
+    } else {
+      // Second finger → this is a pinch, never a dismiss. Spring back.
+      _cancelDismiss();
+    }
   }
 
-  void _onDragUpdate(DragUpdateDetails d) {
+  void _onPointerMove(PointerMoveEvent e) {
+    if (_livePointers.length != 1 ||
+        e.pointer != _primaryPointer ||
+        _pageZoomed) {
+      return;
+    }
+    _vt?.addPosition(e.timeStamp, e.position);
+    if (!_dismissTracking) {
+      // Begin only once the drag is decisively downward — horizontal motion
+      // belongs to the PageView, ambiguous wiggle to nobody.
+      final Offset total = e.position - _pointerDownPos;
+      if (total.dy > 14 && total.dy.abs() > total.dx.abs() * 1.4) {
+        _dismissTracking = true;
+      } else {
+        return;
+      }
+    }
     // Track the finger 1:1 via the notifier — no setState, so the page/video
     // isn't rebuilt mid-drag.
-    final v = _drag.value + d.delta.dy;
+    final v = _drag.value + e.delta.dy;
     _drag.value = v < 0 ? 0 : v; // downward only
     // One light click the moment the drag crosses the release-to-close
     // threshold — you know it'll dismiss before you let go.
@@ -1473,13 +1516,36 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
     _pastDismiss = past;
   }
 
-  void _onDragEnd(DragEndDetails d) {
+  void _onPointerUp(PointerUpEvent e) {
+    _livePointers.remove(e.pointer);
+    if (e.pointer != _primaryPointer || !_dismissTracking) return;
+    _dismissTracking = false;
     _pastDismiss = false;
-    if (_drag.value > 110 || (d.primaryVelocity ?? 0) > 700) {
+    final double vy = _vt?.getVelocity().pixelsPerSecond.dy ?? 0;
+    _vt = null;
+    if (_drag.value > 110 || vy > 700) {
       Navigator.of(context).pop();
     } else {
       _springFrom = _drag.value;
       _springCtrl.forward(from: 0); // ease smoothly back to rest
+    }
+  }
+
+  void _onPointerCancel(PointerCancelEvent e) {
+    _livePointers.remove(e.pointer);
+    if (e.pointer == _primaryPointer) _cancelDismiss();
+  }
+
+  /// Abort an in-progress dismiss (second finger landed / pointer cancelled):
+  /// ease the page back to rest.
+  void _cancelDismiss() {
+    _vt = null;
+    if (!_dismissTracking && _drag.value == 0) return;
+    _dismissTracking = false;
+    _pastDismiss = false;
+    if (_drag.value > 0) {
+      _springFrom = _drag.value;
+      _springCtrl.forward(from: 0);
     }
   }
 
@@ -1496,10 +1562,13 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
 
     return Scaffold(
       backgroundColor: Colors.black, // opaque → nothing heavy renders behind
-      body: GestureDetector(
-        onVerticalDragStart: _onDragStart,
-        onVerticalDragUpdate: _onDragUpdate,
-        onVerticalDragEnd: _onDragEnd,
+      // Raw pointer tracking (not a drag GestureDetector) so the dismiss never
+      // steals late-landing pinch fingers from the InteractiveViewer.
+      body: Listener(
+        onPointerDown: _onPointerDown,
+        onPointerMove: _onPointerMove,
+        onPointerUp: _onPointerUp,
+        onPointerCancel: _onPointerCancel,
         // Repaints on drag/delete only; the PageView is the cached `child`, so
         // swiping to dismiss never rebuilds the photo/video underneath.
         child: AnimatedBuilder(
@@ -1507,12 +1576,17 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
           child: PageView.builder(
             controller: _controller,
             itemCount: total,
-            onPageChanged: (i) => setState(() => _index = i),
+            onPageChanged: (i) => setState(() {
+              _index = i;
+              _pageZoomed = false; // fresh page starts unzoomed
+            }),
             itemBuilder: (_, i) => _GalleryPage(
               asset: widget.assets[i],
               active: i == _index,
               placeholder: widget.thumbs[widget.assets[i].id],
               onTap: _toggleChrome,
+              chromeVisible: _chromeVisible,
+              onZoomed: (z) => _pageZoomed = z,
             ),
           ),
           builder: (context, pageView) {
@@ -1651,19 +1725,35 @@ class _GalleryPage extends StatelessWidget {
   final AssetEntity asset;
   final bool active;
   final Uint8List? placeholder;
-  final VoidCallback? onTap; // tap a photo to hide/show the chrome
+  final VoidCallback? onTap; // tap → hide/show the chrome (photos AND videos)
+  final bool chromeVisible; // the viewer's chrome state (videos fade their UI)
+  final ValueChanged<bool>? onZoomed; // pinch state up to the viewer's dismiss
   const _GalleryPage({
     required this.asset,
     required this.active,
     this.placeholder,
     this.onTap,
+    this.chromeVisible = true,
+    this.onZoomed,
   });
 
   @override
   Widget build(BuildContext context) {
     return asset.type == AssetType.video
-        ? _VideoPage(asset: asset, active: active, placeholder: placeholder)
-        : _PhotoPage(asset: asset, placeholder: placeholder, onTap: onTap);
+        ? _VideoPage(
+            asset: asset,
+            active: active,
+            placeholder: placeholder,
+            onTap: onTap,
+            chromeVisible: chromeVisible,
+            onZoomed: onZoomed,
+          )
+        : _PhotoPage(
+            asset: asset,
+            placeholder: placeholder,
+            onTap: onTap,
+            onZoomed: onZoomed,
+          );
   }
 }
 
@@ -1672,7 +1762,13 @@ class _PhotoPage extends StatefulWidget {
   final AssetEntity asset;
   final Uint8List? placeholder;
   final VoidCallback? onTap;
-  const _PhotoPage({required this.asset, this.placeholder, this.onTap});
+  final ValueChanged<bool>? onZoomed; // report pinch state to the viewer
+  const _PhotoPage({
+    required this.asset,
+    this.placeholder,
+    this.onTap,
+    this.onZoomed,
+  });
 
   @override
   State<_PhotoPage> createState() => _PhotoPageState();
@@ -1770,9 +1866,16 @@ class _PhotoPageState extends State<_PhotoPage>
     super.dispose();
   }
 
+  // Update the zoom flag + report it to the viewer (its swipe-down dismiss
+  // stands down while the photo is zoomed, so pans stay pans).
+  void _setZoomed(bool z) {
+    if (z == _zoomed) return;
+    setState(() => _zoomed = z);
+    widget.onZoomed?.call(z);
+  }
+
   void _onInteractionEnd() {
-    final z = _tc.value.getMaxScaleOnAxis() > 1.02;
-    if (z != _zoomed) setState(() => _zoomed = z);
+    _setZoomed(_tc.value.getMaxScaleOnAxis() > 1.02);
   }
 
   // Double-tap: zoom to the tapped point (2.6×), or snap back if already zoomed.
@@ -1793,8 +1896,7 @@ class _PhotoPageState extends State<_PhotoPage>
       end: target,
     ).animate(CurvedAnimation(parent: _zoomCtrl, curve: Curves.easeOutCubic));
     _zoomCtrl.forward(from: 0).whenComplete(() {
-      final z = target.getMaxScaleOnAxis() > 1.02;
-      if (mounted && z != _zoomed) setState(() => _zoomed = z);
+      if (mounted) _setZoomed(target.getMaxScaleOnAxis() > 1.02);
     });
   }
 
@@ -1840,10 +1942,16 @@ class _VideoPage extends StatefulWidget {
   final AssetEntity asset;
   final bool active;
   final Uint8List? placeholder;
+  final VoidCallback? onTap; // tap → hide/show the chrome (like photos)
+  final bool chromeVisible; // fades the scrubber row with the viewer chrome
+  final ValueChanged<bool>? onZoomed; // report pinch state to the viewer
   const _VideoPage({
     required this.asset,
     required this.active,
     this.placeholder,
+    this.onTap,
+    this.chromeVisible = true,
+    this.onZoomed,
   });
 
   @override
@@ -1852,6 +1960,10 @@ class _VideoPage extends StatefulWidget {
 
 class _VideoPageState extends State<_VideoPage> {
   VideoPlayerController? _vc;
+  // Pinch-zoom, same as photos: pan only while zoomed so the PageView keeps
+  // horizontal swipes and the viewer keeps swipe-down-to-dismiss at 1×.
+  final TransformationController _tc = TransformationController();
+  bool _zoomed = false;
   // The ENTIRE player init (file resolve + AVPlayer spin-up), not just
   // autoplay, waits for the open transition to settle — initialising the
   // decoder mid-animation janks the zoom-in. The grid thumbnail posters the
@@ -1903,20 +2015,29 @@ class _VideoPageState extends State<_VideoPage> {
     _tryPlay(); // play as soon as it's ready and the open animation is done
   }
 
-  // Play when this page is the active one and the open transition has finished.
+  // Set when the user explicitly pauses via the play/pause chip — nothing may
+  // auto-resume it (chrome-toggle rebuilds used to restart a paused video).
+  bool _userPaused = false;
+
+  // Play when this page is the active one, the open transition has finished,
+  // and the user hasn't deliberately paused it.
   void _tryPlay() {
     final vc = _vc;
     if (vc == null || !mounted || !widget.active || !_enterDone) return;
+    if (_userPaused) return; // paused on purpose — stays paused
     if (!vc.value.isPlaying) vc.play();
   }
 
   @override
   void didUpdateWidget(_VideoPage old) {
     super.didUpdateWidget(old);
-    // Pause when swiped off-screen; resume/start when it becomes active again.
+    // Pause when swiped off-screen; auto-resume ONLY on the transition back to
+    // active — a plain rebuild (e.g. tapping to hide/show the chrome) must
+    // leave a user-paused video exactly where it is, showing its frame.
     if (!widget.active) {
+      if (old.active) _userPaused = false; // fresh start when swiped back to
       if (_vc?.value.isPlaying ?? false) _vc?.pause();
-    } else {
+    } else if (!old.active) {
       _tryPlay();
     }
   }
@@ -1924,6 +2045,7 @@ class _VideoPageState extends State<_VideoPage> {
   @override
   void dispose() {
     _routeAnim?.removeStatusListener(_onRouteStatus);
+    _tc.dispose();
     _vc?.dispose();
     super.dispose();
   }
@@ -1931,7 +2053,13 @@ class _VideoPageState extends State<_VideoPage> {
   void _toggle() {
     final vc = _vc;
     if (vc == null) return;
-    vc.value.isPlaying ? vc.pause() : vc.play();
+    if (vc.value.isPlaying) {
+      _userPaused = true; // deliberate — survives chrome toggles
+      vc.pause();
+    } else {
+      _userPaused = false;
+      vc.play();
+    }
   }
 
   @override
@@ -1949,25 +2077,93 @@ class _VideoPageState extends State<_VideoPage> {
         ],
       );
     }
+    // Tap → hide/show the chrome, exactly like photos (play/pause lives on
+    // the glass button beside the scrubber instead).
     return GestureDetector(
-      onTap: _toggle,
+      onTap: widget.onTap,
       child: Stack(
         alignment: Alignment.center,
         children: [
-          Center(
-            child: AspectRatio(
-              aspectRatio: vc.value.aspectRatio,
-              child: VideoPlayer(vc),
+          InteractiveViewer(
+            transformationController: _tc,
+            minScale: 1.0,
+            maxScale: 5.0,
+            panEnabled: _zoomed,
+            onInteractionEnd: (_) {
+              final z = _tc.value.getMaxScaleOnAxis() > 1.02;
+              if (z != _zoomed) {
+                setState(() => _zoomed = z);
+                widget.onZoomed?.call(z);
+              }
+            },
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: vc.value.aspectRatio,
+                child: VideoPlayer(vc),
+              ),
             ),
           ),
-          // Minimalist scrubber — sits just above the share/bin buttons.
+          // Play/pause + scrubber — just above the share/bin buttons; fades
+          // away with the rest of the chrome on tap.
           Positioned(
             left: 20,
             right: 20,
             bottom: MediaQuery.of(context).padding.bottom + 66,
-            child: _Scrubber(controller: vc),
+            child: IgnorePointer(
+              ignoring: !widget.chromeVisible,
+              child: AnimatedOpacity(
+                opacity: widget.chromeVisible ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOut,
+                child: Row(
+                  children: [
+                    _PlayPauseButton(controller: vc, onToggle: _toggle),
+                    const SizedBox(width: 12),
+                    Expanded(child: _Scrubber(controller: vc)),
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Small smoked-glass play/pause chip beside the scrubber — since tapping the
+/// film itself now toggles the chrome (like photos), this is where playback
+/// control lives. Gold glyph, morphing between play and pause.
+class _PlayPauseButton extends StatelessWidget {
+  final VideoPlayerController controller;
+  final VoidCallback onToggle;
+  const _PlayPauseButton({required this.controller, required this.onToggle});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        hapticTap();
+        onToggle();
+      },
+      child: Container(
+        width: 34,
+        height: 34,
+        decoration: glassChipDecoration(circle: true),
+        child: ValueListenableBuilder<VideoPlayerValue>(
+          valueListenable: controller,
+          builder: (_, v, _) => AnimatedSwitcher(
+            duration: const Duration(milliseconds: 160),
+            transitionBuilder: (child, anim) =>
+                ScaleTransition(scale: anim, child: child),
+            child: Icon(
+              v.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              key: ValueKey(v.isPlaying),
+              color: kGoldLit,
+              size: 20,
+            ),
+          ),
+        ),
       ),
     );
   }

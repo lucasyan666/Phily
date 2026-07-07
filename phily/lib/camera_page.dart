@@ -20,6 +20,7 @@ import 'dart:ui' as ui;
 import 'package:phily/theme.dart';
 
 part 'camera_overlays.dart';
+part 'composition_guide.dart';
 part 'compositions.dart';
 
 class CameraPage extends StatefulWidget {
@@ -104,6 +105,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double _crossGlow = 0; // selection glow 0..1 (eased)
   bool _rotatingCross = false; // handle currently grabbed
   int _lastDetent = 0; // last 90° step crossed (for haptic ticks)
+  bool _crossWasStuck = false; // in a detent band last tick (edge detection)
   // Rendered cross state, pushed by the 60fps easing ticker. A ValueNotifier so
   // each tick repaints only the guide painter + the two small cross controls —
   // a setState here used to rebuild the ENTIRE camera Stack every frame while
@@ -953,7 +955,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   void _scheduleFocusHide() {
     _focusHideTimer?.cancel();
     if (_aeAfLocked) return;
-    _focusHideTimer = Timer(const Duration(milliseconds: 3500), () {
+    _focusHideTimer = Timer(const Duration(milliseconds: 1800), () {
       if (!mounted) return;
       setState(() => _focusShown = false);
       Future.delayed(const Duration(milliseconds: 260), () {
@@ -1061,7 +1063,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   void _onCrossGrab() {
     _rotatingCross = true;
-    _lastDetent = (_crossAngle / (math.pi / 2)).round();
+    const double quarter = math.pi / 2;
+    _lastDetent = (_crossAngle / quarter).round();
+    // Whether we're starting INSIDE a detent band — so the lock-in haptic
+    // doesn't fire for the detent we're already sitting on.
+    _crossWasStuck = (_crossAngle - _lastDetent * quarter).abs() < 0.14;
     HapticFeedback.selectionClick();
     _ensureCrossSpinTicking();
   }
@@ -1108,11 +1114,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final double gTarget = (_rotatingCross || _slidingCross) ? 1.0 : 0.0;
     _crossGlow += (gTarget - _crossGlow) * 0.16;
 
-    // A single click as it snaps into each detent.
-    if (_rotatingCross && stuck && detent != _lastDetent) {
+    // A firm click EVERY time it locks into a 90° detent — including coming
+    // back to the same one after wandering off it (edge-triggered on entering
+    // the stick band, not on the detent index changing).
+    if (_rotatingCross && stuck && (!_crossWasStuck || detent != _lastDetent)) {
       _lastDetent = detent;
-      HapticFeedback.selectionClick();
+      HapticFeedback.lightImpact();
     }
+    if (_rotatingCross) _crossWasStuck = stuck;
 
     final bool aSettled = (effective - _crossAngle).abs() < 0.0015;
     final bool ySettled = (_crossYTarget - _crossY).abs() < 0.0008;
@@ -2804,10 +2813,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                               ),
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(kRadiusMd),
+                                // Champagne-lit metal — same three-stop as the
+                                // paywall CTA and belt pill, so every gold
+                                // button reads as the same polished metal.
                                 gradient: const LinearGradient(
                                   begin: Alignment.topCenter,
                                   end: Alignment.bottomCenter,
-                                  colors: [kGold, kGoldDeep],
+                                  colors: [kGoldLit, kGold, kGoldDeep],
+                                  stops: [0.0, 0.45, 1.0],
                                 ),
                                 boxShadow: [
                                   BoxShadow(
@@ -2864,6 +2877,20 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             right: 0,
             child: _buildTopSettingsPanel(),
           ),
+
+          // Trial countdown — a small gilded chip under the top panel while
+          // the free trial runs (tap → paywall). Without it, the lock card
+          // would arrive unannounced on day eight. Hidden while recording.
+          if (PhilyPro.instance.showTrialBadge && !_isRecording)
+            Positioned(
+              top:
+                  (_topInset > 0
+                      ? _topInset
+                      : MediaQuery.of(context).padding.top + 56) +
+                  12,
+              left: 12,
+              child: _buildTrialChip(),
+            ),
 
           // Grid on/off toggle — dims the overlay for a clean frame.
           if (_isInitialized && !_isRecording)
@@ -2981,8 +3008,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                   return GestureDetector(
                                     // Tap a mode to jump (in addition to swiping);
                                     // opaque so the whole slot is tappable.
+                                    // Long-press → the mode's guide sheet.
                                     behavior: HitTestBehavior.opaque,
                                     onTap: () => _goToCompositionIndex(index),
+                                    onLongPress: () {
+                                      _dismissTip();
+                                      showCompositionGuide(
+                                        context,
+                                        _compositionModes[index],
+                                      );
+                                    },
                                     child: Center(
                                       child: Transform.scale(
                                         scale:
@@ -3497,7 +3532,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 onVerticalDragEnd: (d) {
                   if ((d.primaryVelocity ?? 0) < 0) _dismissTip(); // swipe up
                 },
-                onTap: _dismissTip,
+                // Tap → the full guide for this mode (swipe up to dismiss).
+                onTap: () {
+                  _dismissTip();
+                  showCompositionGuide(context, _compositionMode);
+                },
                 child: Padding(
                   // The app's shared frosted glass — same material as the
                   // gallery/paywall chrome (real blur + specular bloom + rim).
@@ -3557,6 +3596,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                   ),
                                 ),
                               ],
+                              // Tappable-ness affordance — the bubble opens
+                              // the mode's full guide sheet.
+                              const SizedBox(width: 9),
+                              Text(
+                                'GUIDE ›',
+                                style: brandLabel(
+                                  size: 8.5,
+                                  weight: FontWeight.w700,
+                                  color: kGoldLit.withValues(alpha: 0.95),
+                                  letterSpacing: 1.6,
+                                ),
+                              ),
                             ],
                           ),
                           const SizedBox(height: 4),
@@ -4416,6 +4467,41 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     ),
   );
 
+  /// Small gilded countdown chip shown while the free trial runs — the gentle
+  /// heads-up that Pro is ticking. Tap → paywall.
+  Widget _buildTrialChip() {
+    final int d = PhilyPro.instance.trialDaysLeft;
+    final String label = d <= 0
+        ? 'TRIAL ENDS TODAY'
+        : 'TRIAL · $d DAY${d == 1 ? '' : 'S'} LEFT';
+    return GestureDetector(
+      onTap: () {
+        hapticTap();
+        showPhilyProPaywall(context);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: glassChipDecoration(radius: kRadiusLg, active: true),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.workspace_premium_rounded, color: kGold, size: 12),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: brandLabel(
+                size: 9,
+                weight: FontWeight.w600,
+                color: kGold,
+                letterSpacing: 1.6,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildTopSettingsPanel() {
     const Color gold = kGold;
     return Column(
@@ -4479,6 +4565,25 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             _buildSettingButton(
               label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
               onTap: _toggleResolution,
+            ),
+
+            // Divider
+            Container(
+              height: 22,
+              width: 0.5,
+              color: kPaper.withValues(alpha: 0.14),
+            ),
+
+            // Guide — the always-visible front door to the composition guide
+            // for the current mode (long-press on a belt pill and tapping the
+            // tip bubble are the shortcuts). Dimmed on None: nothing to teach.
+            Opacity(
+              opacity: _compositionMode == CompositionMode.none ? 0.35 : 1.0,
+              child: _buildSettingButton(
+                icon: Icons.menu_book_rounded,
+                caption: 'GUIDE',
+                onTap: () => showCompositionGuide(context, _compositionMode),
+              ),
             ),
           ],
         ),
@@ -5045,21 +5150,80 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   Widget _buildPreview() {
     if (_error != null) {
+      // On-brand failure state — even this screen wears the gold-on-black
+      // language (aura mark, serif headline, gilded retry chip), matching the
+      // gallery's empty state instead of a red debug screen.
       return Container(
-        color: const Color(0xFF1a1a1a),
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.error_outline, color: Colors.red, size: 80),
-              const SizedBox(height: 16),
-              Text(
-                _error!,
-                style: const TextStyle(color: Colors.white70),
-                textAlign: TextAlign.center,
+        color: kBackground,
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 128,
+              height: 128,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [kGold.withValues(alpha: 0.14), Colors.transparent],
+                  stops: const [0.0, 0.72],
+                ),
               ),
-            ],
-          ),
+              child: Icon(
+                Icons.no_photography_outlined,
+                color: kPaper.withValues(alpha: 0.35),
+                size: 48,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Camera unavailable',
+              style: brandDisplay(
+                size: 22,
+                weight: FontWeight.w500,
+                color: kPaper.withValues(alpha: 0.9),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _error!,
+              textAlign: TextAlign.center,
+              style: brandLabel(
+                size: 11.5,
+                weight: FontWeight.w400,
+                color: kPaper.withValues(alpha: 0.45),
+                letterSpacing: 0.3,
+              ),
+            ),
+            const SizedBox(height: 22),
+            GestureDetector(
+              onTap: () {
+                hapticTap();
+                setState(() => _error = null);
+                _initializeCamera();
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 10,
+                ),
+                decoration: glassChipDecoration(
+                  radius: kRadiusLg,
+                  active: true,
+                ),
+                child: Text(
+                  'TRY AGAIN',
+                  style: brandLabel(
+                    size: 10.5,
+                    weight: FontWeight.w600,
+                    color: kGold,
+                    letterSpacing: 2.4,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
