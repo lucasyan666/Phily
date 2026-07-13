@@ -345,44 +345,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   // Drives the ML Kit rotation + box back-mapping so detection works sideways.
   int _deviceTurns = 0;
   StreamSubscription<AccelerometerEvent>? _accelSub;
-  StreamSubscription<GyroscopeEvent>? _gyroSub;
-
-  // ── Gyro dead-reckoning for detection tracking ─────────────────────────────
-  // A camera pan moves every subject in the preview instantly, but detections
-  // arrive several frames late — so boxes trailed the subject whenever the
-  // phone moved. The gyroscope tells us exactly how the scene shifted:
-  // integrate rotation rate → preview-normalised pan, then (1) the 60fps
-  // ticker shifts boxes AND their targets by the pan each tick (real-time
-  // follow), and (2) fresh detections are shifted by the pan accrued while
-  // they were being processed (no backwards snap). Total pan since launch:
-  double _panTotX = 0, _panTotY = 0;
-  int _gyroLastUs = 0;
-  // Ticker consumption mark + at-capture snapshot for in-flight detections.
-  double _panTickX = 0, _panTickY = 0;
-  double _panCapX = 0, _panCapY = 0;
-  // Sign convention verified for the portrait-locked back-camera preview; if
-  // a pan ever makes boxes overshoot double instead of following, flip these.
-  static const double _kPanSignX = 1; // scene dx per +rate about device y
-  static const double _kPanSignY = -1; // scene dy per +rate about device x
-
-  void _startGyroListener() {
-    _gyroSub = gyroscopeEventStream(samplingPeriod: SensorInterval.gameInterval)
-        .listen((e) {
-          final int nowUs = DateTime.now().microsecondsSinceEpoch;
-          final double dt = _gyroLastUs == 0 ? 0 : (nowUs - _gyroLastUs) / 1e6;
-          _gyroLastUs = nowUs;
-          if (dt <= 0 || dt > 0.2 || !mounted) return; // skip stalls/garbage
-          // Effective half-FOVs of the on-screen preview at the current zoom
-          // (zooming narrows the FOV → the same rotation pans more of it).
-          final double tanV =
-              math.tan(_vFovHalfRad > 0 ? _vFovHalfRad : 0.55) /
-              _currentZoom.clamp(0.5, 25.0);
-          final Size s = MediaQuery.sizeOf(context);
-          final double tanH = tanV * (s.height > 0 ? s.width / s.height : 0.5);
-          _panTotX += _kPanSignX * e.y * dt / (2 * tanH);
-          _panTotY += _kPanSignY * e.x * dt / (2 * tanV);
-        });
-  }
 
   static const MethodChannel _cameraChannel = MethodChannel('phily/camera');
   static const MethodChannel _hapticsChannel = MethodChannel('phily/haptics');
@@ -531,7 +493,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     super.initState();
     _initializeCamera();
     _startOrientationListener();
-    _startGyroListener();
     // Phily Pro: load the trial clock + wire the store; rebuild on entitlement
     // changes (trial expiry, purchase, restore) so locked modes gate live.
     PhilyPro.instance.init();
@@ -920,7 +881,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _tipTimer?.cancel();
     _focusHideTimer?.cancel();
     _accelSub?.cancel();
-    _gyroSub?.cancel();
     PhilyPro.instance.removeListener(_onProChanged);
     _faceAnim?.dispose();
     _gridFlipController?.dispose();
@@ -1509,10 +1469,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // is `none` (useful for experimentation). Heavy composition-only logic
     // remains gated on the selected mode.
     final now = DateTime.now();
-    // ~20 fps. Lower = more responsive tracking, but more CPU. With the cached
-    // single-orientation detection + gyro dead-reckoning between results this
-    // stays cheap enough for smooth tracking (raise back to 60 if FPS dips).
-    if (now.difference(_lastFrameTime).inMilliseconds < 50) return;
+    // ~16 fps. Lower = more responsive tracking, but more CPU. With the cached
+    // single-orientation detection this stays cheap enough for smooth tracking.
+    if (now.difference(_lastFrameTime).inMilliseconds < 60) return;
     if (_isProcessingFrame) return;
     _isProcessingFrame = true;
     _lastFrameTime = now;
@@ -1552,11 +1511,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// must PHYSICALLY rotate the pixel buffer to upright, detect, then map the
   /// boxes back into the original (portrait) buffer space the fixed preview shows.
   Future<void> _analyzeDetections(CameraImage image) async {
-    // Snapshot the gyro pan at capture — results are compensated by whatever
-    // pan accrues while this frame is being analysed (see the end of this
-    // method), so fresh targets never snap the boxes backwards mid-pan.
-    _panCapX = _panTotX;
-    _panCapY = _panTotY;
     if (image.format.group != ImageFormatGroup.bgra8888) return;
     final plane = image.planes.first;
     final int w = image.width, h = image.height;
@@ -1711,18 +1665,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         } catch (_) {}
       }
       dets.addAll(_lastAnimalDets);
-    }
-
-    // The frame we analysed is ~60–120ms old; shift its detections by the
-    // camera pan since capture so the targets land where the subject IS,
-    // not where it was.
-    final double cdx = _panTotX - _panCapX;
-    final double cdy = _panTotY - _panCapY;
-    if (cdx != 0 || cdy != 0) {
-      for (final d in dets) {
-        d['x'] = (d['x'] as double) + cdx;
-        d['y'] = (d['y'] as double) + cdy;
-      }
     }
 
     _updateFaceTargets(dets); // ticker animates the displayed boxes
@@ -2349,23 +2291,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final posK = 1 - math.exp(-dt / 0.06); // position glide
     final opK = 1 - math.exp(-dt / 0.08); // opacity/appear fade
 
-    // ── Gyro dead-reckoning ─────────────────────────────────────────────────
-    // Shift every box AND its target by the camera pan integrated since the
-    // last tick: the brackets ride the hand in real time, and detection only
-    // has to correct the (small) residual — subject motion, not camera motion.
-    final double gdx = _panTotX - _panTickX;
-    final double gdy = _panTotY - _panTickY;
-    _panTickX = _panTotX;
-    _panTickY = _panTotY;
-    if (gdx != 0 || gdy != 0) {
-      for (final b in _faceBoxes) {
-        b.cx += gdx;
-        b.tcx += gdx;
-        b.cy += gdy;
-        b.tcy += gdy;
-      }
-    }
-
     // Grace window: a box that briefly stops matching (ML Kit drops the odd
     // frame) holds its position + opacity rather than flickering out. It only
     // fades once it's been unseen for longer than this.
@@ -2373,23 +2298,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _faceBoxes.removeWhere((b) => !b.matched && b.opacity < 0.02);
     final pTarget = [0.0, 0.0, 0.0, 0.0];
     for (final b in _faceBoxes) {
-      // Adaptive position easing: a soft time-constant when the box is near
-      // its target (kills detector jitter while composing), snapping tighter
-      // as the error grows (fast subjects, fresh locks) so it never trails.
-      final double err =
-          (b.tcx - b.cx).abs() +
-          (b.tcy - b.cy).abs() +
-          ((b.tw - b.w).abs() + (b.th - b.h).abs()) * 0.5;
-      final double tau = ui.lerpDouble(
-        0.085,
-        0.028,
-        (err / 0.10).clamp(0.0, 1.0),
-      )!;
-      final double pk = 1 - math.exp(-dt / tau);
-      b.cx += (b.tcx - b.cx) * pk;
-      b.cy += (b.tcy - b.cy) * pk;
-      b.w += (b.tw - b.w) * pk;
-      b.h += (b.th - b.h) * pk;
+      b.cx += (b.tcx - b.cx) * posK;
+      b.cy += (b.tcy - b.cy) * posK;
+      b.w += (b.tw - b.w) * posK;
+      b.h += (b.th - b.h) * posK;
       final bool alive = b.matched || (now - b.lastSeenMs) <= graceMs;
       final targetOpacity = alive ? 1.0 : 0.0;
       b.opacity += (targetOpacity - b.opacity) * opK;

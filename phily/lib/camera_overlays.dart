@@ -1310,26 +1310,59 @@ class _CompositionPainter extends CustomPainter {
     }
   }
 
-  /// A subtle gold hairline ring on each detected eye. No blur and one shared
-  /// paint — this runs on every repaint while a face is tracked, so it's kept
-  /// cheap; the breath rides the ring's alpha instead of a (costly) glow.
+  /// A jewelled reticle on each detected eye: a fine gold ring set with four
+  /// diagonal ticks (a jewel setting, deliberately not a crosshair), a
+  /// champagne glint slowly circling the rim — light catching a turning bezel
+  /// — and a breathing catchlight at the centre. Still cheap: no blurs or
+  /// shaders, a handful of strokes per eye, because this runs on every repaint
+  /// while a face is tracked. The breath/glint ride the continuous repaints.
   void _paintEyes(Canvas canvas, Size size) {
     if (eyePoints.isEmpty) return;
-    // Slow, gentle breath (~0.4 Hz) — the painter repaints continuously while a
-    // face is tracked, so this animates smoothly.
     final double t = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    // Slow, gentle breath (~0.4 Hz); the glint laps the rim every ~9s.
     final double breathe = 0.5 + 0.5 * math.sin(t * 2.4);
+    final double glintPhase = t * 0.7;
+    const double r = 4.2;
+
     final ring = Paint()
-      ..color = kGold.withValues(alpha: 0.5 + 0.22 * breathe)
+      ..color = kGold.withValues(alpha: 0.40 + 0.20 * breathe)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
+      ..strokeWidth = 1.1
       ..isAntiAlias = true;
+    final glint = Paint()
+      ..color = kGoldLit.withValues(alpha: 0.72 + 0.22 * breathe)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3
+      ..strokeCap = StrokeCap.round
+      ..isAntiAlias = true;
+    final tick = Paint()
+      ..color = kGold.withValues(alpha: 0.55 + 0.25 * breathe)
+      ..strokeWidth = 1.0
+      ..strokeCap = StrokeCap.round
+      ..isAntiAlias = true;
+    final spark = Paint()
+      ..color = kGoldLit.withValues(alpha: 0.45 + 0.40 * breathe);
+
     for (final e in eyePoints) {
-      canvas.drawCircle(
-        Offset(e.dx * size.width, e.dy * size.height),
-        3.5,
-        ring,
+      final Offset c = Offset(e.dx * size.width, e.dy * size.height);
+      // Base ring.
+      canvas.drawCircle(c, r, ring);
+      // Champagne glint circling the rim.
+      canvas.drawArc(
+        Rect.fromCircle(center: c, radius: r),
+        glintPhase,
+        1.35, // ~77° of lit rim
+        false,
+        glint,
       );
+      // Four diagonal setting-ticks around the ring.
+      for (var i = 0; i < 4; i++) {
+        final double a = math.pi / 4 + i * math.pi / 2;
+        final Offset d = Offset(math.cos(a), math.sin(a));
+        canvas.drawLine(c + d * (r + 1.6), c + d * (r + 3.4), tick);
+      }
+      // Centre catchlight — the sparkle in the eye.
+      canvas.drawCircle(c, 1.0, spark);
     }
   }
 
