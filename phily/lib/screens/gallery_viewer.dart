@@ -264,18 +264,19 @@ const _months = [
 ];
 
 /// "Today" / "Yesterday" / "14 Jun" / "14 Jun 2024" (year only when not current).
-String _dateLabel(DateTime dt) {
-  final now = DateTime.now();
-  final today = DateTime(now.year, now.month, now.day);
+/// [now] is injectable so tests can pin the reference date; the app leaves it null.
+String dateLabel(DateTime dt, {DateTime? now}) {
+  final ref = now ?? DateTime.now();
+  final today = DateTime(ref.year, ref.month, ref.day);
   final days = today.difference(DateTime(dt.year, dt.month, dt.day)).inDays;
   if (days == 0) return 'Today';
   if (days == 1) return 'Yesterday';
-  final y = dt.year != now.year ? ' ${dt.year}' : '';
+  final y = dt.year != ref.year ? ' ${dt.year}' : '';
   return '${dt.day} ${_months[dt.month - 1]}$y';
 }
 
 /// "1:03 PM".
-String _timeLabel(DateTime dt) {
+String timeLabel(DateTime dt) {
   final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
   final m = dt.minute.toString().padLeft(2, '0');
   return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
@@ -809,7 +810,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
       final k = '${dt.year}.${dt.month}.${dt.day}';
       if (k != key) {
         key = k;
-        out.add(_Section(_dateLabel(dt), []));
+        out.add(_Section(dateLabel(dt), []));
       }
       out.last.indices.add(i);
     }
@@ -1033,7 +1034,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
                     0,
                     _items.length - 1,
                   );
-                  return _dateLabel(_items[i].createDateTime);
+                  return dateLabel(_items[i].createDateTime);
                 },
               ),
             ),
@@ -1653,7 +1654,7 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                               // Chrome-label voice (matches the camera page);
                               // the time glints in gold below the date.
                               Text(
-                                _dateLabel(
+                                dateLabel(
                                   widget.assets[_index].createDateTime,
                                 ),
                                 style: brandLabel(
@@ -1664,7 +1665,7 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                               ),
                               const SizedBox(height: 1),
                               Text(
-                                _timeLabel(
+                                timeLabel(
                                   widget.assets[_index].createDateTime,
                                 ),
                                 style: brandLabel(

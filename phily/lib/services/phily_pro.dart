@@ -29,14 +29,22 @@ class PhilyPro extends ChangeNotifier {
 
   static const int trialDays = 7;
 
+  /// Test seam — all trial math reads the time through this so tests can pin
+  /// the clock at exact day boundaries. Production never reassigns it.
+  @visibleForTesting
+  static DateTime Function() clock = DateTime.now;
+
   static const String _kFirstLaunch = 'phily_first_launch_ms';
   static const String _kSubscribed = 'phily_subscribed';
   static const String _kLifetime = 'phily_lifetime';
 
-  final InAppPurchase _iap = InAppPurchase.instance;
+  // Lazy: merely touching PhilyPro.instance must not spin up the store plugin
+  // (it eagerly opens a billing connection on Android, and unit tests exercise
+  // the trial math with no platform channels at all). First read is in init().
+  late final InAppPurchase _iap = InAppPurchase.instance;
   StreamSubscription<List<PurchaseDetails>>? _sub;
 
-  DateTime _firstLaunch = DateTime.now();
+  DateTime _firstLaunch = clock();
   bool _subscribed = false;
   bool _lifetime = false;
   bool _storeReady = false;
@@ -53,10 +61,10 @@ class PhilyPro extends ChangeNotifier {
   String get priceLabel => _products[monthlyId]?.price ?? '';
 
   bool get trialActive =>
-      DateTime.now().difference(_firstLaunch).inDays < trialDays;
+      clock().difference(_firstLaunch).inDays < trialDays;
 
   int get trialDaysLeft =>
-      (trialDays - DateTime.now().difference(_firstLaunch).inDays).clamp(
+      (trialDays - clock().difference(_firstLaunch).inDays).clamp(
         0,
         trialDays,
       );
@@ -76,7 +84,7 @@ class PhilyPro extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     final ms = prefs.getInt(_kFirstLaunch);
     if (ms == null) {
-      _firstLaunch = DateTime.now();
+      _firstLaunch = clock();
       await prefs.setInt(_kFirstLaunch, _firstLaunch.millisecondsSinceEpoch);
     } else {
       _firstLaunch = DateTime.fromMillisecondsSinceEpoch(ms);
@@ -145,8 +153,8 @@ class PhilyPro extends ChangeNotifier {
   /// the app is locked right now ([expired] == true).
   Future<void> debugSetTrial({required bool expired}) async {
     _firstLaunch = expired
-        ? DateTime.now().subtract(const Duration(days: 3650))
-        : DateTime.now();
+        ? clock().subtract(const Duration(days: 3650))
+        : clock();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_kFirstLaunch, _firstLaunch.millisecondsSinceEpoch);
     notifyListeners();
@@ -158,6 +166,11 @@ class PhilyPro extends ChangeNotifier {
     if (!v) await _setLifetime(false);
     await _setSubscribed(v);
   }
+
+  /// Force the lifetime flag alone — the debug menu only goes through
+  /// [debugSetSubscribed]; tests use this to cover the lifetime path of [isPro].
+  @visibleForTesting
+  Future<void> debugSetLifetime(bool v) => _setLifetime(v);
 
   @override
   void dispose() {

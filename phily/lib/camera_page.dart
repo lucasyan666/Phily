@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 import 'package:phily/debug.dart';
 import 'package:flutter/physics.dart' show FrictionSimulation;
 import 'package:flutter/scheduler.dart' show Ticker;
@@ -22,6 +24,48 @@ import 'package:phily/theme.dart';
 part 'camera_overlays.dart';
 part 'composition_guide.dart';
 part 'compositions.dart';
+
+/// Zoom readout text. Below 1.0× the ultra-wide lens is active and its range
+/// tops out just under 1.0× (hitting 1.0 switches back to the main lens), so
+/// the displayed value is capped at 0.9× — the label never claims "1.0×"
+/// while still on the ultra-wide (0.99999 would round up to exactly that).
+/// Top-level and public so the convention is locked by a unit test.
+String zoomLabel(double zoom) =>
+    '${(zoom < 1.0 ? math.min(zoom, 0.9) : zoom).toStringAsFixed(1)}×';
+
+/// Crops a captured JPEG to the on-screen composition frame — the band between
+/// the top and bottom panels. [topFrac]/[botFrac] are the fractions of the
+/// frame's height hidden behind those panels (the same insets the overlays use),
+/// so the saved photo matches exactly what was framed against the guides.
+///
+/// Returns re-encoded JPEG bytes, or null to keep the original untouched
+/// (nothing worth trimming, or the bytes weren't decodable — e.g. HEIF/RAW).
+/// Heavy: full-resolution decode + encode. ALWAYS run via [Isolate.run] so it
+/// never blocks the shutter or the UI isolate.
+Uint8List? cropToCompositionFrame(
+  Uint8List jpegBytes,
+  double topFrac,
+  double botFrac,
+) {
+  final decoded = img.decodeJpg(jpegBytes);
+  if (decoded == null) return null;
+  // Bake EXIF orientation first so "top/bottom" mean the upright top/bottom the
+  // user actually saw, then trim rows in that upright space.
+  final upright = img.bakeOrientation(decoded);
+  final h = upright.height;
+  final top = (topFrac * h).round().clamp(0, h - 1);
+  final bot = (botFrac * h).round().clamp(0, h - 1);
+  final newH = h - top - bot;
+  if (newH < 8 || newH >= h) return null; // nothing meaningful to trim
+  final cropped = img.copyCrop(
+    upright,
+    x: 0,
+    y: top,
+    width: upright.width,
+    height: newH,
+  );
+  return img.encodeJpg(cropped, quality: 92);
+}
 
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
@@ -220,7 +264,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   double get _zoomLo => _ultraZoomMode ? 0.5 : 1.0;
   // Ultra-wide tops out JUST under 1.0×: at exactly 1.0 the camera switches
   // back to the main lens (a jarring controller swap mid-scrub). The readout
-  // caps at 0.9× (see _zoomLabel) so it never shows a misleading "1.0×".
+  // caps at 0.9× (see zoomLabel) so it never shows a misleading "1.0×".
   double get _zoomHi => _ultraZoomMode ? 0.99999 : _zoomMax;
 
   // ── Zoom belt "feel" ─────────────────────────────────────────────────────
@@ -1345,13 +1389,82 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final image = await _controller!.takePicture();
       final file = File(image.path);
       _triggerBounceAnimation(file);
-      _saveMediaInBackground(file.path);
+      // Crop to the framed viewport, then save (both off the shutter path).
+      _cropThenSave(file.path, _topInsetFrac, _bottomInsetFrac);
       // Restart the stream after capture only if the mode needs it.
       await _syncImageStream();
     } catch (e) {
       debugLog('Error taking photo: $e');
       await _syncImageStream();
     }
+  }
+
+  /// Trims the full-sensor capture down to the composition frame (the band the
+  /// user sees between the panels), then hands the result to the gallery save.
+  /// The heavy decode/encode runs in a throwaway isolate so the UI stays smooth;
+  /// on any failure — or when there's nothing to trim — the original is saved
+  /// untouched so a shot is never lost.
+  Future<void> _cropThenSave(
+    String originalPath,
+    double topFrac,
+    double botFrac,
+  ) async {
+    String pathToSave = originalPath;
+    try {
+      // Skip when the panels haven't been measured yet, or the insets look
+      // implausible (guards against cropping away half the frame).
+      if (topFrac + botFrac > 0.01 && topFrac < 0.45 && botFrac < 0.45) {
+        final cropped = await _cropViewport(originalPath, topFrac, botFrac);
+        if (cropped != null) pathToSave = cropped;
+      }
+    } catch (e) {
+      debugLog('Crop failed, saving original: $e');
+    }
+    await _saveMediaInBackground(pathToSave);
+  }
+
+  /// Crops [originalPath] to the framed viewport and returns the new file path,
+  /// or null to keep the original. Prefers the native (CoreGraphics) crop — it's
+  /// hardware-accelerated and never materialises a full-res bitmap in the Dart
+  /// heap, so the preview doesn't hitch. Falls back to the pure-Dart isolate
+  /// crop only where the platform channel isn't available (non-iOS).
+  Future<String?> _cropViewport(
+    String originalPath,
+    double topFrac,
+    double botFrac,
+  ) async {
+    try {
+      return await _cameraChannel.invokeMethod<String>('cropVerticalBand', {
+        'path': originalPath,
+        'topFrac': topFrac,
+        'botFrac': botFrac,
+      });
+    } on MissingPluginException {
+      return _dartCropViewport(originalPath, topFrac, botFrac);
+    } on PlatformException catch (e) {
+      debugLog('Native crop failed ($e); falling back to Dart.');
+      return _dartCropViewport(originalPath, topFrac, botFrac);
+    }
+  }
+
+  /// Pure-Dart fallback: full-res decode/crop/encode in a throwaway isolate so
+  /// it never blocks the UI. Heavier than the native path (holds the bitmap in
+  /// the Dart heap), used only when the native channel is unavailable.
+  Future<String?> _dartCropViewport(
+    String originalPath,
+    double topFrac,
+    double botFrac,
+  ) async {
+    final bytes = await File(originalPath).readAsBytes();
+    final cropped = await Isolate.run(
+      () => cropToCompositionFrame(bytes, topFrac, botFrac),
+    );
+    if (cropped == null) return null;
+    final outPath =
+        '${File(originalPath).parent.path}/phily_'
+        '${DateTime.now().millisecondsSinceEpoch}.jpg';
+    await File(outPath).writeAsBytes(cropped, flush: true);
+    return outPath;
   }
 
   Future<void> _saveMediaInBackground(String filePath) async {
@@ -2926,7 +3039,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           ),
                           decoration: glassChipDecoration(radius: 7),
                           child: Text(
-                            _zoomLabel(zoom),
+                            zoomLabel(zoom),
                             style: const TextStyle(
                               color: kGold,
                               fontSize: 11,
@@ -4780,13 +4893,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     _zoomN.value = z;
   }
 
-  /// Zoom readout text. Below 1.0× the ultra-wide lens is active and its range
-  /// tops out just under 1.0× (hitting 1.0 switches back to the main lens), so
-  /// the displayed value is capped at 0.9× — the label never claims "1.0×"
-  /// while still on the ultra-wide (0.99999 would round up to exactly that).
-  String _zoomLabel(double zoom) =>
-      '${(zoom < 1.0 ? math.min(zoom, 0.9) : zoom).toStringAsFixed(1)}×';
-
   /// The zoom "feel" dispatcher — called on every zoom change (drag, pinch,
   /// fling). Three tiers of feedback:
   ///  • crossing a hardware switchover stop (the gold ticks) → a firmer
@@ -5012,7 +5118,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             // with the detent haptic.
             scale: 1 + 0.12 * math.sin(math.pi * _readoutPop.value),
             child: Text(
-              _zoomLabel(_zoomN.value.clamp(_zoomLo, _zoomHi)),
+              zoomLabel(_zoomN.value.clamp(_zoomLo, _zoomHi)),
               style: const TextStyle(
                 color: kGold,
                 fontSize: 13,

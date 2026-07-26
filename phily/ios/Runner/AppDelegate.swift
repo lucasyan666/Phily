@@ -40,6 +40,7 @@ private extension Comparable {
       case "getVirtualCameraId":      self?.handleGetVirtualCameraId(result: result)
       case "getFieldOfView":          self?.handleGetFieldOfView(result: result)
       case "detectAnimals":           self?.handleDetectAnimals(call: call, result: result)
+      case "cropVerticalBand":        self?.handleCropVerticalBand(call: call, result: result)
       default: result(FlutterMethodNotImplemented)
       }
     }
@@ -182,6 +183,67 @@ private extension Comparable {
       "current":           Double(device.videoZoomFactor),
       "switchoverFactors": switchoverFactors,
     ])
+  }
+
+  // MARK: - cropVerticalBand (trim a capture to the framed viewport)
+
+  /// Crops the JPEG at `path` to the on-screen composition band — the region
+  /// between the top and bottom panels — and writes a new JPEG beside it.
+  /// `topFrac`/`botFrac` are the fractions of the frame hidden behind those
+  /// panels (the same insets the Dart overlays use). Runs off the main thread;
+  /// returns the new path, or nil to keep the original (nothing to trim / a
+  /// decode or write failure). Hardware-accelerated via CoreGraphics — no
+  /// full-resolution bitmap is ever held in the Dart heap, so the preview
+  /// doesn't hitch and the result lands almost immediately.
+  private func handleCropVerticalBand(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard
+      let args    = call.arguments as? [String: Any],
+      let path    = args["path"]    as? String,
+      let topFrac = args["topFrac"] as? Double,
+      let botFrac = args["botFrac"] as? Double
+    else {
+      result(FlutterError(code: "INVALID_ARGS", message: "path, topFrac, botFrac required", details: nil))
+      return
+    }
+    DispatchQueue.global(qos: .userInitiated).async {
+      let out = AppDelegate.cropVerticalBand(path: path, topFrac: topFrac, botFrac: botFrac)
+      DispatchQueue.main.async { result(out) }
+    }
+  }
+
+  private static func cropVerticalBand(path: String, topFrac: Double, botFrac: Double) -> String? {
+    // UIImage(contentsOfFile:) carries the file's EXIF orientation, and
+    // draw(in:) renders it upright — so "top/bottom" are the edges the user
+    // actually saw, regardless of how the sensor stored the pixels.
+    guard let image = UIImage(contentsOfFile: path) else { return nil }
+    let displayW = image.size.width
+    let displayH = image.size.height
+    guard displayW > 0, displayH > 0 else { return nil }
+
+    let topPts = (CGFloat(topFrac) * displayH).rounded()
+    let botPts = (CGFloat(botFrac) * displayH).rounded()
+    let newH = displayH - topPts - botPts
+    guard newH > 8, newH < displayH else { return nil } // nothing worth trimming
+
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = image.scale     // preserve native pixel dimensions
+    format.opaque = true
+    let renderer = UIGraphicsImageRenderer(size: CGSize(width: displayW, height: newH), format: format)
+    let cropped = renderer.image { _ in
+      // Shift the upright image up by the hidden top band; the canvas height
+      // clips off the bottom band — leaving exactly the visible frame.
+      image.draw(in: CGRect(x: 0, y: -topPts, width: displayW, height: displayH))
+    }
+
+    guard let data = cropped.jpegData(compressionQuality: 0.92) else { return nil }
+    let dir = (path as NSString).deletingLastPathComponent
+    let outPath = "\(dir)/phily_\(Int(Date().timeIntervalSince1970 * 1000)).jpg"
+    do {
+      try data.write(to: URL(fileURLWithPath: outPath), options: .atomic)
+      return outPath
+    } catch {
+      return nil
+    }
   }
 
   // MARK: - detectAnimals (cats/dogs via Vision)

@@ -48,6 +48,9 @@ dependencies:
   shared_preferences: ^2.3.3
   url_launcher: ^6.3.0
   google_fonts: ^6.2.1
+  # Pure-Dart JPEG decode/crop/encode — used off-isolate to trim each capture
+  # down to the on-screen composition frame (see cropToCompositionFrame).
+  image: ^4.3.0
 
 dev_dependencies:
   flutter_test:
