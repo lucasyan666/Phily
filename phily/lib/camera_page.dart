@@ -3093,6 +3093,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                 if (_compositionMode == CompositionMode.cross) {
                                   _resetCross();
                                 }
+                                // Recognition boxes are mode-specific (alignment
+                                // targets differ between thirds/phi/spiral) — clear
+                                // targets on every switch so stale boxes smoothly
+                                // fade out via the normal grace-period animation
+                                // instead of lingering into the new mode.
+                                if (_faceBoxes.isNotEmpty) {
+                                  _updateFaceTargets(const []);
+                                }
                               });
                               if (!_modeLocked) {
                                 _showCompositionTip(); // "best for" bubble (~3s)

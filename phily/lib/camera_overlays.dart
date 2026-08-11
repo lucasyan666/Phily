@@ -697,9 +697,10 @@ class _LevelDialPainter extends CustomPainter {
   }) : _litE = (attitude.value?.level ?? false) ? 1.0 : 0.0,
        super(repaint: attitude);
 
-  /// Frosty glass — a cool white against the app's warm golds, so "not yet
-  /// level" reads as ice waiting to be lit.
-  static const Color _frost = Color(0xFFE8F1F8);
+  /// Amber while tilted, cooling to green as the phone squares up — the
+  /// universal "warning → good" read on a spirit level.
+  static const Color _amber = Color(0xFFFFB020);
+  static const Color _levelGreen = Color(0xFF4CD97B);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -727,7 +728,7 @@ class _LevelDialPainter extends CustomPainter {
     _litE += (target - _litE) * 0.18;
     if ((target - _litE).abs() < 0.01) _litE = target;
     final double lit = _litE;
-    final Color tone = Color.lerp(_frost, kGold, lit)!;
+    final Color tone = Color.lerp(_amber, _levelGreen, lit)!;
 
     // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°).
     final double rollEx = (roll * 1.8).clamp(-1.3, 1.3);
@@ -742,15 +743,16 @@ class _LevelDialPainter extends CustomPainter {
     canvas.rotate(-t * math.pi / 2);
     canvas.translate(-cx, -cy);
 
-    // Soft outer glow — frosty breath while free, blooming gold when square.
+    // Soft outer glow — amber and strong while tilted, easing down as it
+    // squares up to a calm green settle.
     canvas.drawCircle(
       c,
       r + 1.5,
       Paint()
-        ..color = tone.withValues(alpha: 0.16 + 0.34 * lit)
+        ..color = tone.withValues(alpha: 0.50 - 0.34 * lit)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5 + 1.5 * lit
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 5 + 3 * lit),
+        ..strokeWidth = 4.0 - 1.5 * lit
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8 - 3 * lit),
     );
     // Dark instrument face.
     canvas.drawCircle(
