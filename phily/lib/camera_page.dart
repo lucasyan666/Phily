@@ -429,7 +429,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       if (ax > ay + margin) {
         turns = e.x > 0 ? 3 : 1; // landscape (two directions)
       } else if (ay > ax + margin) {
-        turns = e.y > 0 ? 0 : 2; // portrait up / upside-down
+        // Portrait-up only — upside-down (turns == 2) is not a supported hold.
+        // Leaving `turns` null here means _deviceTurns simply holds at whatever
+        // valid orientation it last saw until the phone turns back through a
+        // recognised hold, instead of flipping the whole UI upside-down.
+        if (e.y > 0) turns = 0;
       }
       if (turns != null && turns != _deviceTurns) {
         setState(() => _deviceTurns = turns!); // rebuild so UI controls rotate
