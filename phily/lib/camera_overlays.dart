@@ -697,6 +697,7 @@ class _LevelDialPainter extends CustomPainter {
   double _visE = 1.0;
   bool _visTarget = true;
   int _levelSinceMs = 0; // wall-clock ms when the current level hold began
+  int _lastPaintMs = 0; // wall-clock ms of the previous paint, for dt easing
   _LevelDialPainter(
     this.attitude,
     this.bottomInset, {
@@ -709,7 +710,15 @@ class _LevelDialPainter extends CustomPainter {
   // dial's normalised deflection. Below these the dial stays tucked away.
   static const double _kSummonRoll = 0.05;
   static const double _kSummonVert = 0.30;
-  static const int _kLevelLingerMs = 1400;
+  // Level→gone budget is 1.2s total: a short hold to confirm the shot really is
+  // square (not a passing wobble), then the fade itself.
+  static const int _kLevelLingerMs = 420;
+  // Time-constants (seconds) for a frame-rate independent exponential approach.
+  // At tau 0.19 the fade reaches the 0.02 cutoff in ~760ms, so linger + fade
+  // lands just under the 1.2s budget at ANY repaint rate. Fade-in stays snappy
+  // so a real tilt summons the dial immediately.
+  static const double _kFadeOutTau = 0.19;
+  static const double _kFadeInTau = 0.09;
 
   /// Amber while tilted, cooling to green as the phone squares up — the
   /// universal "warning → good" read on a spirit level.
@@ -749,7 +758,21 @@ class _LevelDialPainter extends CustomPainter {
       _levelSinceMs = _levelSinceMs == 0 ? nowMs : _levelSinceMs;
       if (nowMs - _levelSinceMs > _kLevelLingerMs) _visTarget = false;
     }
-    _visE += ((_visTarget ? 1.0 : 0.0) - _visE) * 0.10;
+    // Ease on WALL-CLOCK time, not per-tick. A fixed per-paint step makes the
+    // fade's duration a function of the sensor/repaint rate, so it stretches
+    // out and steps visibly whenever paints are sparse or unevenly spaced —
+    // that irregular step is the jitter. dt-based easing decouples the fade
+    // from the tick rate: same 1.2s regardless of how often we're painted, and
+    // uneven gaps produce proportional (smooth) steps rather than equal ones.
+    final double dt = _lastPaintMs == 0
+        ? 1 / 60
+        : ((nowMs - _lastPaintMs) / 1000.0).clamp(0.0, 0.1);
+    _lastPaintMs = nowMs;
+    final double visTargetV = _visTarget ? 1.0 : 0.0;
+    final double tau = _visTarget ? _kFadeInTau : _kFadeOutTau;
+    // Frame-rate independent exponential approach.
+    _visE += (visTargetV - _visE) * (1 - math.exp(-dt / tau));
+    if (_visTarget && _visE > 0.998) _visE = 1.0;
     if (_visE < 0.02) {
       _visE = 0.0;
       return; // fully tucked away — skip all drawing
@@ -764,7 +787,9 @@ class _LevelDialPainter extends CustomPainter {
     // Ease the aligned state so the dial crossfades amber→green instead of
     // snapping (~100ms at the 50 Hz attitude stream).
     final double target = a.level ? 1.0 : 0.0;
-    _litE += (target - _litE) * 0.18;
+    // Same dt-based easing as the fade — a per-tick step here shows up as an
+    // uneven colour crawl whenever the attitude stream jitters.
+    _litE += (target - _litE) * (1 - math.exp(-dt / 0.12));
     if ((target - _litE).abs() < 0.01) _litE = target;
     final double lit = _litE;
     final Color tone = Color.lerp(_amber, _levelGreen, lit)!;
