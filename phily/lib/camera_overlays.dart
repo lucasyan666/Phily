@@ -685,10 +685,18 @@ class _LevelDialPainter extends CustomPainter {
   final double bottomInset;
   final double topInset;
   final int deviceTurns;
-  // Eased 0..1 "aligned" — the frost→gold crossfade rides the ~50 Hz attitude
+  // Eased 0..1 "aligned" — the amber→green crossfade rides the ~50 Hz attitude
   // repaints, so no extra ticker is needed. Seeded from the live verdict so a
   // page rebuild doesn't replay the bloom.
   double _litE;
+  // Auto show/hide: the dial is a correction aid, not an instrument panel — it
+  // appears when the phone is meaningfully tilted (amber, asking for a fix) and
+  // slips away once you've held level for a beat, so a squared-up viewfinder
+  // stays clean. Eased on the same ~50 Hz repaints as [_litE]; a fresh painter
+  // starts visible and the linger logic tucks it away if there's nothing to fix.
+  double _visE = 1.0;
+  bool _visTarget = true;
+  int _levelSinceMs = 0; // wall-clock ms when the current level hold began
   _LevelDialPainter(
     this.attitude,
     this.bottomInset, {
@@ -696,6 +704,12 @@ class _LevelDialPainter extends CustomPainter {
     this.deviceTurns = 0,
   }) : _litE = (attitude.value?.level ?? false) ? 1.0 : 0.0,
        super(repaint: attitude);
+
+  // Summon thresholds — roll in radians (~3° of crookedness), vert in the
+  // dial's normalised deflection. Below these the dial stays tucked away.
+  static const double _kSummonRoll = 0.05;
+  static const double _kSummonVert = 0.30;
+  static const int _kLevelLingerMs = 1400;
 
   /// Amber while tilted, cooling to green as the phone squares up — the
   /// universal "warning → good" read on a spirit level.
@@ -722,7 +736,32 @@ class _LevelDialPainter extends CustomPainter {
     final double cx = c.dx, cy = c.dy;
     final double roll = a.roll, vert = a.vert;
 
-    // Ease the aligned state so the dial crossfades frost→gold instead of
+    // ── Auto show/hide ──
+    // Summoned by a real tilt; once the phone has HELD level for the linger
+    // window, tuck away. In the dead band between the two (small drift that
+    // never crosses a summon threshold) the latch keeps its last state, so the
+    // dial never flickers at the edges.
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (!a.level && (roll.abs() > _kSummonRoll || vert.abs() > _kSummonVert)) {
+      _visTarget = true;
+      _levelSinceMs = 0;
+    } else if (a.level) {
+      _levelSinceMs = _levelSinceMs == 0 ? nowMs : _levelSinceMs;
+      if (nowMs - _levelSinceMs > _kLevelLingerMs) _visTarget = false;
+    }
+    _visE += ((_visTarget ? 1.0 : 0.0) - _visE) * 0.10;
+    if (_visE < 0.02) {
+      _visE = 0.0;
+      return; // fully tucked away — skip all drawing
+    }
+    // Everything below renders through one alpha layer, so the whole dial
+    // (glow, face, horizon, bezel) fades as a single object.
+    canvas.saveLayer(
+      Rect.fromCircle(center: c, radius: r + 18),
+      Paint()..color = Colors.black.withValues(alpha: _visE),
+    );
+
+    // Ease the aligned state so the dial crossfades amber→green instead of
     // snapping (~100ms at the 50 Hz attitude stream).
     final double target = a.level ? 1.0 : 0.0;
     _litE += (target - _litE) * 0.18;
@@ -825,6 +864,7 @@ class _LevelDialPainter extends CustomPainter {
     canvas.drawPath(idx, Paint()..color = tone.withValues(alpha: 0.9));
 
     canvas.restore(); // user-frame rotation
+    canvas.restore(); // visibility alpha layer
   }
 
   @override

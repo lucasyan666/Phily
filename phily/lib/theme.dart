@@ -67,12 +67,23 @@ TextStyle brandLabel({
   FontWeight weight = FontWeight.w500,
   Color color = kPaper,
   double letterSpacing = 1.5,
+  List<Shadow>? shadows,
 }) => GoogleFonts.outfit(
   fontSize: size,
   fontWeight: weight,
   color: color,
   letterSpacing: letterSpacing,
+  shadows: shadows,
 );
+
+/// Shadow stack for text floating over the live camera preview. Gold/paper
+/// labels on thin smoked glass die over bright scenes (sky, white tabletops) —
+/// this is a scrim in type form: a soft dark halo plus a tight contact shadow,
+/// invisible over dark scenes but decisive over light ones.
+const List<Shadow> kViewfinderShadows = [
+  Shadow(color: Color(0xB3000000), blurRadius: 7),
+  Shadow(color: Color(0x8C000000), blurRadius: 2, offset: Offset(0, 1)),
+];
 
 /// App-wide UI text theme (geometric sans). Apply in [ThemeData.textTheme] so
 /// every Text inherits the brand typeface without per-widget changes.

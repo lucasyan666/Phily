@@ -301,44 +301,22 @@ class _SectionHeaderBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Accent the most recent days in gold to tie in the app's accent.
-    final recent = label == 'Today' || label == 'Yesterday';
+    // One quiet treatment for every day — gold stays reserved for live
+    // controls (scrub bubble, selection), so headers read as wayfinding.
     return Container(
       height: 30,
       color: Colors.black,
       alignment: Alignment.centerLeft,
       padding: const EdgeInsets.only(left: 14),
-      child: Row(
-        children: [
-          // A tiny gilded point marks the freshest days — a jewel, not a bullet.
-          if (recent)
-            Container(
-              width: 4,
-              height: 4,
-              margin: const EdgeInsets.only(right: 6),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [kGoldLit, kGoldDeep],
-                ),
-                boxShadow: [
-                  BoxShadow(color: kGold.withValues(alpha: 0.5), blurRadius: 6),
-                ],
-              ),
-            ),
-          Text(
-            // Tracked small-caps date — the camera chrome's label voice.
-            label.toUpperCase(),
-            style: brandLabel(
-              size: 11,
-              weight: FontWeight.w600,
-              color: recent ? _gold : kPaper.withValues(alpha: 0.85),
-              letterSpacing: 2.4,
-            ),
-          ),
-        ],
+      child: Text(
+        // Tracked small-caps date — the camera chrome's label voice.
+        label.toUpperCase(),
+        style: brandLabel(
+          size: 11,
+          weight: FontWeight.w600,
+          color: kPaper.withValues(alpha: 0.85),
+          letterSpacing: 2.4,
+        ),
       ),
     );
   }
