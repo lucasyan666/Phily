@@ -63,13 +63,15 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
-  flutter_launcher_icons: ^0.13.1 
+  flutter_launcher_icons: ^0.13.1
   # The "flutter_launcher_icons" package is a development dependency that provides
   # a convenient way to generate app icons and splash screens for both Android
   # and iOS platforms. It allows you to create custom icons and splash screens
   # from a single source image, simplifying the process of preparing your app
   # for release. By using this package, you can ensure that your app has a
-  # consistent and professional appearance across different devices and screen sizes.   
+  # consistent and professional appearance across different devices and screen sizes.
+  # Config lives in flutter_launcher_icons.yaml at the project root (that file
+  # takes priority over any block here, so this is the one source of truth).
 
 # Vendored, patched copy of camera_avfoundation 0.9.23+2. The only change is a
 # finite-value guard in DefaultCamera.handleSampleBufferStreaming (sensorExposure
