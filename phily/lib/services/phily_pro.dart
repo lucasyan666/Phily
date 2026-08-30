@@ -37,6 +37,14 @@ class PhilyPro extends ChangeNotifier {
   static const String _kFirstLaunch = 'phily_first_launch_ms';
   static const String _kSubscribed = 'phily_subscribed';
   static const String _kLifetime = 'phily_lifetime';
+  static const String _kLastVerified = 'phily_last_verified_ms';
+
+  /// How often to re-check an active subscription against the store. A lapsed
+  /// subscription only clears client-side on a verify, so this bounds how long
+  /// a cancelled subscriber can keep Pro after the fact — long enough to never
+  /// add launch/resume latency (the check is throttled, never launch-blocking),
+  /// short enough that the revenue leak this guards against stays small.
+  static const Duration _verifyInterval = Duration(hours: 24);
 
   // Lazy: merely touching PhilyPro.instance must not spin up the store plugin
   // (it eagerly opens a billing connection on Android, and unit tests exercise
@@ -48,6 +56,8 @@ class PhilyPro extends ChangeNotifier {
   bool _subscribed = false;
   bool _lifetime = false;
   bool _storeReady = false;
+  DateTime? _lastVerified;
+  bool _verifying = false;
   final Map<String, ProductDetails> _products = {};
 
   bool get subscribed => _subscribed;
@@ -91,19 +101,72 @@ class PhilyPro extends ChangeNotifier {
     }
     _subscribed = prefs.getBool(_kSubscribed) ?? false;
     _lifetime = prefs.getBool(_kLifetime) ?? false;
+    final verifiedMs = prefs.getInt(_kLastVerified);
+    _lastVerified = verifiedMs == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(verifiedMs);
     notifyListeners();
 
     _storeReady = await _iap.isAvailable();
     if (!_storeReady) return;
 
+    // Start listening BEFORE marking a subscriber as "seen this round" — a
+    // subscription that lapsed since the last check only clears if we're
+    // already listening when its absence is (implicitly) confirmed below.
     _sub = _iap.purchaseStream.listen(_onPurchases, onError: (_) {});
     final resp = await _iap.queryProductDetails(_allIds);
     for (final p in resp.productDetails) {
       _products[p.id] = p;
     }
     notifyListeners();
-    // Pick up an existing entitlement (reinstall / new device / re-login).
-    await _iap.restorePurchases();
+    // Pick up an existing entitlement (reinstall / new device / re-login) —
+    // caller (the camera page) doesn't await init(), so this never blocks
+    // launch. Also doubles as the first "verify" pass; see maybeReverify.
+    await _reverifyEntitlement();
+  }
+
+  /// Re-checks the current entitlement against the store, throttled to once
+  /// per [_verifyInterval]. Call opportunistically (e.g. on app resume) — it's
+  /// a cheap no-op most of the time and the network round-trip, when it does
+  /// run, never blocks the caller or gates any UI.
+  void maybeReverify() {
+    if (!_storeReady || _verifying) return;
+    final last = _lastVerified;
+    if (last != null && clock().difference(last) < _verifyInterval) return;
+    unawaited(_reverifyEntitlement());
+  }
+
+  /// Asks StoreKit to re-emit the account's current entitlements. A lapsed
+  /// subscription simply doesn't come back through the stream — [_onPurchases]
+  /// only ever *sets* flags from what it's told, so the absence has to be
+  /// noticed explicitly here, after giving the store a moment to respond.
+  Future<void> _reverifyEntitlement() async {
+    _verifying = true;
+    final wasSubscribed = _subscribed;
+    try {
+      await _iap.restorePurchases();
+      // restorePurchases() resolves once the request is sent, not once every
+      // purchase update has arrived — give the stream a brief window to
+      // deliver them before treating "still not subscribed" as authoritative.
+      if (wasSubscribed) {
+        await Future<void>.delayed(const Duration(seconds: 3));
+        if (_subscribed == wasSubscribed && !_lifetime) {
+          // The store had its chance to reassert the subscription and didn't
+          // — it lapsed (cancelled, billing failure, refunded) since our last
+          // check. Clear it so isPro reflects reality again.
+          await _setSubscribed(false);
+        }
+      }
+      _lastVerified = clock();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kLastVerified, _lastVerified!.millisecondsSinceEpoch);
+    } catch (_) {
+      // Offline or store hiccup — keep the last-known entitlement rather than
+      // punishing a paying user for a network blip. We'll try again next
+      // throttle window.
+    } finally {
+      _verifying = false;
+    }
   }
 
   /// Start the purchase flow for a tier (monthly/yearly subscription or the

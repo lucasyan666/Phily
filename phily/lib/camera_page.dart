@@ -74,7 +74,8 @@ class CameraPage extends StatefulWidget {
   State<CameraPage> createState() => _CameraPageState();
 }
 
-class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
+class _CameraPageState extends State<CameraPage>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   CameraController? _controller;
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
@@ -539,6 +540,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
     _startOrientationListener();
     // Phily Pro: load the trial clock + wire the store; rebuild on entitlement
@@ -923,8 +925,20 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
   }
 
+  /// Opportunistically re-checks the Pro entitlement on resume (throttled
+  /// internally to ~once/day, and never blocks — see [PhilyPro.maybeReverify]).
+  /// This is what catches a subscription that lapsed while the app was
+  /// backgrounded, since nothing pushes that change to an already-running app.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      PhilyPro.instance.maybeReverify();
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _recordingTimer?.cancel();
     _tipTimer?.cancel();
     _focusHideTimer?.cancel();
