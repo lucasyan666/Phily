@@ -1840,11 +1840,32 @@ class _CameraPageState extends State<CameraPage>
     }
 
     final bool hadReading = _levelAttitude.value != null;
+
+    // ── Haptic arming, mirrored from the dial's own summon/linger logic ──
+    // The ping is the answer to a correction the dial ASKED for, so it may only
+    // fire while the dial is actually on screen. Arm when a real tilt summons
+    // it (same thresholds), disarm once the shot has held level long enough for
+    // the dial to start tucking away. Without this, a phone resting near level
+    // pings on every micro-drift across the threshold with nothing on screen.
+    if (!isLevel &&
+        (roll.abs() > kLevelSummonRoll || vert.abs() > kLevelSummonVert)) {
+      _levelHapticArmed = true;
+      _levelSinceMs = 0;
+    } else if (isLevel) {
+      final int nowMs = DateTime.now().millisecondsSinceEpoch;
+      _levelSinceMs = _levelSinceMs == 0 ? nowMs : _levelSinceMs;
+      // Dial is on its way out — nothing more to acknowledge until the next
+      // real tilt summons it again.
+      if (nowMs - _levelSinceMs > kLevelLingerMs) _levelHapticArmed = false;
+    }
+
     // Soft confirmation the moment a tilted people-mode shot becomes square —
-    // Horizon already owns its own stricter "Level" haptic.
+    // Horizon already owns its own stricter "Level" haptic. Fires once per
+    // summon: the correction is acknowledged, then it goes quiet.
     if (isLevel &&
         !_levelWasLevel &&
         hadReading &&
+        _levelHapticArmed &&
         m != CompositionMode.horizonGrid) {
       _haptic('alignmentPing', intensity: 0.7);
     }
@@ -2172,6 +2193,11 @@ class _CameraPageState extends State<CameraPage>
   final ValueNotifier<({double roll, double vert, bool level})?>
   _levelAttitude = ValueNotifier(null);
   bool _levelWasLevel = false;
+  // Mirrors the dial's visibility so the alignment ping only fires for a
+  // correction the user was actually shown — armed by a real tilt (the dial
+  // appearing), disarmed once it's held level and the dial tucks away.
+  bool _levelHapticArmed = false;
+  int _levelSinceMs = 0; // wall-clock ms when the current level hold began
   // Target (from device motion) that the 60fps ticker eases the displayed line
   // toward.
   double? _hzTAngle, _hzTAx, _hzTAy;

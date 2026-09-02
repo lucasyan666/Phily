@@ -671,6 +671,19 @@ List<_FocalDot> _buildFocalDots() {
   return dots;
 }
 
+/// Summon thresholds for the level dial — roll in radians (~3° of crookedness)
+/// and the dial's normalised vertical deflection. Below both, the shot is close
+/// enough that the dial has nothing to ask for and stays tucked away.
+///
+/// Shared with the camera page so the alignment haptic fires on exactly the same
+/// condition the dial appears on: feedback is only ever given for a correction
+/// the user was actually shown. Keep the two in lockstep.
+const double kLevelSummonRoll = 0.05;
+const double kLevelSummonVert = 0.30;
+
+/// How long the shot must HOLD level before the dial starts tucking away.
+const int kLevelLingerMs = 420;
+
 /// Standalone painter for the "hold it level" attitude dial. Kept in its own
 /// CustomPaint + RepaintBoundary so the ~50 Hz gravity updates repaint only this
 /// small dial — never the whole (expensive) composition overlay.
@@ -706,13 +719,10 @@ class _LevelDialPainter extends CustomPainter {
   }) : _litE = (attitude.value?.level ?? false) ? 1.0 : 0.0,
        super(repaint: attitude);
 
-  // Summon thresholds — roll in radians (~3° of crookedness), vert in the
-  // dial's normalised deflection. Below these the dial stays tucked away.
-  static const double _kSummonRoll = 0.05;
-  static const double _kSummonVert = 0.30;
+  // Summon thresholds + linger live at library scope (see [kLevelSummonRoll])
+  // so the camera page's alignment haptic keys off the same values.
   // Level→gone budget is 1.2s total: a short hold to confirm the shot really is
   // square (not a passing wobble), then the fade itself.
-  static const int _kLevelLingerMs = 420;
   // Time-constants (seconds) for a frame-rate independent exponential approach.
   // At tau 0.19 the fade reaches the 0.02 cutoff in ~760ms, so linger + fade
   // lands just under the 1.2s budget at ANY repaint rate. Fade-in stays snappy
@@ -751,12 +761,12 @@ class _LevelDialPainter extends CustomPainter {
     // never crosses a summon threshold) the latch keeps its last state, so the
     // dial never flickers at the edges.
     final int nowMs = DateTime.now().millisecondsSinceEpoch;
-    if (!a.level && (roll.abs() > _kSummonRoll || vert.abs() > _kSummonVert)) {
+    if (!a.level && (roll.abs() > kLevelSummonRoll || vert.abs() > kLevelSummonVert)) {
       _visTarget = true;
       _levelSinceMs = 0;
     } else if (a.level) {
       _levelSinceMs = _levelSinceMs == 0 ? nowMs : _levelSinceMs;
-      if (nowMs - _levelSinceMs > _kLevelLingerMs) _visTarget = false;
+      if (nowMs - _levelSinceMs > kLevelLingerMs) _visTarget = false;
     }
     // Ease on WALL-CLOCK time, not per-tick. A fixed per-paint step makes the
     // fade's duration a function of the sensor/repaint rate, so it stretches
