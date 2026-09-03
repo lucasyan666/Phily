@@ -5,7 +5,7 @@ part of 'camera_page.dart';
 //
 // A frosted reference card for one composition mode: the mode's own painter
 // draws a staged diagram (the same canned-state trick as the launch warm-up),
-// followed by BEST FOR / WHAT IT IS / HOW TO USE IT copy from the registry.
+// followed by BEST FOR / HOW TO USE IT / WHAT IT IS copy from the registry.
 // Opened by long-pressing a mode on the belt, or tapping the "Best for" bubble.
 // Lives in the camera_page library so it can use _CompositionPainter directly.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,11 +282,13 @@ class _CompositionGuideSheet extends StatelessWidget {
                       _section('BEST FOR', spec.tip!),
                       const SizedBox(height: 14),
                     ],
-                    if (spec.what != null) ...[
-                      _section('WHAT IT IS', spec.what!),
+                    // How-to leads: a user opening this sheet wants to shoot,
+                    // not to study. The principle follows for those who want it.
+                    if (spec.how != null) ...[
+                      _section('HOW TO USE IT', spec.how!),
                       const SizedBox(height: 14),
                     ],
-                    if (spec.how != null) _section('HOW TO USE IT', spec.how!),
+                    if (spec.what != null) _section('WHAT IT IS', spec.what!),
                     const SizedBox(height: 20),
                     // Dismiss — gilded chip, back to shooting.
                     Center(

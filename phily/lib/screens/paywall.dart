@@ -651,3 +651,244 @@ class _PrimaryButtonState extends State<_PrimaryButton>
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trial welcome — the launch popup that replaces the persistent chip
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Announce the free trial once at launch, instead of parking a chip over the
+/// viewfinder where it collided with the composition hints and advice bubbles.
+///
+/// Shown after [PhilyPro.init] has settled (so the day count is real) and only
+/// while the trial is actually running. Dismisses to the camera; "See what's
+/// included" hands off to the full paywall.
+Future<void> showTrialWelcome(BuildContext context) {
+  return showGeneralDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: 'Dismiss',
+    // Deep smoke rather than flat black — the chrome's material, not a scrim.
+    barrierColor: kSmoke.withValues(alpha: 0.72),
+    transitionDuration: const Duration(milliseconds: 340),
+    pageBuilder: (_, _, _) => const _TrialWelcomeDialog(),
+    transitionBuilder: (_, anim, _, child) {
+      // Settle in: the card rises a touch and swells from 96% — the same
+      // unhurried easing as the rest of the app's chrome.
+      final curved = CurvedAnimation(
+        parent: anim,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      );
+      return FadeTransition(
+        opacity: curved,
+        child: SlideTransition(
+          position: Tween(
+            begin: const Offset(0, 0.04),
+            end: Offset.zero,
+          ).animate(curved),
+          child: ScaleTransition(
+            scale: Tween(begin: 0.96, end: 1.0).animate(curved),
+            child: child,
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _TrialWelcomeDialog extends StatelessWidget {
+  const _TrialWelcomeDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    final pro = PhilyPro.instance;
+    final int d = pro.trialDaysLeft;
+    final String headline = d <= 0
+        ? 'Your free trial ends today'
+        : d == PhilyPro.trialDays
+        ? 'Your free trial starts now'
+        : '$d day${d == 1 ? '' : 's'} left in your trial';
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 28),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          // The app's shared glass — same material as the camera chrome and the
+          // gallery's bubbles, so the popup reads as part of the instrument.
+          child: GlassSurface(
+            borderRadius: BorderRadius.circular(kRadiusLg),
+            padding: const EdgeInsets.fromLTRB(24, 26, 24, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Gilded seal — the paywall's premium mark, ringed in machined
+                // gold like the level dial's bezel.
+                Center(
+                  child: SizedBox(
+                    width: 58,
+                    height: 58,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: RadialGradient(
+                              colors: [
+                                kGold.withValues(alpha: 0.22),
+                                Colors.transparent,
+                              ],
+                              stops: const [0.0, 0.78],
+                            ),
+                          ),
+                        ),
+                        const CustomPaint(
+                          size: Size(58, 58),
+                          painter: MetalRingPainter(width: 2.0),
+                        ),
+                        const Icon(
+                          Icons.workspace_premium_rounded,
+                          color: kGold,
+                          size: 26,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // Gilded wordmark — paper melting into gold, like the loader
+                // and the paywall header.
+                Center(
+                  child: ShaderMask(
+                    shaderCallback: (r) => const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [kPaper, kGold],
+                      stops: [0.35, 1.0],
+                    ).createShader(r),
+                    child: Text(
+                      'Phily Pro',
+                      style: brandDisplay(
+                        size: 26,
+                        weight: FontWeight.w500,
+                        color: Colors.white, // recoloured by the shader
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Center(
+                  child: Text(
+                    headline.toUpperCase(),
+                    textAlign: TextAlign.center,
+                    style: brandLabel(
+                      size: 10.5,
+                      weight: FontWeight.w600,
+                      color: kGold,
+                      letterSpacing: 2.0,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const GildedHairline(opacity: 0.5),
+                const SizedBox(height: 14),
+                Text(
+                  'Every composition guide is unlocked while your trial runs — '
+                  'the grids, the golden ratio, the horizon level, all of it.',
+                  textAlign: TextAlign.center,
+                  style: brandLabel(
+                    size: 12.5,
+                    weight: FontWeight.w400,
+                    color: kPaper.withValues(alpha: 0.72),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                // Primary: straight into the shot. The trial needs no action,
+                // so the calm option is the default one.
+                _TrialWelcomeButton(
+                  label: 'Start shooting',
+                  primary: true,
+                  onTap: () {
+                    hapticTap();
+                    Navigator.of(context).pop();
+                  },
+                ),
+                const SizedBox(height: 8),
+                _TrialWelcomeButton(
+                  label: "See what's included",
+                  primary: false,
+                  onTap: () {
+                    hapticTap();
+                    Navigator.of(context).pop();
+                    showPhilyProPaywall(context);
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Buttons for the welcome popup: the primary wears the polished-gold fill of
+/// the paywall's purchase button, the secondary a quiet glass rim.
+class _TrialWelcomeButton extends StatelessWidget {
+  final String label;
+  final bool primary;
+  final VoidCallback onTap;
+  const _TrialWelcomeButton({
+    required this.label,
+    required this.primary,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: 46,
+        alignment: Alignment.center,
+        decoration: primary
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(kRadiusLg),
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [kGoldLit, kGold, kGoldDeep],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: kGold.withValues(alpha: 0.28),
+                    blurRadius: 14,
+                  ),
+                ],
+              )
+            : glassChipDecoration(radius: kRadiusLg),
+        child: Text(
+          label,
+          style: primary
+              ? const TextStyle(
+                  color: Colors.black,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.2,
+                )
+              : brandLabel(
+                  size: 12.5,
+                  weight: FontWeight.w600,
+                  color: kPaper.withValues(alpha: 0.80),
+                  letterSpacing: 1.4,
+                ),
+        ),
+      ),
+    );
+  }
+}

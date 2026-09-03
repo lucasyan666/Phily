@@ -817,33 +817,22 @@ class _LevelDialPainter extends CustomPainter {
     canvas.rotate(-t * math.pi / 2);
     canvas.translate(-cx, -cy);
 
-    // Soft outer glow — amber and strong while tilted, easing down as it
-    // squares up to a calm green settle.
-    canvas.drawCircle(
-      c,
-      r + 1.5,
-      Paint()
-        ..color = tone.withValues(alpha: 0.50 - 0.34 * lit)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4.0 - 1.5 * lit
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8 - 3 * lit),
+    // ── The moving horizon ──
+    // No instrument housing: the bar itself IS the indicator. It's faded at the
+    // ends rather than cut off by a bezel, so it reads as a horizon lying across
+    // the viewfinder instead of a gauge sitting on top of it.
+    canvas.saveLayer(
+      Rect.fromCircle(center: c, radius: r * 1.9),
+      Paint(),
     );
-    // Dark instrument face.
-    canvas.drawCircle(
-      c,
-      r,
-      Paint()..color = Colors.black.withValues(alpha: 0.40),
-    );
-
-    // ── Interior: the moving horizon (clipped to the dial) ──
-    canvas.save();
-    canvas.clipPath(Path()..addOval(Rect.fromCircle(center: c, radius: r - 1)));
     canvas.save();
     canvas.translate(cx, cy);
     canvas.rotate(rollEx);
     canvas.translate(0, pitchPx);
 
-    const double L = r * 2.6;
+    // Sized to about the old dial's width — with no bezel to clip it, the bar's
+    // own length is what bounds it.
+    const double L = r * 1.15;
     canvas.drawLine(
       const Offset(-L, 0),
       const Offset(L, 0),
@@ -870,33 +859,36 @@ class _LevelDialPainter extends CustomPainter {
     for (final ty in const [-13.0, 13.0]) {
       canvas.drawLine(Offset(-7, ty), Offset(7, ty), tick);
     }
-    canvas.restore();
-    canvas.restore();
+    // Feather both ends into nothing, so the bar has no hard stop where the
+    // bezel used to be. Drawn INSIDE the rolled frame (local coords, origin at
+    // the bar's centre) so the fade tracks the ends at any tilt.
+    canvas.drawRect(
+      Rect.fromCenter(center: Offset.zero, width: L * 4, height: r * 4),
+      Paint()
+        ..blendMode = BlendMode.dstIn
+        ..shader = ui.Gradient.linear(
+          const Offset(-L, 0),
+          const Offset(L, 0),
+          const [
+            Color(0x00000000),
+            Color(0xFF000000),
+            Color(0xFF000000),
+            Color(0x00000000),
+          ],
+          const [0.0, 0.30, 0.70, 1.0],
+        ),
+    );
+    canvas.restore(); // rolled frame
+    canvas.restore(); // end-fade layer
 
     // ── Fixed centre "aircraft" symbol (the phone) ──
     final ref = Paint()
       ..color = tone.withValues(alpha: 0.95)
       ..strokeWidth = 2.0
       ..strokeCap = StrokeCap.round;
-    canvas.drawLine(Offset(cx - 12, cy), Offset(cx - 4, cy), ref);
-    canvas.drawLine(Offset(cx + 4, cy), Offset(cx + 12, cy), ref);
+    canvas.drawLine(Offset(cx - 11, cy), Offset(cx - 4, cy), ref);
+    canvas.drawLine(Offset(cx + 4, cy), Offset(cx + 11, cy), ref);
     canvas.drawCircle(c, 1.8, Paint()..color = tone);
-
-    // ── Bezel ring + fixed top roll index ──
-    canvas.drawCircle(
-      c,
-      r,
-      Paint()
-        ..color = tone.withValues(alpha: 0.55 + 0.35 * lit)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4,
-    );
-    final idx = Path()
-      ..moveTo(cx - 4, cy - r + 0.5)
-      ..lineTo(cx + 4, cy - r + 0.5)
-      ..lineTo(cx, cy - r + 6)
-      ..close();
-    canvas.drawPath(idx, Paint()..color = tone.withValues(alpha: 0.9));
 
     canvas.restore(); // user-frame rotation
     canvas.restore(); // visibility alpha layer

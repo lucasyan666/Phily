@@ -100,172 +100,170 @@ const List<CompositionSpec> kCompositionSpecs = [
   CompositionSpec(
     mode: CompositionMode.horizonGrid,
     label: 'Horizon Grid',
-    tip:
-        'Landscapes & seascapes — a true gravity level. Hold your phone completely straight to level the horizon.',
+    tip: 'Landscapes & seascapes.',
     orientation: CompoOrientation.landscape,
-    what:
-        'A gravity-true level. The gold guide marks the ideal horizon height (just above the golden section), and the moving line is your phone\'s actual tilt — measured by the sensors, not guessed from the picture.',
     how:
-        'Bring the moving line up to the gold guide, then tilt until the dial reads level — it locks with a glow and a pulse when you\'re straight. Works in any hold: the guide follows your phone\'s rotation.',
+        'Line the moving line up with the gold one, then straighten your phone until it glows and buzzes. That buzz means you\'re level — shoot.',
+    what:
+        'A real spirit level, read from your phone\'s motion sensors rather than the picture. The gold line marks the height a horizon sits best at.',
   ),
   CompositionSpec(
     mode: CompositionMode.ruleOfThirds,
     label: 'Rule of Thirds',
-    tip:
-        'Everyday shots — people, landscapes, street. Put your subject on a dot.',
+    tip: 'Everyday shots — people, street, travel.',
     orientation: CompoOrientation.both,
     powerPoints: kThirdsPoints,
-    what:
-        'The frame divided into thirds. The four intersections are power points — the places where a subject feels naturally balanced instead of bull\'s-eyed in the centre.',
     how:
-        'Put your subject — a face, an eye, the horizon — on any intersection. Phily tracks faces and pets live: the point glows as you close in and clicks at Perfect. For portraits, rest the eyes on the top line.',
+        'Park your subject on any dot instead of the middle. Move closer and the dot lights up — when it clicks, you\'ve nailed it. Shooting a person? Rest their eyes on the top line.',
+    what:
+        'The frame split in thirds. Those four crossings are where a subject sits most comfortably — off-centre reads as composed, dead-centre reads as a snapshot.',
   ),
   CompositionSpec(
     mode: CompositionMode.goldenSection,
     label: 'Phi Grid',
-    tip: 'Portraits & fine-art landscapes — subject a touch more central.',
+    tip: 'Portraits & fine-art landscapes.',
     orientation: CompoOrientation.portrait,
     powerPoints: kPhiPoints,
-    what:
-        'The Rule of Thirds\' refined sibling: the lines sit at the golden ratio (1 : 0.618), pulling the power points a touch toward the centre — calmer, more classical framing.',
     how:
-        'Compose exactly as you would with thirds, but let the subject sit slightly more central. Reach for it when thirds feels too far off-centre — especially for portraits and fine-art landscapes.',
+        'Use it exactly like thirds — subject on a dot. These dots just sit a little closer in. Reach for it when thirds pushes your subject too far to the edge.',
+    what:
+        'Thirds\' more refined cousin: the lines fall on the golden ratio (1 : 0.618) instead of even thirds, for a calmer, more classical frame.',
   ),
   CompositionSpec(
     mode: CompositionMode.goldenTriangles,
     label: 'Golden Triangles',
-    tip: 'Scenes with strong diagonals — roads, stairs, reclining poses.',
+    tip: 'Roads, stairs, reclining poses.',
     orientation: CompoOrientation.landscape,
     controls: {CompoControl.flip},
-    what:
-        'A corner-to-corner diagonal with two perpendiculars dropped onto it, carving the frame into harmonious triangles — built for scenes whose energy runs along a slope.',
     how:
-        'Lay your scene\'s strongest line — a road, a staircase, a reclining figure — along the main diagonal, and place the subject where a perpendicular meets it. Flip mirrors the set to match your scene\'s direction.',
+        'Lay the strongest line in your scene — a road, a staircase, someone lying down — along the long diagonal. Put your subject where the short lines meet it. If the slope runs the other way, hit flip.',
+    what:
+        'A diagonal with two perpendiculars dropped onto it, cutting the frame into balanced triangles. Built for scenes whose energy runs on a slope.',
   ),
   CompositionSpec(
     mode: CompositionMode.fibonacciSpiral,
     label: 'Fibonacci Spiral',
-    tip: 'Flowing scenes — rivers, paths, shells. Lead the eye to the centre.',
+    tip: 'Rivers, paths, shells.',
     orientation: CompoOrientation.landscape,
     controls: {CompoControl.flip, CompoControl.turn},
-    what:
-        'The golden spiral, unwound from the golden ratio. A scene arranged along its curve leads the viewer\'s eye on one natural sweep that lands on the spiral\'s eye.',
     how:
-        'Put what matters most at the eye of the spiral, and let leading lines — a river, a path, a curl of hair — follow the curve toward it. Use flip and turn to aim the eye at your subject\'s side of the frame.',
+        'Put the most important thing at the tight little eye of the spiral. Then let a river, a path or a curl of hair sweep along the curve into it. Flip and turn move the eye to whichever corner your subject is in.',
+    what:
+        'The golden spiral, drawn from the golden ratio. Follow its curve and a viewer\'s eye travels the whole photo in one sweep, landing where you want it.',
   ),
   CompositionSpec(
     mode: CompositionMode.cross,
     label: 'Cross',
-    tip: 'Symmetrical, centred subjects — reflections, formal architecture.',
+    tip: 'Reflections & formal architecture.',
     orientation: CompoOrientation.portrait,
-    what:
-        'A centred vertical with a movable, rotatable crossbar — formal symmetry with one strong counterpoint you position yourself.',
     how:
-        'Centre your subject on the vertical arm, then drag the crossbar to your horizon or eye-line. Grab the glowing handle to rotate the whole cross — it clicks into place at every quarter turn.',
+        'Centre your subject on the upright, then drag the crossbar down to your horizon or eye-line. Want it at an angle? Grab the glowing handle and twist — it clicks at every quarter turn.',
+    what:
+        'A centred upright with a crossbar you place yourself: formal symmetry, plus one deliberate counterpoint where you want it.',
   ),
   CompositionSpec(
     mode: CompositionMode.focalMass,
     label: 'Focal Mass',
-    tip: 'One dominant subject against negative space — minimalism.',
+    tip: 'Minimalism — one subject, lots of space.',
     // No turn button — the cluster now follows the phone into landscape.
     orientation: CompoOrientation.both,
-    what:
-        'A gathered cluster marking where your single subject should hold its visual weight — everything outside it stays deliberate, empty negative space.',
     how:
-        'Fill the cluster with your subject and resist putting anything else in the frame. The emptiness is the point. The cluster follows your phone when you turn to landscape.',
+        'Fill the cluster with your one subject, then leave everything else out. Resist the urge to add more — the empty space is doing the work. Turn to landscape and the cluster comes with you.',
+    what:
+        'A marker for where your single subject should carry its weight, with everything around it left deliberately empty.',
   ),
   CompositionSpec(
     mode: CompositionMode.vArrangement,
     label: 'V Arrangement',
-    tip: 'Group portraits, valleys, converging lines.',
+    tip: 'Group portraits & valleys.',
     orientation: CompoOrientation.portrait,
     controls: {CompoControl.flip},
-    what:
-        'Two lines converging in a V — the shape of valleys, receding crowds and well-arranged group portraits, funnelling attention to a single point.',
     how:
-        'Let your scene\'s converging lines follow the V\'s arms, with the key subject at its point. Flip turns the V into a peak (∧) for mountains, rooflines and standing groups.',
+        'Line your scene\'s converging edges up with the two arms and put the important thing at the point where they meet. Shooting a mountain or a rooftop instead? Flip it into a peak.',
+    what:
+        'Two lines meeting in a V — the shape of valleys, crowds falling away, and a well-arranged group. It funnels attention to one spot.',
   ),
   CompositionSpec(
     mode: CompositionMode.diagonal,
     label: 'Diagonal',
-    tip: 'Energy & motion — street, action, leading lines.',
+    tip: 'Motion — street & action.',
     orientation: CompoOrientation.landscape,
     controls: {CompoControl.turn},
-    what:
-        'A fan of diagonals springing from one corner — the most energetic line a frame can carry. Diagonals read as motion; horizontals read as rest.',
     how:
-        'Run the movement of your scene — a street, a shadow, a sprinter — along one of the diagonals, entering from the fan\'s corner. Turn cycles which corner the fan springs from.',
+        'Run the movement — a street, a long shadow, someone running — along one of the diagonals, starting from the corner they fan out of. Tap turn to move that corner.',
+    what:
+        'Diagonals from one corner. They read as movement, where flat horizontals read as stillness — the liveliest line a photo can hold.',
   ),
   CompositionSpec(
     mode: CompositionMode.radial,
     label: 'Radial',
-    tip: 'Flowers, wheels, sunbursts, tunnels, spiral staircases.',
+    tip: 'Flowers, wheels, tunnels.',
     orientation: CompoOrientation.both,
-    what:
-        'Spokes radiating from the centre — for subjects that bloom outward from a hub: flowers, wheels, tunnels, staircases seen from above.',
     how:
-        'Centre your subject\'s hub where the spokes meet, then let its structure — petals, spokes, steps — follow the lines outward to the edges.',
+        'Find the middle of your subject — the centre of the flower, the hub of the wheel — and drop it where the spokes meet. Let the petals or steps run outward along the lines.',
+    what:
+        'Spokes from a centre point, for anything that blooms outward from a hub.',
   ),
   CompositionSpec(
     mode: CompositionMode.lArrangement,
     label: 'L Arrangement',
-    tip: 'Product & still life — frame a subject in a corner.',
+    tip: 'Product shots & still life.',
     orientation: CompoOrientation.both,
     controls: {CompoControl.flip, CompoControl.turn},
-    what:
-        'An L bracing one corner — the still-life arrangement: the subject sits in the corner\'s embrace while space flows out of the open side.',
     how:
-        'Sit your subject inside the L\'s corner and keep the open side clean and uncluttered. Flip and turn walk the corner around the frame to wherever your subject already is.',
+        'Tuck your subject into the corner of the L and keep the open side clear. Don\'t move the plate — use flip and turn to walk the corner around to wherever your subject already sits.',
+    what:
+        'An L bracing one corner: the subject nestles in it while space opens out the other way. The classic still-life setup.',
   ),
   CompositionSpec(
     mode: CompositionMode.compoundCurve,
     label: 'Compound Curve',
-    tip: 'Winding rivers & roads, the S-curve of the figure.',
+    tip: 'Winding rivers & roads.',
     orientation: CompoOrientation.landscape,
-    what:
-        'The S-curve — the line of winding rivers, mountain roads and the human figure. It is the gentlest way to lead an eye through a photograph, front to back.',
     how:
-        'Let the winding element of your scene trace the S from foreground into the distance, and place points of interest on the curve\'s two bends.',
+        'Let the winding thing in your scene follow the S, starting near your feet and disappearing into the distance. Anything worth noticing goes on one of the two bends.',
+    what:
+        'The S-curve of rivers, mountain roads and the human figure — the gentlest way to walk an eye from the front of a photo to the back.',
   ),
   CompositionSpec(
     mode: CompositionMode.pyramid,
     label: 'Pyramid',
-    tip: 'Groups of people, mountains, stable still life.',
+    tip: 'Groups, mountains, still life.',
     orientation: CompoOrientation.landscape,
-    what:
-        'A triangle standing on the frame\'s base — the most stable shape in composition, and the classical arrangement for mountains, monuments and grouped portraits.',
     how:
-        'Build your scene inside the triangle: the peak takes the head, summit or tallest element; the wide base grounds the group. Keep the corners outside it quiet.',
+        'Build inside the triangle: tallest thing at the peak — a head, a summit — and everything else spread along the wide base. Keep the corners outside it empty.',
+    what:
+        'A triangle sitting on the frame\'s base. It\'s the most stable shape there is, which is why mountains and group portraits have used it for centuries.',
   ),
   CompositionSpec(
     mode: CompositionMode.circular,
     label: 'Circular',
-    tip: 'Round plates of food, groups in a circle, round subjects.',
+    tip: 'Plates of food & round subjects.',
     orientation: CompoOrientation.both,
-    what:
-        'A centred circle — for round subjects and scenes that gather around a middle. Circles hold the eye inside the frame instead of leading it out.',
     how:
-        'Fill the circle with your plate, wreath or huddle of faces, shooting square-on (top-down for food). Keep the corners quiet so the ring stays the story.',
+        'Fill the circle with your plate, wreath or huddle of faces. Shoot straight on — directly overhead for food — and keep the corners clear.',
+    what:
+        'A centred circle for round subjects. Circles hold the eye inside the frame rather than leading it off the edge.',
   ),
   CompositionSpec(
     mode: CompositionMode.symmetry,
     label: 'Symmetry',
-    tip: 'Reflections, faces, doorways — centre on the line.',
+    tip: 'Reflections, faces, doorways.',
     orientation: CompoOrientation.portrait,
-    what:
-        'A single centre line for mirror-image scenes. Perfect symmetry is one of the few times centring a subject is stronger than off-setting it.',
     how:
-        'Put the axis of your scene exactly on the line — the water\'s edge of a reflection, the midline of a face or doorway — and square your phone to the subject so both halves truly mirror.',
+        'Put the middle of your scene right on the line — the waterline of a reflection, the centre of a face or doorway — then square up to it so both halves really do match.',
+    what:
+        'One centre line for mirror-image scenes. This is the rare case where centring beats going off-centre.',
   ),
   CompositionSpec(
     mode: CompositionMode.aspectRatio,
     label: 'Aspect Ratio',
-    tip: 'Frame for social or print — tap to cycle 1:1 · 4:5 · 16:9.',
+    tip: 'Framing for social or print.',
     controls: {CompoControl.aspectCycle},
-    what:
-        'Crop guides for the frames your photo will finally live in — square, portrait 4:5, cinematic 16:9 and more. Composing inside the crop beats cropping later.',
     how:
-        'Tap the ratio button to cycle formats and compose inside the bright window — the dimmed strips are what the crop will trim away.',
+        'Tap the ratio button until you get the shape you want, then compose inside the bright part. The dimmed strips are what gets cut.',
+    what:
+        'Crop guides for wherever the photo ends up — square, 4:5, 16:9. Framing it right now beats cropping it later.',
   ),
 ];
 

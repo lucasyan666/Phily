@@ -470,6 +470,25 @@ class _CameraPageState extends State<CameraPage>
     child: child,
   );
 
+  /// Announce the free trial once per launch, replacing the chip that used to
+  /// sit over the viewfinder and collide with the composition hints. Only while
+  /// the trial is genuinely running — paying users and lapsed trials never see
+  /// it (the lock card already speaks for the latter).
+  void _maybeShowTrialWelcome() {
+    if (_trialWelcomeShown) return;
+    if (!mounted) return;
+    if (!PhilyPro.instance.showTrialBadge) return;
+    _trialWelcomeShown = true;
+    // Let the first frame (and the branded loader) settle so the popup rises
+    // over a live viewfinder rather than a half-built one.
+    Future.delayed(const Duration(milliseconds: 900), () {
+      if (!mounted) return;
+      // Re-check: a purchase or an expiry could have landed during the wait.
+      if (!PhilyPro.instance.showTrialBadge) return;
+      showTrialWelcome(context);
+    });
+  }
+
   void _onProChanged() {
     if (mounted) setState(() {});
     // Locking/unlocking changes whether the current mode detects → re-sync.
@@ -545,7 +564,9 @@ class _CameraPageState extends State<CameraPage>
     _startOrientationListener();
     // Phily Pro: load the trial clock + wire the store; rebuild on entitlement
     // changes (trial expiry, purchase, restore) so locked modes gate live.
-    PhilyPro.instance.init();
+    // The welcome popup waits on init() so it reads a real day count rather
+    // than the pre-load default.
+    PhilyPro.instance.init().then((_) => _maybeShowTrialWelcome());
     PhilyPro.instance.addListener(_onProChanged);
     // Delay thumbnail loading to ensure permissions are ready
     Future.delayed(const Duration(milliseconds: 500), () {
@@ -2193,6 +2214,8 @@ class _CameraPageState extends State<CameraPage>
   final ValueNotifier<({double roll, double vert, bool level})?>
   _levelAttitude = ValueNotifier(null);
   bool _levelWasLevel = false;
+  // Latch so the trial welcome popup shows at most once per app launch.
+  bool _trialWelcomeShown = false;
   // Mirrors the dial's visibility so the alignment ping only fires for a
   // correction the user was actually shown — armed by a real tilt (the dial
   // appearing), disarmed once it's held level and the dial tucks away.
@@ -3036,20 +3059,6 @@ class _CameraPageState extends State<CameraPage>
             right: 0,
             child: _buildTopSettingsPanel(),
           ),
-
-          // Trial countdown — a small gilded chip under the top panel while
-          // the free trial runs (tap → paywall). Without it, the lock card
-          // would arrive unannounced on day eight. Hidden while recording.
-          if (PhilyPro.instance.showTrialBadge && !_isRecording)
-            Positioned(
-              top:
-                  (_topInset > 0
-                      ? _topInset
-                      : MediaQuery.of(context).padding.top + 56) +
-                  12,
-              left: 12,
-              child: _buildTrialChip(),
-            ),
 
           // Grid on/off toggle — dims the overlay for a clean frame.
           if (_isInitialized && !_isRecording)
@@ -4634,41 +4643,6 @@ class _CameraPageState extends State<CameraPage>
     ),
   );
 
-  /// Small gilded countdown chip shown while the free trial runs — the gentle
-  /// heads-up that Pro is ticking. Tap → paywall.
-  Widget _buildTrialChip() {
-    final int d = PhilyPro.instance.trialDaysLeft;
-    final String label = d <= 0
-        ? 'TRIAL ENDS TODAY'
-        : 'TRIAL · $d DAY${d == 1 ? '' : 'S'} LEFT';
-    return GestureDetector(
-      onTap: () {
-        hapticTap();
-        showPhilyProPaywall(context);
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: glassChipDecoration(radius: kRadiusLg, active: true),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.workspace_premium_rounded, color: kGold, size: 12),
-            const SizedBox(width: 5),
-            Text(
-              label,
-              style: brandLabel(
-                size: 9,
-                weight: FontWeight.w600,
-                color: kGold,
-                letterSpacing: 1.6,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildTopSettingsPanel() {
     const Color gold = kGold;
     return Column(
@@ -4734,18 +4708,13 @@ class _CameraPageState extends State<CameraPage>
               onTap: _toggleResolution,
             ),
 
-            // Divider
-            Container(
-              height: 22,
-              width: 0.5,
-              color: kPaper.withValues(alpha: 0.14),
-            ),
-
-            // Guide — the always-visible front door to the composition guide
-            // for the current mode (long-press on a belt pill and tapping the
-            // tip bubble are the shortcuts). Dimmed on None: nothing to teach.
-            Opacity(
-              opacity: _compositionMode == CompositionMode.none ? 0.35 : 1.0,
+            // Guide — the front door to the composition guide for the current
+            // mode (long-press on a belt pill and tapping the tip bubble are
+            // the shortcuts). On None there is nothing to teach, so it leaves
+            // the bar entirely (divider included) and the remaining controls
+            // close the gap; swiping to a real mode eases it back in.
+            _GuideBarSlot(
+              visible: _compositionMode != CompositionMode.none,
               child: _buildSettingButton(
                 icon: Icons.menu_book_rounded,
                 caption: 'GUIDE',
@@ -5426,6 +5395,60 @@ class _GridActionButton extends StatelessWidget {
         height: 52,
         decoration: glassChipDecoration(radius: 10),
         child: Center(child: child),
+      ),
+    );
+  }
+}
+
+/// The top bar's Guide slot — present only when a composition mode is active.
+///
+/// On None there is no guide to open, so the control leaves the bar completely
+/// (its divider with it) rather than sitting there dimmed but still tappable,
+/// and `spaceEvenly` closes the gap. Swiping onto a real mode eases it back:
+/// the slot widens while the control fades and swells into place, so it rejoins
+/// the row instead of popping in. Clipped so the contents never spill past the
+/// animating width mid-collapse.
+class _GuideBarSlot extends StatelessWidget {
+  final bool visible;
+  final Widget child;
+  const _GuideBarSlot({required this.visible, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: visible ? 1.0 : 0.0, end: visible ? 1.0 : 0.0),
+      duration: kDurMed,
+      curve: Curves.easeOutCubic,
+      builder: (context, t, slot) {
+        if (t <= 0.001) return const SizedBox.shrink();
+        return Align(
+          alignment: Alignment.centerLeft,
+          // Width factor drives the reflow; the row's spaceEvenly redistributes
+          // the reclaimed space as it animates.
+          widthFactor: t,
+          child: Opacity(
+            // Fade on the back half of the widen so it reads as arriving into
+            // the space rather than stretching open.
+            opacity: Curves.easeOut.transform(t),
+            child: Transform.scale(
+              scale: 0.88 + 0.12 * t,
+              child: slot,
+            ),
+          ),
+        );
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // The divider travels with the control — leaving it behind would
+          // strand a hairline against the row's edge on None.
+          Container(
+            height: 22,
+            width: 0.5,
+            color: kPaper.withValues(alpha: 0.14),
+          ),
+          child,
+        ],
       ),
     );
   }

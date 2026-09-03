@@ -83,7 +83,8 @@ class PhilyPro extends ChangeNotifier {
   DateTime get trialEndDate =>
       _firstLaunch.add(const Duration(days: trialDays));
 
-  /// Whether to show the trial countdown chip (on trial, not yet a paying user).
+  /// Whether the trial is worth announcing (on trial, not yet a paying user) —
+  /// gates the launch welcome popup.
   bool get showTrialBadge => trialActive && !_subscribed && !_lifetime;
 
   /// True when the user may use the paid composition modes (trial, sub, or buy).
