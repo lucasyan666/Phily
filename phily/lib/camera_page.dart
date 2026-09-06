@@ -4738,37 +4738,48 @@ class _CameraPageState extends State<CameraPage>
         icon != null && iconColor != null && iconColor != Colors.white;
     return GestureDetector(
       onTap: onTap,
+      // Opaque + a generous transparent margin around the glyphs: these labels
+      // are 7.5-11px, so without this the tap target is barely bigger than the
+      // text itself and misses are constant. The visual padding below is
+      // unchanged — only the touch area grows, out into the panel's own
+      // breathing room where there's nothing to hit by mistake.
+      behavior: HitTestBehavior.opaque,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-        child: _rotated(
-          icon != null
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(icon, color: iconColor ?? Colors.white, size: 18),
-                    const SizedBox(height: 3),
-                    Text(
-                      caption ?? '',
-                      style: brandLabel(
-                        size: 7.5,
-                        weight: FontWeight.w600,
-                        color: isIconActive
-                            ? kGold
-                            : kPaper.withValues(alpha: 0.42),
-                        letterSpacing: 1.8,
+        // Was symmetric(horizontal: 14, vertical: 4). Same visual gap between
+        // controls (14 = 8 outer + 6 inner), plus 11px of vertical slop.
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 11),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: _rotated(
+            icon != null
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon, color: iconColor ?? Colors.white, size: 18),
+                      const SizedBox(height: 3),
+                      Text(
+                        caption ?? '',
+                        style: brandLabel(
+                          size: 7.5,
+                          weight: FontWeight.w600,
+                          color: isIconActive
+                              ? kGold
+                              : kPaper.withValues(alpha: 0.42),
+                          letterSpacing: 1.8,
+                        ),
                       ),
+                    ],
+                  )
+                : Text(
+                    label!.toUpperCase(),
+                    style: brandLabel(
+                      size: 11,
+                      weight: FontWeight.w500,
+                      color: kPaper.withValues(alpha: 0.92),
+                      letterSpacing: 1.8,
                     ),
-                  ],
-                )
-              : Text(
-                  label!.toUpperCase(),
-                  style: brandLabel(
-                    size: 11,
-                    weight: FontWeight.w500,
-                    color: kPaper.withValues(alpha: 0.92),
-                    letterSpacing: 1.8,
                   ),
-                ),
+          ),
         ),
       ),
     );

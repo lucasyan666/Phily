@@ -684,15 +684,18 @@ const double kLevelSummonVert = 0.30;
 /// How long the shot must HOLD level before the dial starts tucking away.
 const int kLevelLingerMs = 420;
 
-/// Standalone painter for the "hold it level" attitude dial. Kept in its own
-/// CustomPaint + RepaintBoundary so the ~50 Hz gravity updates repaint only this
-/// small dial — never the whole (expensive) composition overlay.
+/// Standalone painter for the "hold it level" gravity indicator. Kept in its own
+/// CustomPaint + RepaintBoundary so the ~50 Hz gravity updates repaint only this,
+/// never the whole (expensive) composition overlay.
 ///
-/// Reads FROSTY WHITE while the shot is off-level and crossfades to molten
-/// GOLD as it locks — the same two-state language as the rest of the chrome
-/// (paper/white at rest, gold for "aligned"). The face is drawn in the USER's
-/// frame and pinned to their bottom-left corner, so it works identically in
-/// portrait and both landscape holds.
+/// Deliberately minimal: a single hair-thin bar that rides and rolls with the
+/// phone, feathered at both ends, plus two short stubs marking true level. No
+/// housing, bezel or ladder ticks — it sits at the centre of the preview band,
+/// over the composition guides, so every extra mark would be clutter.
+///
+/// Reads AMBER while the shot is off-level and cools to GREEN as it squares up
+/// (the universal warning→good read on a spirit level). Drawn in the USER's
+/// frame, so it works identically in portrait and both landscape holds.
 class _LevelDialPainter extends CustomPainter {
   final ValueNotifier<({double roll, double vert, bool level})?> attitude;
   final double bottomInset;
@@ -739,19 +742,15 @@ class _LevelDialPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final a = attitude.value;
     if (a == null) return;
-    const double r = 32, margin = 20;
-    // Pin the dial to the USER's bottom-left corner for the current hold —
-    // portrait-space coordinates of that corner per quarter-turn.
+    const double r = 44;
+    // Centred in the visible preview band (not the whole screen — the chrome
+    // insets would push it off-centre). Sitting at the frame's middle, it reads
+    // as the horizon of the shot itself rather than a gauge parked in a corner.
     final int t = deviceTurns & 3;
-    final double loY = (size.height - bottomInset) - margin - r;
-    final double hiY = topInset + margin + r;
-    final double lX = margin + r, rX = size.width - margin - r;
-    final Offset c = switch (t) {
-      1 => Offset(rX, loY), // CW landscape → portrait bottom-right
-      2 => Offset(rX, hiY), // upside down → portrait top-right
-      3 => Offset(lX, hiY), // CCW landscape → portrait top-left
-      _ => Offset(lX, loY), // portrait
-    };
+    final Offset c = Offset(
+      size.width / 2,
+      topInset + (size.height - topInset - bottomInset) / 2,
+    );
     final double cx = c.dx, cy = c.dy;
     final double roll = a.roll, vert = a.vert;
 
@@ -806,21 +805,23 @@ class _LevelDialPainter extends CustomPainter {
 
     // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°).
     final double rollEx = (roll * 1.8).clamp(-1.3, 1.3);
-    // Vertical deflection → horizon offset inside the dial (clamped to the face).
-    final double pitchPx = (vert * r * 1.2).clamp(-r * 1.4, r * 1.4);
+    // Vertical deflection → how far the bar rides off centre. Tightened now the
+    // indicator lives at frame centre: a big swing would wander across the
+    // composition guides instead of reading as a horizon near the middle.
+    final double pitchPx = (vert * r * 0.62).clamp(-r * 0.72, r * 0.72);
 
-    // Everything below draws in the user's frame: rotate the whole face about
-    // its centre by the hold, so "up" on the dial is the user's up and the
-    // hold-relative roll/pitch read correctly in any orientation.
+    // Everything below draws in the user's frame: rotate about the centre by
+    // the hold, so "up" is the user's up and the hold-relative roll/pitch read
+    // correctly in any orientation.
     canvas.save();
     canvas.translate(cx, cy);
     canvas.rotate(-t * math.pi / 2);
     canvas.translate(-cx, -cy);
 
     // ── The moving horizon ──
-    // No instrument housing: the bar itself IS the indicator. It's faded at the
-    // ends rather than cut off by a bezel, so it reads as a horizon lying across
-    // the viewfinder instead of a gauge sitting on top of it.
+    // No housing, no ticks: the bar itself IS the indicator. Faded at both ends
+    // so it reads as a horizon lying across the viewfinder rather than a gauge
+    // sitting on top of it.
     canvas.saveLayer(
       Rect.fromCircle(center: c, radius: r * 1.9),
       Paint(),
@@ -830,35 +831,32 @@ class _LevelDialPainter extends CustomPainter {
     canvas.rotate(rollEx);
     canvas.translate(0, pitchPx);
 
-    // Sized to about the old dial's width — with no bezel to clip it, the bar's
-    // own length is what bounds it.
-    const double L = r * 1.15;
+    // Half-length of the bar. Nothing clips it now, so its own length plus the
+    // end-fade are what bound it.
+    const double L = r * 1.35;
+    // A soft halo only — enough to hold the line against a bright sky, far
+    // below the old glow. It carries legibility so the line itself can be hair-
+    // thin without disappearing.
     canvas.drawLine(
       const Offset(-L, 0),
       const Offset(L, 0),
       Paint()
-        ..color = tone.withValues(alpha: 0.35 + 0.45 * lit)
-        ..strokeWidth = 3.5
+        ..color = Colors.black.withValues(alpha: 0.28)
+        ..strokeWidth = 2.6
         ..strokeCap = StrokeCap.round
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
     );
     canvas.drawLine(
       const Offset(-L, 0),
       const Offset(L, 0),
       Paint()
-        ..color = tone.withValues(alpha: 0.92)
-        ..strokeWidth = 1.6
+        ..color = tone.withValues(alpha: 0.95)
+        ..strokeWidth = 1.1
         ..strokeCap = StrokeCap.round
         ..isAntiAlias = true,
     );
-    // Pitch-ladder ticks (jet feel).
-    final tick = Paint()
-      ..color = tone.withValues(alpha: 0.45)
-      ..strokeWidth = 1.2
-      ..strokeCap = StrokeCap.round;
-    for (final ty in const [-13.0, 13.0]) {
-      canvas.drawLine(Offset(-7, ty), Offset(7, ty), tick);
-    }
+    // Pitch ticks dropped — at centre frame they read as clutter over the
+    // composition guides, and the line's own offset already shows pitch.
     // Feather both ends into nothing, so the bar has no hard stop where the
     // bezel used to be. Drawn INSIDE the rolled frame (local coords, origin at
     // the bar's centre) so the fade tracks the ends at any tilt.
@@ -882,13 +880,14 @@ class _LevelDialPainter extends CustomPainter {
     canvas.restore(); // end-fade layer
 
     // ── Fixed centre "aircraft" symbol (the phone) ──
+    // Two short reference stubs marking true level. The old centre dot is gone —
+    // at frame centre it collided with the composition guides' power points.
     final ref = Paint()
-      ..color = tone.withValues(alpha: 0.95)
-      ..strokeWidth = 2.0
+      ..color = tone.withValues(alpha: 0.90)
+      ..strokeWidth = 1.1
       ..strokeCap = StrokeCap.round;
-    canvas.drawLine(Offset(cx - 11, cy), Offset(cx - 4, cy), ref);
-    canvas.drawLine(Offset(cx + 4, cy), Offset(cx + 11, cy), ref);
-    canvas.drawCircle(c, 1.8, Paint()..color = tone);
+    canvas.drawLine(Offset(cx - 13, cy), Offset(cx - 6, cy), ref);
+    canvas.drawLine(Offset(cx + 6, cy), Offset(cx + 13, cy), ref);
 
     canvas.restore(); // user-frame rotation
     canvas.restore(); // visibility alpha layer
