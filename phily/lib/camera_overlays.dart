@@ -671,25 +671,12 @@ List<_FocalDot> _buildFocalDots() {
   return dots;
 }
 
-/// Summon thresholds for the level dial — roll in radians (~3° of crookedness)
-/// and the dial's normalised vertical deflection. Below both, the shot is close
-/// enough that the dial has nothing to ask for and stays tucked away.
-///
-/// Shared with the camera page so the alignment haptic fires on exactly the same
-/// condition the dial appears on: feedback is only ever given for a correction
-/// the user was actually shown. Keep the two in lockstep.
-const double kLevelSummonRoll = 0.05;
-const double kLevelSummonVert = 0.30;
-
-/// How long the shot must HOLD level before the dial starts tucking away.
-const int kLevelLingerMs = 420;
-
 /// Standalone painter for the "hold it level" gravity indicator. Kept in its own
 /// CustomPaint + RepaintBoundary so the ~50 Hz gravity updates repaint only this,
 /// never the whole (expensive) composition overlay.
 ///
-/// Deliberately minimal: a single hair-thin bar that rides and rolls with the
-/// phone, feathered at both ends, plus two short stubs marking true level. No
+/// Deliberately minimal: a single hair-thin bar of even weight that rides and
+/// rolls with the phone, plus two short stubs marking true level. No
 /// housing, bezel or ladder ticks — it sits at the centre of the preview band,
 /// over the composition guides, so every extra mark would be clutter.
 ///
@@ -697,41 +684,33 @@ const int kLevelLingerMs = 420;
 /// (the universal warning→good read on a spirit level). Drawn in the USER's
 /// frame, so it works identically in portrait and both landscape holds.
 class _LevelDialPainter extends CustomPainter {
-  final ValueNotifier<({double roll, double vert, bool level})?> attitude;
+  final ValueNotifier<LevelReading?> attitude;
   final double bottomInset;
   final double topInset;
   final int deviceTurns;
+  /// Fade time-constants (seconds), supplied by the state machine so the
+  /// tuning lives in one place with the rest of its constants.
+  final double fadeInTau;
+  final double fadeOutTau;
   // Eased 0..1 "aligned" — the amber→green crossfade rides the ~50 Hz attitude
   // repaints, so no extra ticker is needed. Seeded from the live verdict so a
   // page rebuild doesn't replay the bloom.
   double _litE;
-  // Auto show/hide: the dial is a correction aid, not an instrument panel — it
-  // appears when the phone is meaningfully tilted (amber, asking for a fix) and
-  // slips away once you've held level for a beat, so a squared-up viewfinder
-  // stays clean. Eased on the same ~50 Hz repaints as [_litE]; a fresh painter
-  // starts visible and the linger logic tucks it away if there's nothing to fix.
-  double _visE = 1.0;
-  bool _visTarget = true;
-  int _levelSinceMs = 0; // wall-clock ms when the current level hold began
+  // Eased visibility. The TARGET comes from [LevelLineMachine] (which decides
+  // whether the line has any business being on screen); the painter only
+  // smooths the approach to it.
+  double _visE = 0.0;
   int _lastPaintMs = 0; // wall-clock ms of the previous paint, for dt easing
   _LevelDialPainter(
     this.attitude,
     this.bottomInset, {
     this.topInset = 0,
     this.deviceTurns = 0,
-  }) : _litE = (attitude.value?.level ?? false) ? 1.0 : 0.0,
+    this.fadeInTau = 0.0375,
+    this.fadeOutTau = 0.05,
+  }) : _litE = attitude.value?.tone ?? 0.0,
+       _visE = attitude.value?.visible ?? 0.0,
        super(repaint: attitude);
-
-  // Summon thresholds + linger live at library scope (see [kLevelSummonRoll])
-  // so the camera page's alignment haptic keys off the same values.
-  // Level→gone budget is 1.2s total: a short hold to confirm the shot really is
-  // square (not a passing wobble), then the fade itself.
-  // Time-constants (seconds) for a frame-rate independent exponential approach.
-  // At tau 0.19 the fade reaches the 0.02 cutoff in ~760ms, so linger + fade
-  // lands just under the 1.2s budget at ANY repaint rate. Fade-in stays snappy
-  // so a real tilt summons the dial immediately.
-  static const double _kFadeOutTau = 0.19;
-  static const double _kFadeInTau = 0.09;
 
   /// Amber while tilted, cooling to green as the phone squares up — the
   /// universal "warning → good" read on a spirit level.
@@ -754,34 +733,26 @@ class _LevelDialPainter extends CustomPainter {
     final double cx = c.dx, cy = c.dy;
     final double roll = a.roll, vert = a.vert;
 
-    // ── Auto show/hide ──
-    // Summoned by a real tilt; once the phone has HELD level for the linger
-    // window, tuck away. In the dead band between the two (small drift that
-    // never crosses a summon threshold) the latch keeps its last state, so the
-    // dial never flickers at the edges.
+    // ── Visibility ──
+    // The DECISION is the state machine's ([LevelLineMachine], driven from the
+    // camera page's sensor tick); all the painter does is ease toward it.
     final int nowMs = DateTime.now().millisecondsSinceEpoch;
-    if (!a.level && (roll.abs() > kLevelSummonRoll || vert.abs() > kLevelSummonVert)) {
-      _visTarget = true;
-      _levelSinceMs = 0;
-    } else if (a.level) {
-      _levelSinceMs = _levelSinceMs == 0 ? nowMs : _levelSinceMs;
-      if (nowMs - _levelSinceMs > kLevelLingerMs) _visTarget = false;
-    }
     // Ease on WALL-CLOCK time, not per-tick. A fixed per-paint step makes the
     // fade's duration a function of the sensor/repaint rate, so it stretches
     // out and steps visibly whenever paints are sparse or unevenly spaced —
     // that irregular step is the jitter. dt-based easing decouples the fade
-    // from the tick rate: same 1.2s regardless of how often we're painted, and
-    // uneven gaps produce proportional (smooth) steps rather than equal ones.
+    // from the tick rate, and uneven gaps produce proportional (smooth) steps
+    // rather than equal ones.
     final double dt = _lastPaintMs == 0
         ? 1 / 60
         : ((nowMs - _lastPaintMs) / 1000.0).clamp(0.0, 0.1);
     _lastPaintMs = nowMs;
-    final double visTargetV = _visTarget ? 1.0 : 0.0;
-    final double tau = _visTarget ? _kFadeInTau : _kFadeOutTau;
+    final double visTargetV = a.visible;
+    final bool fadingIn = visTargetV > _visE;
+    final double tau = fadingIn ? fadeInTau : fadeOutTau;
     // Frame-rate independent exponential approach.
     _visE += (visTargetV - _visE) * (1 - math.exp(-dt / tau));
-    if (_visTarget && _visE > 0.998) _visE = 1.0;
+    if (visTargetV >= 1.0 && _visE > 0.998) _visE = 1.0;
     if (_visE < 0.02) {
       _visE = 0.0;
       return; // fully tucked away — skip all drawing
@@ -793,9 +764,10 @@ class _LevelDialPainter extends CustomPainter {
       Paint()..color = Colors.black.withValues(alpha: _visE),
     );
 
-    // Ease the aligned state so the dial crossfades amber→green instead of
-    // snapping (~100ms at the 50 Hz attitude stream).
-    final double target = a.level ? 1.0 : 0.0;
+    // Ease the aligned state so the line crossfades amber→green instead of
+    // snapping (~100ms at the 50 Hz attitude stream). The target is the
+    // machine's verdict, so colour and visibility can never disagree.
+    final double target = a.tone;
     // Same dt-based easing as the fade — a per-tick step here shows up as an
     // uneven colour crawl whenever the attitude stream jitters.
     _litE += (target - _litE) * (1 - math.exp(-dt / 0.12));
@@ -803,12 +775,18 @@ class _LevelDialPainter extends CustomPainter {
     final double lit = _litE;
     final Color tone = Color.lerp(_amber, _levelGreen, lit)!;
 
-    // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°).
-    final double rollEx = (roll * 1.8).clamp(-1.3, 1.3);
+    // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°). On the
+    // level confirmation the machine asks for a dead-centre snap, so the line
+    // settles flat rather than sitting at whatever fraction of a degree remains.
+    final double rollEx = a.snap
+        ? 0.0
+        : (roll * 1.8).clamp(-1.3, 1.3);
     // Vertical deflection → how far the bar rides off centre. Tightened now the
     // indicator lives at frame centre: a big swing would wander across the
     // composition guides instead of reading as a horizon near the middle.
-    final double pitchPx = (vert * r * 0.62).clamp(-r * 0.72, r * 0.72);
+    final double pitchPx = a.snap
+        ? 0.0
+        : (vert * r * 0.62).clamp(-r * 0.72, r * 0.72);
 
     // Everything below draws in the user's frame: rotate about the centre by
     // the hold, so "up" is the user's up and the hold-relative roll/pitch read
@@ -818,76 +796,153 @@ class _LevelDialPainter extends CustomPainter {
     canvas.rotate(-t * math.pi / 2);
     canvas.translate(-cx, -cy);
 
-    // ── The moving horizon ──
-    // No housing, no ticks: the bar itself IS the indicator. Faded at both ends
-    // so it reads as a horizon lying across the viewfinder rather than a gauge
-    // sitting on top of it.
-    canvas.saveLayer(
-      Rect.fromCircle(center: c, radius: r * 1.9),
-      Paint(),
-    );
-    canvas.save();
-    canvas.translate(cx, cy);
-    canvas.rotate(rollEx);
-    canvas.translate(0, pitchPx);
-
-    // Half-length of the bar. Nothing clips it now, so its own length plus the
-    // end-fade are what bound it.
+    // ── Horizon line ⇄ bubble level ──
+    // `ov` (0..1, eased by the state machine) morphs one instrument into the
+    // other: the straight bar bows into a ring as the phone tips toward flat.
+    // Bowing a single arc — rather than cross-fading two shapes — is what makes
+    // the change read as one object turning, not two overlapping ones.
+    final double ov = Curves.easeInOut.transform(a.overhead.clamp(0.0, 1.0));
     const double L = r * 1.35;
-    // A soft halo only — enough to hold the line against a bright sky, far
-    // below the old glow. It carries legibility so the line itself can be hair-
-    // thin without disappearing.
-    canvas.drawLine(
-      const Offset(-L, 0),
-      const Offset(L, 0),
-      Paint()
-        ..color = Colors.black.withValues(alpha: 0.28)
-        ..strokeWidth = 2.6
-        ..strokeCap = StrokeCap.round
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
-    );
-    canvas.drawLine(
-      const Offset(-L, 0),
-      const Offset(L, 0),
-      Paint()
-        ..color = tone.withValues(alpha: 0.95)
-        ..strokeWidth = 1.1
-        ..strokeCap = StrokeCap.round
-        ..isAntiAlias = true,
-    );
-    // Pitch ticks dropped — at centre frame they read as clutter over the
-    // composition guides, and the line's own offset already shows pitch.
-    // Feather both ends into nothing, so the bar has no hard stop where the
-    // bezel used to be. Drawn INSIDE the rolled frame (local coords, origin at
-    // the bar's centre) so the fade tracks the ends at any tilt.
-    canvas.drawRect(
-      Rect.fromCenter(center: Offset.zero, width: L * 4, height: r * 4),
-      Paint()
-        ..blendMode = BlendMode.dstIn
-        ..shader = ui.Gradient.linear(
-          const Offset(-L, 0),
-          const Offset(L, 0),
-          const [
-            Color(0x00000000),
-            Color(0xFF000000),
-            Color(0xFF000000),
-            Color(0x00000000),
-          ],
-          const [0.0, 0.30, 0.70, 1.0],
-        ),
-    );
-    canvas.restore(); // rolled frame
-    canvas.restore(); // end-fade layer
+    // Halo + line share one geometry, so they bow together.
+    final Paint halo = Paint()
+      ..color = Colors.black.withValues(alpha: 0.16 - 0.05 * ov)
+      ..strokeWidth = 1.6 - 0.5 * ov
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.butt
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0);
+    // A closed ring carries far more ink than a single bar at the same weight,
+    // so the stroke thins and softens as the morph completes — the ring reads
+    // as a delicate hoop rather than a heavy 'O'.
+    final double ringW = 0.9 - 0.35 * ov; // 0.9 → 0.55
+    final double ringA = 0.82 - 0.22 * ov; // 0.82 → 0.60
+    final Paint stroke = Paint()
+      ..color = tone.withValues(alpha: ringA)
+      ..strokeWidth = ringW
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.butt
+      ..isAntiAlias = true;
 
-    // ── Fixed centre "aircraft" symbol (the phone) ──
-    // Two short reference stubs marking true level. The old centre dot is gone —
-    // at frame centre it collided with the composition guides' power points.
-    final ref = Paint()
-      ..color = tone.withValues(alpha: 0.90)
-      ..strokeWidth = 1.1
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(Offset(cx - 13, cy), Offset(cx - 6, cy), ref);
-    canvas.drawLine(Offset(cx + 6, cy), Offset(cx + 13, cy), ref);
+    if (ov < 0.999) {
+      // The bar, bowed by `ov`. At ov=0 it's dead straight; as ov rises the
+      // ends sweep down into what becomes the ring's lower arc.
+      canvas.save();
+      canvas.translate(cx, cy);
+      canvas.rotate(rollEx * (1 - ov)); // roll fades out as it becomes a ring
+      canvas.translate(0, pitchPx * (1 - ov));
+      final double bow = ov * L * 0.62;
+      final Path bar = Path()
+        ..moveTo(-L, 0)
+        ..quadraticBezierTo(0, bow, L, 0);
+      canvas.drawPath(bar, halo);
+      canvas.drawPath(bar, stroke);
+      // Mirror arc grows in as the ring closes, completing the circle.
+      if (ov > 0.001) {
+        final Path top = Path()
+          ..moveTo(-L, 0)
+          ..quadraticBezierTo(0, -bow, L, 0);
+        // Separate paints — mutating the shared ones would leak this fade into
+        // everything drawn afterwards.
+        canvas.drawPath(
+          top,
+          Paint()
+            ..color = Colors.black.withValues(alpha: (0.16 - 0.05 * ov) * ov)
+            ..strokeWidth = 1.6 - 0.5 * ov
+            ..style = PaintingStyle.stroke
+            ..strokeCap = StrokeCap.butt
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0),
+        );
+        canvas.drawPath(
+          top,
+          Paint()
+            ..color = tone.withValues(alpha: ringA * ov)
+            ..strokeWidth = ringW
+            ..style = PaintingStyle.stroke
+            ..strokeCap = StrokeCap.butt
+            ..isAntiAlias = true,
+        );
+      }
+      canvas.restore();
+    } else {
+      // Fully a ring.
+      canvas.drawCircle(c, L * 0.78, halo);
+      canvas.drawCircle(c, L * 0.78, stroke);
+    }
+
+    // ── Bubble ──
+    // Rides inside the ring, fading in with the morph. Its own soft halo keeps
+    // it legible over a bright scene, matching the line's treatment.
+    if (ov > 0.02) {
+      final double ringR = L * 0.78;
+      final double bx = (a.bubbleX).clamp(-1.0, 1.0) * ringR * 0.72;
+      final double by = (a.bubbleY).clamp(-1.0, 1.0) * ringR * 0.72;
+      final Offset bub = Offset(cx + bx, cy + by);
+      // Centre target — a hairline ring the bubble nests into, rather than four
+      // ticks. It echoes the outer hoop, so the instrument reads as concentric
+      // circles: a still point to bring the bubble home to.
+      canvas.drawCircle(
+        c,
+        4.6,
+        Paint()
+          ..color = tone.withValues(alpha: 0.30 * ov)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.55
+          ..isAntiAlias = true,
+      );
+
+      // ── The bubble ──
+      // A gilded bead: a wide soft aura, a body lit from the upper-left with a
+      // radial gradient (champagne core melting to deep gold at the rim), and a
+      // tiny specular highlight. Same light source and metal as the app's gold
+      // chrome, so it reads as a jewel rather than a flat dot.
+      final double bloom = 1.0 + 0.30 * lit;
+      final double rad = 3.4 * bloom;
+
+      // Aura — widens and warms as it lands.
+      canvas.drawCircle(
+        bub,
+        rad * (2.0 + 0.6 * lit),
+        Paint()
+          ..color = tone.withValues(alpha: (0.16 + 0.10 * lit) * ov)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 2 * lit),
+      );
+      // Body: lit upper-left, deepening to the lower-right.
+      canvas.drawCircle(
+        bub,
+        rad,
+        Paint()
+          ..shader = ui.Gradient.radial(
+            bub.translate(-rad * 0.35, -rad * 0.35),
+            rad * 1.5,
+            [
+              Color.lerp(kGoldLit, tone, 0.35)!.withValues(alpha: 0.98 * ov),
+              tone.withValues(alpha: 0.95 * ov),
+              Color.lerp(tone, kGoldDeep, 0.45)!.withValues(alpha: 0.90 * ov),
+            ],
+            const [0.0, 0.55, 1.0],
+          )
+          ..isAntiAlias = true,
+      );
+      // Specular pin-prick — the single highlight that sells it as rounded.
+      canvas.drawCircle(
+        bub.translate(-rad * 0.34, -rad * 0.34),
+        rad * 0.26,
+        Paint()
+          ..color = kGoldLit.withValues(alpha: 0.75 * ov)
+          ..isAntiAlias = true,
+      );
+    }
+
+    // ── Fixed reference stubs (the phone) ──
+    // Two short marks at true level. They belong to the horizon line, so they
+    // fade out as the bubble takes over.
+    if (ov < 0.98) {
+      final ref = Paint()
+        ..color = tone.withValues(alpha: 0.78 * (1 - ov))
+        ..strokeWidth = 0.9
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(Offset(cx - 13, cy), Offset(cx - 6, cy), ref);
+      canvas.drawLine(Offset(cx + 6, cy), Offset(cx + 13, cy), ref);
+    }
 
     canvas.restore(); // user-frame rotation
     canvas.restore(); // visibility alpha layer

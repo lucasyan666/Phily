@@ -15,6 +15,8 @@ import 'package:gal/gal.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:phily/screens/branded_loader.dart';
 import 'package:phily/screens/gallery_viewer.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:phily/level_line_state.dart';
 import 'package:phily/screens/paywall.dart';
 import 'package:phily/services/phily_pro.dart';
 import 'dart:io';
@@ -90,8 +92,17 @@ class _CameraPageState extends State<CameraPage>
     ..appear = 1.0
     ..matched = true
     ..alignGlow = 1.0;
-  final ValueNotifier<({double roll, double vert, bool level})?> _warmAttitude =
-      ValueNotifier((roll: 0.06, vert: 0.12, level: true));
+  final ValueNotifier<LevelReading?> _warmAttitude = ValueNotifier((
+    roll: 0.06,
+    vert: 0.12,
+    level: true,
+    visible: 1.0,
+    tone: 0.0,
+    snap: false,
+    overhead: 0.0,
+    bubbleX: 0.0,
+    bubbleY: 0.0,
+  ));
   final Stopwatch _recordingStopwatch = Stopwatch();
   Timer? _recordingTimer;
   Uint8List? _latestThumbnail;
@@ -505,6 +516,90 @@ class _CameraPageState extends State<CameraPage>
   CompositionMode get _paintedMode =>
       _modeLocked ? CompositionMode.none : _compositionMode;
 
+  Future<void> _loadLevelLinePref() async {
+    final prefs = await SharedPreferences.getInstance();
+    final v = prefs.getBool(_kAlwaysShowLevelPref) ?? false;
+    if (!mounted || v == _alwaysShowLevel) return;
+    setState(() => _alwaysShowLevel = v);
+  }
+
+  Future<void> _setAlwaysShowLevel(bool v) async {
+    setState(() => _alwaysShowLevel = v);
+    _levelLine.alwaysShow = v;
+    // Re-seed so the change takes effect on the very next sensor tick rather
+    // than waiting out whatever state the machine was mid-way through.
+    _levelLine.reset();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kAlwaysShowLevelPref, v);
+  }
+
+  /// Level-line preferences. Long-press the GUIDE button to reach it — the
+  /// top bar is already dense, and this is a set-once preference rather than a
+  /// per-shot control.
+  void _showLevelLineSettings() {
+    hapticTap();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: GlassSurface(
+            borderRadius: BorderRadius.circular(kRadiusLg),
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'LEVEL LINE',
+                  style: brandLabel(
+                    size: 10,
+                    weight: FontWeight.w600,
+                    color: kGold.withValues(alpha: 0.85),
+                    letterSpacing: 2.4,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                StatefulBuilder(
+                  builder: (ctx, setSheet) => SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    value: _alwaysShowLevel,
+                    activeThumbColor: kGold,
+                    title: Text(
+                      'Always show level line',
+                      style: brandLabel(
+                        size: 13,
+                        weight: FontWeight.w500,
+                        color: kPaper.withValues(alpha: 0.92),
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'Keep it on screen at all times. Off, it appears only '
+                      'while you\'re levelling the shot.',
+                      style: brandLabel(
+                        size: 11.5,
+                        weight: FontWeight.w400,
+                        color: kPaper.withValues(alpha: 0.55),
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                    onChanged: (v) {
+                      setSheet(() {});
+                      _setAlwaysShowLevel(v);
+                      hapticTap();
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// Debug-only sheet to flip the trial/subscription state for testing the lock.
   void _showProDebugMenu() {
     final pro = PhilyPro.instance;
@@ -567,6 +662,7 @@ class _CameraPageState extends State<CameraPage>
     // The welcome popup waits on init() so it reads a real day count rather
     // than the pre-load default.
     PhilyPro.instance.init().then((_) => _maybeShowTrialWelcome());
+    _loadLevelLinePref();
     PhilyPro.instance.addListener(_onProChanged);
     // Delay thumbnail loading to ensure permissions are ready
     Future.delayed(const Duration(milliseconds: 500), () {
@@ -1860,43 +1956,99 @@ class _CameraPageState extends State<CameraPage>
       isLevel = roll == 0.0 && pitch.abs() < 0.075; // ~4.3° on pitch
     }
 
-    final bool hadReading = _levelAttitude.value != null;
-
-    // ── Haptic arming, mirrored from the dial's own summon/linger logic ──
-    // The ping is the answer to a correction the dial ASKED for, so it may only
-    // fire while the dial is actually on screen. Arm when a real tilt summons
-    // it (same thresholds), disarm once the shot has held level long enough for
-    // the dial to start tucking away. Without this, a phone resting near level
-    // pings on every micro-drift across the threshold with nothing on screen.
-    if (!isLevel &&
-        (roll.abs() > kLevelSummonRoll || vert.abs() > kLevelSummonVert)) {
-      _levelHapticArmed = true;
-      _levelSinceMs = 0;
-    } else if (isLevel) {
-      final int nowMs = DateTime.now().millisecondsSinceEpoch;
-      _levelSinceMs = _levelSinceMs == 0 ? nowMs : _levelSinceMs;
-      // Dial is on its way out — nothing more to acknowledge until the next
-      // real tilt summons it again.
-      if (nowMs - _levelSinceMs > kLevelLingerMs) _levelHapticArmed = false;
+    // ── Adaptive visibility ──
+    // The line is a correction aid: it appears while you're actively working
+    // the phone toward level, and gets out of the way both once you've got it
+    // and once you've clearly settled on an angle you meant. All of that logic
+    // (and its tuning constants) lives in [LevelLineMachine].
+    //
+    // The tilt fed in is the SIGNED deviation the line is asking you to fix:
+    // roll for plumb, or — in Horizon Grid — the true horizon's offset from the
+    // best-spot guide, so "level" always means what the mode says it means.
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    // The deviation the line is asking you to fix. In Horizon Grid that's the
+    // true horizon's offset from the guide; elsewhere it's roll off plumb —
+    // combined with pitch, because a phone rolled flat but aimed at the ceiling
+    // is NOT level, and feeding roll alone made the machine say it was.
+    final double tiltDeg;
+    if (m == CompositionMode.horizonGrid) {
+      tiltDeg = LevelLineMachine.radToDeg(_hzDAngle);
+    } else {
+      final double pitch = math.atan2(
+        _gravZ,
+        math.sqrt(_gravX * _gravX + _gravY * _gravY),
+      );
+      // Worst of the two axes, signed by roll so the line still leans the right
+      // way. Pitch is compressed by [LevelLineConfig.pitchScale] so both axes
+      // share one tolerance — and so the line tolerates a good 35° of deliberate
+      // downward/upward aim before it gives up.
+      final double rollDeg = LevelLineMachine.radToDeg(roll);
+      final double pitchDeg =
+          LevelLineMachine.radToDeg(pitch) * _levelLine.config.pitchScale;
+      final double worst = math.max(rollDeg.abs(), pitchDeg.abs());
+      tiltDeg = rollDeg.isNegative ? -worst : worst;
     }
+    _levelLine.alwaysShow = _alwaysShowLevel;
+    // A hold change (portrait <-> landscape) redefines what "level" means, so
+    // relative roll jumps ~90 degrees in a single tick and sweeps THROUGH zero.
+    // Without this reset that sweep reads as a genuine correction and fires a
+    // spurious level haptic at whatever angle you happened to rotate past.
+    if (_deviceTurns != _levelLineTurns) {
+      _levelLineTurns = _deviceTurns;
+      _levelLine.reset();
+    }
+    // Physical pitch (unscaled) decides when the horizon line hands over to the
+    // bubble; the smoothed gravity vector positions the bubble itself.
+    final double physPitchDeg = LevelLineMachine.radToDeg(
+      math.atan2(_gravZ, math.sqrt(_gravX * _gravX + _gravY * _gravY)),
+    );
+    final double dtSec = _levelLastMs == 0
+        ? 1 / 50
+        : ((nowMs - _levelLastMs) / 1000.0).clamp(0.0, 0.2);
+    _levelLastMs = nowMs;
+    _levelLine.update(
+      tiltDeg: tiltDeg,
+      nowMs: nowMs,
+      pitchDeg: physPitchDeg,
+      gx: _gravX,
+      gy: _gravY,
+      gz: _gravZ,
+      dtSec: dtSec,
+    );
 
-    // Soft confirmation the moment a tilted people-mode shot becomes square —
-    // Horizon already owns its own stricter "Level" haptic. Fires once per
-    // summon: the correction is acknowledged, then it goes quiet.
-    if (isLevel &&
-        !_levelWasLevel &&
-        hadReading &&
-        _levelHapticArmed &&
-        m != CompositionMode.horizonGrid) {
+    // The machine owns the level confirmation now, so the haptic is simply its
+    // one-tick [justLeveled] edge — no separate arming latch to keep in sync.
+    // Horizon Grid still owns its own stricter "Level" ping.
+    if (_levelLine.justLeveled && m != CompositionMode.horizonGrid) {
       _haptic('alignmentPing', intensity: 0.7);
     }
-    _levelWasLevel = isLevel;
+    final double vis = _levelLine.opacityTarget;
+    final double tone = _levelLine.levelTone;
+    final bool snap = _levelLine.snapToCentre;
+    final double ovh = _levelLine.overheadBlend;
+    final double bx = _levelLine.bubbleX, by = _levelLine.bubbleY;
     final prev = _levelAttitude.value;
     if (prev == null ||
         (prev.roll - roll).abs() > 0.004 ||
         (prev.vert - vert).abs() > 0.01 ||
-        prev.level != isLevel) {
-      _levelAttitude.value = (roll: roll, vert: vert, level: isLevel);
+        prev.level != isLevel ||
+        prev.visible != vis ||
+        prev.tone != tone ||
+        prev.snap != snap ||
+        (prev.overhead - ovh).abs() > 0.002 ||
+        (prev.bubbleX - bx).abs() > 0.004 ||
+        (prev.bubbleY - by).abs() > 0.004) {
+      _levelAttitude.value = (
+        roll: roll,
+        vert: vert,
+        level: isLevel,
+        visible: vis,
+        tone: tone,
+        snap: snap,
+        overhead: ovh,
+        bubbleX: bx,
+        bubbleY: by,
+      );
     }
   }
 
@@ -2211,16 +2363,17 @@ class _CameraPageState extends State<CameraPage>
   // true-horizon offset from the best-spot guide, so the dial agrees with the
   // grid); `level` is the mode-aware "you're square" verdict. Runs in Horizon +
   // the people modes; pushed only on meaningful change to avoid repaints.
-  final ValueNotifier<({double roll, double vert, bool level})?>
-  _levelAttitude = ValueNotifier(null);
-  bool _levelWasLevel = false;
+  final ValueNotifier<LevelReading?> _levelAttitude = ValueNotifier(null);
+  /// Hold the level machine was last seeded for; a change re-seeds it.
+  int _levelLineTurns = 0;
+  int _levelLastMs = 0; // previous sensor tick, for dt-based easing
+  /// Drives when the gravity line is shown — see [LevelLineMachine].
+  final LevelLineMachine _levelLine = LevelLineMachine();
+  /// "Always show level line" setting; persisted, bypasses the state machine.
+  bool _alwaysShowLevel = false;
+  static const String _kAlwaysShowLevelPref = 'phily_always_show_level';
   // Latch so the trial welcome popup shows at most once per app launch.
   bool _trialWelcomeShown = false;
-  // Mirrors the dial's visibility so the alignment ping only fires for a
-  // correction the user was actually shown — armed by a real tilt (the dial
-  // appearing), disarmed once it's held level and the dial tucks away.
-  bool _levelHapticArmed = false;
-  int _levelSinceMs = 0; // wall-clock ms when the current level hold began
   // Target (from device motion) that the 60fps ticker eases the displayed line
   // toward.
   double? _hzTAngle, _hzTAx, _hzTAy;
@@ -2894,6 +3047,8 @@ class _CameraPageState extends State<CameraPage>
                           _bottomInset,
                           topInset: _topInset,
                           deviceTurns: _deviceTurns,
+                          fadeInTau: _levelLine.fadeTauSeconds(true),
+                          fadeOutTau: _levelLine.fadeTauSeconds(false),
                         ),
                       ),
                     ),
@@ -3968,10 +4123,15 @@ class _CameraPageState extends State<CameraPage>
     );
   }
 
-  /// Default instruction pill. Wording adapts to the mode's target: grid
-  /// intersections, the spiral's eye, or the horizon guide line.
+  /// Default instruction pill. Wording adapts to the mode's target: the
+  /// spiral's eye, or the horizon guide line.
+  ///
+  /// Thirds and Phi Grid deliberately get NOTHING here: their grid already
+  /// shows where the subject goes, the dots light up live as you approach, and
+  /// the "Almost"/"Perfect" badges still fire — a standing instruction over the
+  /// viewfinder was just one more thing competing with the shot.
   Widget _instructionPill() {
-    final (IconData, String) content = switch (_compositionMode) {
+    final (IconData, String)? content = switch (_compositionMode) {
       CompositionMode.fibonacciSpiral => (
         Icons.flare_rounded,
         "Place your subject on the spiral's eye",
@@ -3980,8 +4140,10 @@ class _CameraPageState extends State<CameraPage>
         Icons.straighten_rounded,
         'Hold your phone completely straight',
       ),
+      CompositionMode.ruleOfThirds || CompositionMode.goldenSection => null,
       _ => (Icons.grid_3x3_rounded, 'Place your subject on an intersection'),
     };
+    if (content == null) return const SizedBox.shrink();
     return _glassPill(
       key: const ValueKey('hint-instruction'),
       icon: content.$1,
@@ -4719,6 +4881,7 @@ class _CameraPageState extends State<CameraPage>
                 icon: Icons.menu_book_rounded,
                 caption: 'GUIDE',
                 onTap: () => showCompositionGuide(context, _compositionMode),
+                onLongPress: _showLevelLineSettings,
               ),
             ),
           ],
@@ -4733,11 +4896,13 @@ class _CameraPageState extends State<CameraPage>
     Color? iconColor,
     String? caption,
     required VoidCallback onTap,
+    VoidCallback? onLongPress,
   }) {
     final bool isIconActive =
         icon != null && iconColor != null && iconColor != Colors.white;
     return GestureDetector(
       onTap: onTap,
+      onLongPress: onLongPress,
       // Opaque + a generous transparent margin around the glyphs: these labels
       // are 7.5-11px, so without this the tap target is barely bigger than the
       // text itself and misses are constant. The visual padding below is
