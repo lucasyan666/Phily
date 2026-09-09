@@ -3438,7 +3438,11 @@ class _CameraPageState extends State<CameraPage>
                                     // the transition is continuous, not a settle-point swap.
                                     return AnimatedBuilder(
                                       animation: _compositionPageController,
-                                      builder: (context, _) {
+                                      // Built once; reused on every frame.
+                                      child: _compositionButtonLabel(
+                                        _compositionModes[index].label,
+                                      ),
+                                      builder: (context, label) {
                                         final double page =
                                             (_compositionPageController
                                                     .hasClients &&
@@ -3490,6 +3494,7 @@ class _CameraPageState extends State<CameraPage>
                                                   _compositionModes[index]
                                                       .label,
                                                   t,
+                                                  label: label,
                                                 ),
                                               ),
                                             ),
@@ -5077,7 +5082,19 @@ class _CameraPageState extends State<CameraPage>
   ///
   /// Mode labels stay horizontal (not _rotated) — a long upright label can't fit
   /// the thin belt in landscape; only control icons rotate.
-  Widget _buildCompositionButton(String type, double t) {
+  /// The pill's label — identical on every frame, so the belt hoists it into
+  /// [AnimatedBuilder]'s `child` and shapes it once instead of re-running text
+  /// layout for every visible pill on every scroll frame. Only its colour
+  /// rides the centred-ness, via a [DefaultTextStyle] above it.
+  Widget _compositionButtonLabel(String type) => Text(
+    type.toUpperCase(),
+    textAlign: TextAlign.center,
+    style: brandLabel(size: 9.5, weight: FontWeight.w600, letterSpacing: 1.8),
+  );
+
+  /// The gilding around a pre-built [label] — gradient, rim, glow and text
+  /// colour, all riding [t] (1 at centre → 0 a page away).
+  Widget _buildCompositionButton(String type, double t, {Widget? label}) {
     final double e = Curves.easeOut.transform(t.clamp(0.0, 1.0));
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
@@ -5109,15 +5126,11 @@ class _CameraPageState extends State<CameraPage>
             : null,
       ),
       alignment: Alignment.center,
-      child: Text(
-        type.toUpperCase(),
-        textAlign: TextAlign.center,
-        style: brandLabel(
-          size: 9.5,
-          weight: FontWeight.w600,
+      child: DefaultTextStyle.merge(
+        style: TextStyle(
           color: Color.lerp(kPaper.withValues(alpha: 0.34), kGold, e)!,
-          letterSpacing: 1.8,
         ),
+        child: label ?? _compositionButtonLabel(type),
       ),
     );
   }

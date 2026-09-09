@@ -1,6 +1,6 @@
 {
-  "pass": 12,
-  "updated": "2026-09-09T09:58:06+0100",
+  "pass": 13,
+  "updated": "2026-09-09T10:26:34+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "performance",
+  "next_type": "compatibility",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 96,
+    "flutter_test_passed": 97,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -184,6 +184,12 @@
         "after": 2
       },
       "verified": "analyzer + build only; camera page cannot be pumped in tests"
+    },
+    "belt_label_layouts_per_scroll_frame": {
+      "before": "~5 (one per visible pill)",
+      "after": 0,
+      "note": "label hoisted into AnimatedBuilder.child; built once per pill",
+      "measured": "structural test, not a device trace"
     }
   }
 }

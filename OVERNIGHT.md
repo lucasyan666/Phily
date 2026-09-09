@@ -37,7 +37,11 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       is false (allocation in build paths). (pass #5: gated by
       `if (kPhilyDebug && kShowFPS)`, both compile-time consts — the overlay
       is tree-shaken out entirely. Nothing to do.)
-- [ ] Belt: `AnimatedBuilder` per pill — confirm only visible pills rebuild.
+- [x] Belt: `AnimatedBuilder` per pill — confirm only visible pills rebuild.
+      (pass #13: `PageView.builder` already limits *which* pills exist —
+      `viewportFraction: 0.28` keeps ~5 alive. The waste was inside each one:
+      the whole subtree, label included, rebuilt every scroll frame. The
+      label is now hoisted into `AnimatedBuilder`'s `child`.)
 ### Compatibility
 - [~] Widget tests: camera chrome + gallery at iPhone SE (375×667), 15 Pro
       (393×852), Pro Max (430×932), and landscape — no overflow, all targets ≥44pt.
@@ -426,3 +430,31 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   `PopTap` contract is covered in `test/semantics_test.dart`); verify with
   VoiceOver on device.
 - **Commit:** `overnight: pass #12 — design-board — 2026-09-09T09:58:06+0100`
+
+### Pass #13 — performance — 2026-09-09T10:26:34+0100
+- **What:** the belt pill's label is hoisted into `AnimatedBuilder`'s `child`,
+  so it is shaped once and passed through on every subsequent frame.
+  `_buildCompositionButton` was split: `_compositionButtonLabel` builds the
+  constant `Text`, and the gilding (gradient, rim, glow) takes it as a
+  parameter. The label's colour still rides centred-ness, now via a
+  `DefaultTextStyle.merge` above the already-built Text rather than a new
+  `TextStyle` on a rebuilt one.
+- **Why:** the backlog asked whether only visible pills rebuild. They do —
+  `PageView.builder` with `viewportFraction: 0.28` keeps about five alive.
+  The real waste was one level down: each live pill's `AnimatedBuilder`
+  rebuilt its *entire* subtree every frame while scrolling, re-running text
+  layout for an uppercase, letter-spaced label that never changes. Text
+  shaping is among the more expensive things to repeat per frame, and the
+  belt animates continuously through a swipe.
+- **Metric:** label widget builds during a scroll: once per visible pill per
+  frame → once per pill, total. At ~5 live pills and 60fps that is ~300
+  redundant text layouts per second of scrolling → 0. Asserted in
+  `test/belt_rebuild_test.dart`: across 10 driven frames the builder runs
+  more than 5 times while the hoisted child builds exactly once.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 97/97 (1 new)
+  · `flutter build ios --simulator` ✓. Diff: +22/−9 in `camera_page.dart`.
+  No visual change — same widget tree, same gilding maths.
+- **Note:** the test is structural (the pattern), not a mount of the camera
+  page, which is plugin- and timer-driven and cannot be pumped. The FPS win
+  itself wants a device trace to quantify.
+- **Commit:** `overnight: pass #13 — performance — 2026-09-09T10:26:34+0100`
