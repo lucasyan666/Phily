@@ -132,6 +132,24 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       decorative fades (hint dock, belt). Pass #11 covered the paywall CTA
       sweep + press scale and the tier-row selection glide.
       Informational motion (level line, targets) is deliberately left alone.
+### Camera stability (raised by Lucas, 2026-09-09 — not yet built)
+- [ ] **Still-moment shutter.** No stabilisation handling exists anywhere in
+      `lib/` or the vendored plugin. The highest-value fix needs no new
+      sensor: `LevelLineMachine` already computes smoothed angular velocity
+      with a 2°/s stationary threshold, and the shutter ignores it. On tap,
+      if the phone is moving faster than that, wait for it to settle (short
+      timeout ~300ms so the shutter never feels stuck), then capture. Pure
+      Dart, testable, uses signals already on hand.
+- [ ] **Platform capture settings.** `AVCapturePhotoSettings
+      .photoQualityPrioritization = .quality` lets iOS use its own
+      multi-frame fusion (the real handshake win on modern iPhones);
+      `AVCaptureConnection.preferredVideoStabilizationMode` covers preview +
+      video. Both live in `vendor/camera_avfoundation` — a guardrailed area,
+      so this needs Lucas.
+- [ ] **"Hold still" hint.** Cheapest, weakest: surface high angular velocity
+      in the existing hint dock. A prompt, not a fix — only worth it after
+      the still-moment shutter.
+
 ### Hygiene
 - [ ] `flutter analyze --fatal-infos` clean (currently only warnings/errors gated).
 - [ ] Dead code sweep after the redesign (unused private members, stale comments
@@ -161,6 +179,10 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   only. Dropping portraitDown is one line, but it could be intentional.
 
 ## Needs eyes (done, but subjective — review on device)
+- Pass #24: the bubble level's centre target is now 8.8pt (was 4.6) at 0.52
+  alpha (was 0.30). Lucas reported flat/birds-eye centring was hard to see;
+  this is the fix, but the *size* is a canvas call — check it reads as a
+  target the bead nests into, not as a second hoop competing with the ring.
 - Pass #23: the paywall's aura was 0x33 (α≈0.20) where the guide sheet and
   welcome used 0x2E (α≈0.18). `GoldAura` keeps each screen's own value
   (`strength:`) rather than picking one — if they should match, that's a
@@ -773,3 +795,34 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   `0xFFFF3B30` repeated in two files. Status colours are a small palette of
   their own — worth one deliberate pass, not a drive-by.
 - **Commit:** `overnight: pass #23 — design-system — 2026-09-09T15:11:09+0100`
+
+### Pass #24 — design-board — 2026-09-09T15:40:24+0100
+- **What:** the bubble level's centre target — the thing you aim the bead into
+  for a flat, overhead shot. It was a 4.6pt hairline ring at 0.30 alpha with a
+  0.55pt stroke, around a 3.4pt bead. Now 8.8pt at 0.52 alpha with a 0.9pt
+  stroke, and it tightens + brightens as the bubble lands so the last degree
+  of correction is visible rather than guessed.
+- **Why:** Lucas reported that centring for flat / birds-eye framing is hard
+  to see. The measurement backs it: with the bead at its 30% landing bloom,
+  the old target left **0.18pt** of daylight around it — the bead effectively
+  filled its own target, so "centred" and "nearly centred" looked identical.
+  The bubble is the *only* instrument above ~54° of pitch (the horizon line
+  has nothing to grip when the phone is face-down), so this is functional
+  geometry, not decoration.
+- **Metric:** target radius 4.6 → 8.84pt · ratio to the bead 1.35× → 2.60× ·
+  visible gap at full bloom **0.18 → 4.42pt (24×)** · alpha 0.30 → 0.52 ·
+  stroke 0.55 → 0.9pt. Asserted in `test/bubble_level_test.dart` via a new
+  `debugBubbleGeometry()` seam: the target must stay ≥2× the bead, leave >2pt
+  of gap when landed, and hold ≥0.45 alpha / ≥0.8pt stroke — the old values
+  fail all three.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 207/207 (3
+  new) · `flutter build ios --simulator` ✓. Diff: +45/−9 in
+  `camera_overlays.dart`. The four numbers are now named constants
+  (`kBubbleR`, `kBubbleTargetScale`, `kBubbleTargetAlpha`,
+  `kBubbleTargetStroke`) next to the painter, so retuning is one line — the
+  `LevelLineConfig` precedent.
+- **Not addressed here:** the *other* half of Lucas's report — capture shake.
+  That is a new feature, not a polish pass: logged as a scoped three-option
+  backlog under "Camera stability" with the still-moment shutter first,
+  because it needs no new sensor and no plugin change.
+- **Commit:** `overnight: pass #24 — design-board — 2026-09-09T15:40:24+0100`

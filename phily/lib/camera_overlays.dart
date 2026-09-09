@@ -683,11 +683,24 @@ List<_FocalDot> _buildFocalDots() {
 /// Reads AMBER while the shot is off-level and cools to GREEN as it squares up
 /// (the universal warning→good read on a spirit level). Drawn in the USER's
 /// frame, so it works identically in portrait and both landscape holds.
+/// Test seam: the bubble level's proportions decide whether a flat, overhead
+/// shot can actually be aligned by eye. The painter is private, so its
+/// geometry is exposed here for `test/bubble_level_test.dart`.
+@visibleForTesting
+({double bubbleR, double targetR, double targetAlpha, double targetStroke})
+debugBubbleGeometry() => (
+  bubbleR: _LevelDialPainter.kBubbleR,
+  targetR: _LevelDialPainter.kBubbleR * _LevelDialPainter.kBubbleTargetScale,
+  targetAlpha: _LevelDialPainter.kBubbleTargetAlpha,
+  targetStroke: _LevelDialPainter.kBubbleTargetStroke,
+);
+
 class _LevelDialPainter extends CustomPainter {
   final ValueNotifier<LevelReading?> attitude;
   final double bottomInset;
   final double topInset;
   final int deviceTurns;
+
   /// Fade time-constants (seconds), supplied by the state machine so the
   /// tuning lives in one place with the rest of its constants.
   final double fadeInTau;
@@ -716,6 +729,26 @@ class _LevelDialPainter extends CustomPainter {
   /// universal "warning → good" read on a spirit level.
   static const Color _amber = Color(0xFFFFB020);
   static const Color _levelGreen = Color(0xFF4CD97B);
+
+  // ── Bubble level geometry (flat / overhead framing) ──
+  // The bubble is the only instrument for a birds-eye shot, so its target has
+  // to be legible over a live scene at a glance. Named here rather than inline
+  // so the proportion is tunable in one place — see [LevelLineConfig] for the
+  // same idea applied to the state machine's timing.
+
+  /// The gilded bead's radius, in points.
+  static const double kBubbleR = 3.4;
+
+  /// Centre target radius as a multiple of [kBubbleR]. Must be comfortably
+  /// greater than 1 or the bubble can't be seen to sit *inside* it.
+  static const double kBubbleTargetScale = 2.6;
+
+  /// Resting alpha of the target ring. It carries the whole "where is centre"
+  /// question when the phone is flat, so it is drawn to be found, not hinted.
+  static const double kBubbleTargetAlpha = 0.52;
+
+  /// Resting stroke width of the target ring, in points.
+  static const double kBubbleTargetStroke = 0.9;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -778,9 +811,7 @@ class _LevelDialPainter extends CustomPainter {
     // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°). On the
     // level confirmation the machine asks for a dead-centre snap, so the line
     // settles flat rather than sitting at whatever fraction of a degree remains.
-    final double rollEx = a.snap
-        ? 0.0
-        : (roll * 1.8).clamp(-1.3, 1.3);
+    final double rollEx = a.snap ? 0.0 : (roll * 1.8).clamp(-1.3, 1.3);
     // Vertical deflection → how far the bar rides off centre. Tightened now the
     // indicator lives at frame centre: a big swing would wander across the
     // composition guides instead of reading as a horizon near the middle.
@@ -876,16 +907,30 @@ class _LevelDialPainter extends CustomPainter {
       final double bx = (a.bubbleX).clamp(-1.0, 1.0) * ringR * 0.72;
       final double by = (a.bubbleY).clamp(-1.0, 1.0) * ringR * 0.72;
       final Offset bub = Offset(cx + bx, cy + by);
+
       // Centre target — a hairline ring the bubble nests into, rather than four
       // ticks. It echoes the outer hoop, so the instrument reads as concentric
       // circles: a still point to bring the bubble home to.
+      //
+      // Sized against the bubble, not in absolute points: a target the bubble
+      // can visibly sit *inside* is what makes "centred" readable at a glance.
+      // It was 4.6pt against a 3.4pt bead — barely larger than the thing it
+      // had to contain, at 0.30 alpha over a live scene, which is why flat
+      // overhead framing was hard to judge.
+      //
+      // It also closes the loop as you arrive: the ring brightens and tightens
+      // with [lit], so the last degree of correction is visible rather than
+      // guessed.
+      final double targetR = kBubbleR * kBubbleTargetScale - 1.2 * lit;
       canvas.drawCircle(
         c,
-        4.6,
+        targetR,
         Paint()
-          ..color = tone.withValues(alpha: 0.30 * ov)
+          ..color = tone.withValues(
+            alpha: (kBubbleTargetAlpha + 0.34 * lit) * ov,
+          )
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.55
+          ..strokeWidth = kBubbleTargetStroke + 0.35 * lit
           ..isAntiAlias = true,
       );
 
@@ -895,7 +940,7 @@ class _LevelDialPainter extends CustomPainter {
       // tiny specular highlight. Same light source and metal as the app's gold
       // chrome, so it reads as a jewel rather than a flat dot.
       final double bloom = 1.0 + 0.30 * lit;
-      final double rad = 3.4 * bloom;
+      final double rad = kBubbleR * bloom;
 
       // Aura — widens and warms as it lands.
       canvas.drawCircle(
