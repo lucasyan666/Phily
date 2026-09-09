@@ -53,14 +53,20 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       (pass #2: welcome + guide sheet covered in `test/breakpoints_test.dart`;
       pass #14 adds the gallery's empty state and pass #16 the guide caption,
       both via `@visibleForTesting` seams.
-      The populated grid and the camera chrome still need PhotoManager /
-      camera channel mocks — open.)
+      Pass #22 adds the viewer chrome (guide pill, date chip) and the grid's
+      pinned day header, and found a real overflow in the header.
+      Still open: the populated grid itself and the camera chrome. Both need
+      channel mocks — pass #22 scoped that: PhotoManager alone would mean
+      stubbing ~12 methods and matching their internal response shapes,
+      brittle against every plugin upgrade. Worth doing deliberately, not
+      squeezed into a polish pass.)
 - [~] Text scaling: `MediaQuery.textScaler` ×1.3 — chrome labels must not
       wrap or clip; cap scale on the tracked small-caps if needed.
       (pass #2 covers welcome + guide sheet at 1.3×; pass #6 extends both to
       the AX2 ≈ 2.0× and AX5 ≈ 3.1× accessibility sizes, no caps needed —
       layouts wrap or grow instead; pass #14 adds the gallery empty state and
-      found a real 238px overflow there. Camera chrome still open.)
+      found a real 238px overflow there; pass #22 covers the viewer chrome and
+      day header, finding a 24px overflow. Camera chrome still open.)
 - [~] Safe areas: notch vs Dynamic Island vs home-button — top scrim height and
       hint dock offsets derive from `MediaQuery.padding`, verify no magic numbers.
       (pass #6 audit: every top offset derives from `padding.top` or the
@@ -702,3 +708,31 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   values, but it is a different paint order — worth a glance on device that
   the "Perfect" state still reads identically. → "Needs eyes".
 - **Commit:** `overnight: pass #21 — performance — 2026-09-09T14:13:47+0100`
+
+### Pass #22 — compatibility — 2026-09-09T14:42:30+0100
+- **What:** breakpoint coverage for the gallery's chrome — the viewer's guide
+  pill and date chip, and the grid's pinned day header — through two new
+  `@visibleForTesting` seams. The tests found a real defect in the header and
+  this pass fixes it: the label is now `Flexible` inside a `minHeight: 30`
+  bar (was a hard `height: 30` with an `Expanded` rule), so it wraps and grows
+  instead of overflowing.
+- **Why:** the backlog has asked for gallery chrome coverage since pass #2
+  and every pass deferred it as "needs channel mocks". That is true of the
+  *populated grid*, but not of the chrome: like the empty state (#14) and the
+  guide caption (#16), these are pure widgets reachable through a seam. The
+  day header is also the most-repeated element in the gallery — one per day,
+  pinned while you scroll past it.
+- **Metric:** day header at 3.1× text with the longest real label
+  ("14 JUN 2024" — `dateLabel` emits the year for other years): horizontal
+  overflow **24px → 0**, and the label no longer clips vertically in the bar.
+  Breakpoint configurations under test: 80 → 104. Ordinary sizes unchanged,
+  asserted: at ≤1.3× the bar is still exactly 30pt, which the grid's pinned
+  headers are laid out against.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 202/202 (24
+  new) · `flutter build ios --simulator` ✓. Diff: +26/−12
+  `gallery_viewer.dart` (two seams + the header fix), test +110.
+- **Guide pill:** tested in its real slot (screen width − 96pt, the back
+  button and its balancing spacer) with the longest mode name, at every text
+  size. It holds — no fix needed, so those 16 configurations are a regression
+  guard.
+- **Commit:** `overnight: pass #22 — compatibility — 2026-09-09T14:42:30+0100`

@@ -141,28 +141,35 @@ class _SectionHeaderBar extends StatelessWidget {
   Widget build(BuildContext context) {
     // One quiet treatment for every day — gold stays reserved for live
     // controls (scrub bubble, selection), so headers read as wayfinding.
+    // minHeight, not height: the label is tracked small-caps that grows with
+    // the text size, and a fixed 30pt bar clipped it (and overflowed 24pt
+    // sideways on a long date like "14 JUN 2024" at AX5). Flexible lets the
+    // label take what it needs and the gold rule keep the rest.
     return Container(
-      height: 30,
+      constraints: const BoxConstraints(minHeight: 30),
       color: Colors.black,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
       child: Row(
         children: [
-          Text(
-            // Tracked small-caps date — the camera chrome's label voice.
-            label.toUpperCase(),
-            style: brandLabel(
-              size: 10,
-              weight: FontWeight.w500,
-              color: kPaper.withValues(alpha: 0.62),
-              letterSpacing: 1.8,
+          Flexible(
+            child: Text(
+              // Tracked small-caps date — the camera chrome's label voice.
+              label.toUpperCase(),
+              style: brandLabel(
+                size: 10,
+                weight: FontWeight.w500,
+                color: kPaper.withValues(alpha: 0.62),
+                letterSpacing: 1.8,
+              ),
             ),
           ),
           const SizedBox(width: 10),
           // A gold rule running out from the label — the gilded hairline's
           // small cousin, so each day is ruled off like a page.
-          Expanded(
+          Flexible(
             child: Container(
               height: 1,
+              constraints: const BoxConstraints(minWidth: 0),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: [
@@ -2612,6 +2619,22 @@ class _GoldLinePainter extends CustomPainter {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// "◆ THIRDS · GUIDE ON" — the recall toggle, in the app's one pill recipe.
+/// Test seam: the viewer's chrome is private, but it sits in a fixed slot
+/// between the back button and a 48pt spacer — the shape that clips a long
+/// mode name at large text. See `test/breakpoints_test.dart`.
+@visibleForTesting
+Widget debugViewerChrome({
+  required String guideLabel,
+  required bool guideOn,
+  DateTime? when,
+}) => when != null
+    ? _DateChip(when: when)
+    : _GuidePill(label: guideLabel, on: guideOn, onTap: () {});
+
+/// Test seam for the grid's pinned day header.
+@visibleForTesting
+Widget debugSectionHeader(String label) => _SectionHeaderBar(label);
+
 class _GuidePill extends StatelessWidget {
   final String label;
   final bool on;

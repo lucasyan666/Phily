@@ -375,6 +375,126 @@ void main() {
     }
   });
 
+  group('viewer chrome (board 1g)', () {
+    // The guide pill sits in the top bar's centre slot: back button on the
+    // left, a 48pt spacer on the right, so it gets width − 48 − 48 − margins.
+    // "GOLDEN TRIANGLES · GUIDE ON" is the longest real label.
+    for (final d in [_devices.first, _devices[2]]) {
+      for (final scale in _textScales) {
+        testWidgets('guide pill fits ${d.name} at $scale× text', (
+          tester,
+        ) async {
+          final double slot = d.size.width - 96;
+          await _pumpOn(
+            tester,
+            d,
+            scale,
+            Scaffold(
+              backgroundColor: Colors.black,
+              body: Align(
+                alignment: Alignment.topCenter,
+                child: SizedBox(
+                  width: slot,
+                  child: Center(
+                    child: debugViewerChrome(
+                      guideLabel: 'Golden Triangles',
+                      guideOn: true,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+          expect(tester.takeException(), isNull, reason: 'overflow');
+
+          // It must stay inside its slot, not just inside the screen.
+          final r = tester.getRect(find.byType(HintPill));
+          expect(
+            r.width,
+            lessThanOrEqualTo(slot + 0.5),
+            reason: 'pill is ${r.width}pt in a ${slot}pt slot',
+          );
+
+          // And its label must not be clipped inside the pill.
+          final para = tester.renderObject<RenderParagraph>(
+            find.textContaining('GUIDE ON'),
+          );
+          expect(
+            para.textSize.height,
+            lessThanOrEqualTo(para.size.height + 0.5),
+            reason: 'guide label clipped',
+          );
+        });
+
+        testWidgets('date chip fits ${d.name} at $scale× text', (tester) async {
+          await _pumpOn(
+            tester,
+            d,
+            scale,
+            Scaffold(
+              backgroundColor: Colors.black,
+              body: Center(
+                child: debugViewerChrome(
+                  guideLabel: '',
+                  guideOn: false,
+                  when: DateTime(2026, 7, 13, 15, 4),
+                ),
+              ),
+            ),
+          );
+          expect(tester.takeException(), isNull, reason: 'overflow');
+          final r = tester.getRect(find.byType(HintPill));
+          expect(r.left, greaterThanOrEqualTo(0));
+          expect(r.right, lessThanOrEqualTo(d.size.width));
+        });
+
+        testWidgets('day header fits ${d.name} at $scale× text', (
+          tester,
+        ) async {
+          await _pumpOn(
+            tester,
+            d,
+            scale,
+            Scaffold(
+              backgroundColor: Colors.black,
+              body: Align(
+                alignment: Alignment.topCenter,
+                // The longest real header: dateLabel() emits "14 Jun 2024" for
+                // other years, and it is uppercased and tracked.
+                child: debugSectionHeader('14 Jun 2024'),
+              ),
+            ),
+          );
+          expect(tester.takeException(), isNull, reason: 'overflow');
+          final para = tester.renderObject<RenderParagraph>(
+            find.text('14 JUN 2024'),
+          );
+          expect(
+            para.textSize.width,
+            lessThanOrEqualTo(para.size.width + 0.5),
+            reason: 'day header clipped horizontally at $scale×',
+          );
+          expect(
+            para.textSize.height,
+            lessThanOrEqualTo(para.size.height + 0.5),
+            reason:
+                'day header clipped vertically at $scale× — the bar is a '
+                'fixed 30pt and the label grows with text size',
+          );
+          // At ordinary sizes the bar keeps its designed 30pt: the grid's
+          // pinned headers are laid out against that height.
+          if (scale <= 1.3) {
+            expect(
+              tester.getSize(find.byType(Container).first).height,
+              30,
+              reason: 'header height changed at $scale×',
+            );
+          }
+        });
+      }
+    }
+  });
+
   group('composition guide sheet', () {
     // Worst cases only: the narrowest phone and the shortest orientation.
     final tight = [_devices.first, _devices.last];
