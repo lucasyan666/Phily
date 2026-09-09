@@ -371,3 +371,253 @@ class _GlassRimPainter extends CustomPainter {
   @override
   bool shouldRepaint(_GlassRimPainter old) => old.radius != radius;
 }
+
+
+// ── Interaction ──────────────────────────────────────────────────────────────
+
+/// Tap feedback for the app's small chrome controls, camera and gallery alike:
+/// a selection tick and a quick "bubble" — the control swells to 114% and
+/// settles back, ~260ms, easeOutBack on the way up so it overshoots like
+/// something soft. Only scale animates, so it costs nothing over the live
+/// preview.
+class PopTap extends StatefulWidget {
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+  final Widget child;
+  const PopTap({super.key, this.onTap, this.onLongPress, required this.child});
+
+  @override
+  State<PopTap> createState() => _PopTapState();
+}
+
+class _PopTapState extends State<PopTap> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 260),
+  );
+  late final Animation<double> _scale = TweenSequence<double>([
+    TweenSequenceItem(
+      tween: Tween(begin: 1.0, end: 1.14).chain(
+        CurveTween(curve: Curves.easeOutBack),
+      ),
+      weight: 40,
+    ),
+    TweenSequenceItem(
+      tween: Tween(begin: 1.14, end: 1.0).chain(
+        CurveTween(curve: Curves.easeOutCubic),
+      ),
+      weight: 60,
+    ),
+  ]).animate(_ctrl);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _pop() {
+    HapticFeedback.selectionClick();
+    _ctrl.forward(from: 0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool enabled = widget.onTap != null || widget.onLongPress != null;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.onTap == null
+          ? null
+          : () {
+              _pop();
+              widget.onTap!();
+            },
+      onLongPress: widget.onLongPress == null
+          ? null
+          : () {
+              _pop();
+              widget.onLongPress!();
+            },
+      child: Opacity(
+        opacity: enabled ? 1.0 : 0.4,
+        child: ScaleTransition(scale: _scale, child: widget.child),
+      ),
+    );
+  }
+}
+
+/// A 46pt round glass control — the camera's grid toggle and the gallery's
+/// share / favourite / delete are all this object. [active] gilds the rim and
+/// the glyph.
+class GlassRoundButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback? onTap;
+  final bool active;
+  final double size;
+  final double iconSize;
+  const GlassRoundButton({
+    super.key,
+    required this.icon,
+    required this.onTap,
+    this.active = false,
+    this.size = 46,
+    this.iconSize = 20,
+  });
+
+  @override
+  Widget build(BuildContext context) => PopTap(
+    onTap: onTap,
+    child: AnimatedContainer(
+      duration: kDurFast,
+      curve: Curves.easeOut,
+      width: size,
+      height: size,
+      decoration: glassChipDecoration(circle: true, active: active),
+      child: Icon(
+        icon,
+        color: active ? kGold : kPaper.withValues(alpha: 0.92),
+        size: iconSize,
+      ),
+    ),
+  );
+}
+
+/// A 48pt square glass control (radius 16) — the camera's guide "i" and the
+/// gallery's back button share this shape.
+class GlassSquareButton extends StatelessWidget {
+  final Widget child;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+  final bool active;
+  const GlassSquareButton({
+    super.key,
+    required this.child,
+    required this.onTap,
+    this.onLongPress,
+    this.active = false,
+  });
+
+  @override
+  Widget build(BuildContext context) => PopTap(
+    onTap: onTap,
+    onLongPress: onLongPress,
+    child: Container(
+      width: 48,
+      height: 48,
+      alignment: Alignment.center,
+      decoration: glassChipDecoration(radius: 16, active: active),
+      child: child,
+    ),
+  );
+}
+
+// ── Hint pill ────────────────────────────────────────────────────────────────
+
+/// The app's one text bubble: glyph · hairline · message on gradient-faked
+/// glass with a gold-tinted rim. The camera's hint dock and the gallery's
+/// guide pill and date chip are all this recipe, so a message reads the same
+/// wherever it appears. [emphasis] switches to gold text + a gold rim whose
+/// alpha rides [pulse] (0..1) for a breathing "Perfect" state.
+class HintPill extends StatelessWidget {
+  final IconData? icon;
+  final Widget? leading; // custom glyph instead of [icon]
+  final String text;
+  final Widget? below; // optional second line (e.g. the time)
+  final bool emphasis;
+  final double pulse;
+  final double maxWidth;
+  const HintPill({
+    super.key,
+    this.icon,
+    this.leading,
+    required this.text,
+    this.below,
+    this.emphasis = false,
+    this.pulse = 0,
+    this.maxWidth = 260,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget? glyph =
+        leading ??
+        (icon == null
+            ? null
+            : Icon(
+                icon,
+                size: 13,
+                color: kGold.withValues(
+                  alpha: emphasis ? 0.75 + 0.25 * pulse : 0.85,
+                ),
+              ));
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth, minHeight: 38),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(kRadiusLg),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.white.withValues(alpha: 0.11),
+              Colors.white.withValues(alpha: 0.03),
+              kSmoke.withValues(alpha: 0.66),
+            ],
+            stops: const [0.0, 0.42, 1.0],
+          ),
+          border: Border.all(
+            color: kGold.withValues(alpha: emphasis ? 0.5 + 0.4 * pulse : 0.40),
+            width: emphasis ? 1.0 : 0.8,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.40),
+              blurRadius: 12,
+              offset: const Offset(0, 3),
+            ),
+            if (emphasis)
+              BoxShadow(
+                color: kGold.withValues(alpha: 0.10 + 0.20 * pulse),
+                blurRadius: 14,
+              ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (glyph != null) ...[
+              glyph,
+              const SizedBox(width: 10),
+              Container(
+                width: 1,
+                height: 16,
+                color: kPaper.withValues(alpha: 0.16),
+              ),
+              const SizedBox(width: 12),
+            ],
+            Flexible(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Text(
+                    text,
+                    textAlign: TextAlign.center,
+                    style: brandLabel(
+                      size: emphasis ? 12.5 : 13,
+                      weight: emphasis ? FontWeight.w600 : FontWeight.w400,
+                      color: emphasis ? kGold : kPaper,
+                      letterSpacing: emphasis ? 1.0 : 0.2,
+                    ).copyWith(height: 1.25),
+                  ),
+                  if (below != null) ...[const SizedBox(height: 2), below!],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

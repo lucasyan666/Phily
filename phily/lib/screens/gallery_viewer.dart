@@ -10,7 +10,9 @@ import 'package:video_player/video_player.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
 import 'package:phily/screens/branded_loader.dart';
+import 'package:phily/services/shot_guide_log.dart';
 import 'package:phily/theme.dart';
+import 'dart:io' show Platform;
 
 const _gold = kGold;
 
@@ -41,198 +43,15 @@ class _FrostBar extends StatelessWidget {
           stops: const [0.0, 0.62, 1.0],
         ),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          child,
-          // Gold-leaf edge facing the photos — brightest at the centre, like
-          // the camera panels' preview-facing lip.
-          const GildedHairline(opacity: 0.55),
-        ],
-      ),
+      child: child,
     );
   }
 }
 
-/// Gilded frost — the viewer's chrome material: a real BackdropFilter blur
-/// under a smoked-glass sheen, finished with a fine gold rim ([rimmed]) and the
-/// app's soft shadow. The full-screen viewer is mostly static, so unlike the
-/// grid's faked frost it can afford true blur; the gilding ties it to the
-/// camera's gold-leaf chrome. Sizes to its [child].
-class _GildedFrost extends StatelessWidget {
-  final Widget child;
-  final BorderRadius borderRadius;
-  final EdgeInsetsGeometry padding;
-  final bool rimmed; // false → caller draws its own rim (e.g. a metal bezel)
-  const _GildedFrost({
-    required this.child,
-    required this.borderRadius,
-    this.padding = EdgeInsets.zero,
-    this.rimmed = true,
-  });
-
-  @override
-  Widget build(BuildContext context) => DecoratedBox(
-    decoration: BoxDecoration(
-      borderRadius: borderRadius,
-      boxShadow: kSoftShadow,
-    ),
-    child: ClipRRect(
-      borderRadius: borderRadius,
-      clipBehavior: Clip.antiAliasWithSaveLayer,
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          padding: padding,
-          decoration: BoxDecoration(
-            borderRadius: borderRadius,
-            // Smoked glass: a champagne-warmed sheen at the light source
-            // melting into warm near-black, so the frost reads gilded, not grey.
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(alpha: 0.16),
-                Colors.white.withValues(alpha: 0.04),
-                kSmoke.withValues(alpha: 0.44),
-              ],
-              stops: const [0.0, 0.45, 1.0],
-            ),
-            border: rimmed
-                ? Border.all(color: kGold.withValues(alpha: 0.55), width: 0.9)
-                : null,
-          ),
-          child: child,
-        ),
-      ),
-    ),
-  );
-}
 
 /// Floating frosted-glass action button (share / bin in the pager): a real
 /// BackdropFilter disc with a top sheen, hairline rim and soft shadow. Springs
 /// down on press; on tap it fires a haptic, a quick icon pop, and a ripple ring.
-class _GlassCircleButton extends StatefulWidget {
-  final IconData icon;
-  final double iconSize;
-  final VoidCallback onTap;
-  const _GlassCircleButton({
-    super.key,
-    required this.icon,
-    required this.onTap,
-    this.iconSize = 23,
-  });
-
-  @override
-  State<_GlassCircleButton> createState() => _GlassCircleButtonState();
-}
-
-class _GlassCircleButtonState extends State<_GlassCircleButton>
-    with SingleTickerProviderStateMixin {
-  static const double _d = 54;
-  bool _pressed = false;
-  late final AnimationController _tap;
-
-  @override
-  void initState() {
-    super.initState();
-    _tap = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 440),
-    );
-  }
-
-  @override
-  void dispose() {
-    _tap.dispose();
-    super.dispose();
-  }
-
-  void _onTap() {
-    HapticFeedback.lightImpact();
-    _tap.forward(from: 0);
-    widget.onTap();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _pressed = true),
-      onTapUp: (_) => setState(() => _pressed = false),
-      onTapCancel: () => setState(() => _pressed = false),
-      onTap: _onTap,
-      child: AnimatedScale(
-        scale: _pressed ? 0.88 : 1.0,
-        duration: const Duration(milliseconds: 130),
-        curve: Curves.easeOut,
-        child: AnimatedBuilder(
-          animation: _tap,
-          builder: (context, _) {
-            final t = _tap.value;
-            final ripple = Curves.easeOut.transform(t);
-            // Triangle 0→1→0 → a quick scale-up-and-back pop of the glyph.
-            final tri = (1 - (2 * t - 1).abs()).clamp(0.0, 1.0);
-            final pop = 1 + 0.26 * Curves.easeOut.transform(tri);
-            return Stack(
-              clipBehavior: Clip.none,
-              alignment: Alignment.center,
-              children: [
-                // Tap ripple — a champagne ring that expands past the button
-                // and fades, echoing the app's gilded accents.
-                if (t > 0 && t < 1)
-                  Transform.scale(
-                    scale: 0.85 + 0.7 * ripple,
-                    child: Container(
-                      width: _d,
-                      height: _d,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: kGoldLit.withValues(alpha: 0.75 * (1 - t)),
-                          width: 2,
-                        ),
-                      ),
-                    ),
-                  ),
-                // Gilded frost disc — smoked blur, no flat rim: the machined
-                // bezel below is the edge.
-                _GildedFrost(
-                  borderRadius: BorderRadius.circular(_d / 2),
-                  rimmed: false,
-                  child: SizedBox(
-                    width: _d,
-                    height: _d,
-                    child: Center(
-                      child: Transform.scale(
-                        scale: pop,
-                        child: Icon(
-                          widget.icon,
-                          color: kPaper,
-                          size: widget.iconSize,
-                          shadows: const [
-                            Shadow(color: Colors.black38, blurRadius: 4),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                // Machined-gold bezel — the same sweep-gradient ring the camera's
-                // capture button wears, catching light from the upper-left.
-                const IgnorePointer(
-                  child: CustomPaint(
-                    size: Size(_d, _d),
-                    painter: MetalRingPainter(width: 1.6),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-}
 
 Widget _spinner() => const Center(
   child: SizedBox(
@@ -306,17 +125,36 @@ class _SectionHeaderBar extends StatelessWidget {
     return Container(
       height: 30,
       color: Colors.black,
-      alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.only(left: 14),
-      child: Text(
-        // Tracked small-caps date — the camera chrome's label voice.
-        label.toUpperCase(),
-        style: brandLabel(
-          size: 11,
-          weight: FontWeight.w600,
-          color: kPaper.withValues(alpha: 0.85),
-          letterSpacing: 2.4,
-        ),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Row(
+        children: [
+          Text(
+            // Tracked small-caps date — the camera chrome's label voice.
+            label.toUpperCase(),
+            style: brandLabel(
+              size: 10,
+              weight: FontWeight.w500,
+              color: kPaper.withValues(alpha: 0.62),
+              letterSpacing: 1.8,
+            ),
+          ),
+          const SizedBox(width: 10),
+          // A gold rule running out from the label — the gilded hairline's
+          // small cousin, so each day is ruled off like a page.
+          Expanded(
+            child: Container(
+              height: 1,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    kGold.withValues(alpha: 0.35),
+                    kGold.withValues(alpha: 0),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -324,7 +162,7 @@ class _SectionHeaderBar extends StatelessWidget {
 
 /// Calm empty state when the library (or the Phily filter) has nothing yet.
 class _EmptyGallery extends StatelessWidget {
-  final bool phily; // true → the ALL/PHILY filter is on Phily
+  final bool phily; // true → the BY PHILY filter is active
   const _EmptyGallery({this.phily = false});
 
   @override
@@ -353,7 +191,7 @@ class _EmptyGallery extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
-            phily ? 'No Phily shots yet' : 'No photos yet',
+            phily ? 'Nothing by Phily yet' : 'No photos yet',
             style: brandDisplay(
               size: 21,
               weight: FontWeight.w500,
@@ -542,62 +380,50 @@ class _FastScrollThumbState extends State<_FastScrollThumb> {
 /// or just the shots captured with the app. Same design language as the
 /// camera's .5×/1× lens toggle: a smoked pill whose active segment is a
 /// polished-gold chip with a soft glow.
-class _AlbumToggle extends StatelessWidget {
-  final bool philyOnly;
-  final ValueChanged<bool> onChanged;
-  const _AlbumToggle({required this.philyOnly, required this.onChanged});
+/// One of the gallery's bottom filter chips. Active = the app's glass pill
+/// with a gold rim; inactive = a hairline outline only, so the pair reads as
+/// one control with one selected state rather than two buttons.
+class _FilterChip extends StatelessWidget {
+  final String label;
+  final bool active;
+  final bool gold;
+  final VoidCallback onTap;
+  const _FilterChip({
+    required this.label,
+    required this.active,
+    required this.onTap,
+    this.gold = false,
+  });
 
   @override
   Widget build(BuildContext context) {
-    Widget seg(String label, bool value) {
-      final bool active = philyOnly == value;
-      return GestureDetector(
-        onTap: () => onChanged(value),
-        child: AnimatedContainer(
-          duration: kDurFast,
-          curve: kEaseOut,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(
-            gradient: active
-                ? const LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [kGoldLit, kGold],
-                  )
-                : null,
-            borderRadius: BorderRadius.circular(kRadiusLg),
-            boxShadow: active
-                ? [
-                    BoxShadow(
-                      color: kGold.withValues(alpha: 0.35),
-                      blurRadius: 8,
-                    ),
-                  ]
-                : null,
-          ),
-          child: Text(
-            label,
-            style: brandLabel(
-              size: 9.5,
-              weight: active ? FontWeight.w700 : FontWeight.w500,
-              color: active ? Colors.black : kPaper.withValues(alpha: 0.55),
-              letterSpacing: 1.6,
-            ),
+    final Color ink = gold ? kGold : kPaper;
+    return PopTap(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: kDurFast,
+        curve: Curves.easeOut,
+        height: 40,
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+        alignment: Alignment.center,
+        decoration: active
+            ? glassChipDecoration(radius: 20, active: gold)
+            : BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: ink.withValues(alpha: gold ? 0.5 : 0.22),
+                  width: gold ? 1.0 : 0.8,
+                ),
+              ),
+        child: Text(
+          label,
+          style: brandLabel(
+            size: 10,
+            weight: FontWeight.w500,
+            color: active ? ink : ink.withValues(alpha: 0.75),
+            letterSpacing: 1.4,
           ),
         ),
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.4),
-        borderRadius: BorderRadius.circular(kRadiusLg),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [seg('ALL', false), seg('PHILY', true)],
       ),
     );
   }
@@ -615,6 +441,10 @@ class GalleryGridPage extends StatefulWidget {
 }
 
 class _GalleryGridPageState extends State<GalleryGridPage> {
+  void _onGuideLog() {
+    if (mounted) setState(() {});
+  }
+
   // Load in pages so the grid paints almost instantly instead of waiting for the
   // whole library; more pages stream in as you scroll near the bottom.
   static const int _pageSize = 120;
@@ -638,7 +468,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   // ALL / PHILY filter: everything in the library, or just the shots captured
   // with the app (they save into the 'Phily' album — see _saveMediaInBackground
   // on the camera page). The album handle is resolved lazily on first switch.
-  bool _philyOnly = false;
+  bool _byPhily = false;
   AssetPathEntity? _philyAlbum;
   bool _philyAlbumResolved = false;
   // Bumped on every filter switch; in-flight page loads compare against it and
@@ -658,6 +488,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   @override
   void initState() {
     super.initState();
+    ShotGuideLog.instance.addListener(_onGuideLog);
   }
 
   @override
@@ -687,6 +518,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
 
   @override
   void dispose() {
+    ShotGuideLog.instance.removeListener(_onGuideLog);
     _enterAnim?.removeStatusListener(_onEnter);
     _pull.dispose();
     _scrollCtrl.dispose();
@@ -697,17 +529,20 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   /// The album the grid is currently reading from: the whole library, or the
   /// app's own 'Phily' album when the filter is on (null until it's resolved —
   /// or forever, if nothing has been captured with the app yet).
-  AssetPathEntity? get _activeAlbum => _philyOnly ? _philyAlbum : widget.album;
+  // "By Phily" = the app's own album: everything captured in-app, landed or
+  // not. (The lozenge is what marks the ones that landed on their guide.)
+  AssetPathEntity? get _activeAlbum => _byPhily ? _philyAlbum : widget.album;
+  bool _isOnGuide(AssetEntity a) => ShotGuideLog.instance.isOnGuide(a.id);
 
   /// Switch the ALL / PHILY filter: resolve the Phily album on first use, then
   /// reload the grid from page zero. Epoch-guarded so a quick double-toggle
   /// can't interleave stale pages.
-  Future<void> _setPhilyOnly(bool v) async {
-    if (_philyOnly == v) return;
+  Future<void> _setByPhily(bool v) async {
+    if (_byPhily == v) return;
     hapticTap();
     _albumEpoch++;
     setState(() {
-      _philyOnly = v;
+      _byPhily = v;
       _selectMode = false;
       _selectedIds.clear();
       _items = [];
@@ -894,24 +729,40 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
       PageRouteBuilder(
         // Opaque so nothing heavy (the full grid + its frosted blurs) renders
         // behind the viewer during the open — that was the source of the jank.
-        transitionDuration: const Duration(milliseconds: 300),
+        transitionDuration: const Duration(milliseconds: 340),
         reverseTransitionDuration: const Duration(milliseconds: 240),
-        pageBuilder: (_, _, _) => GalleryViewerPage(
-          assets: _items,
-          initialIndex: i,
-          thumbs: _thumbCache,
+        // RepaintBoundary: during the zoom nothing inside the viewer changes,
+        // so the compositor scales one cached raster instead of re-recording
+        // the whole page every frame.
+        pageBuilder: (_, _, _) => RepaintBoundary(
+          child: GalleryViewerPage(
+            assets: _items,
+            initialIndex: i,
+            thumbs: _thumbCache,
+          ),
         ),
-        // Zoom in: scale up from the thumbnail size + fade.
+        // Zoom in: scale up from the thumbnail size + fade. The scale holds
+        // for the first 12% of the curve: the route's first frame (build +
+        // layout + first raster) costs tens of ms, and with motion starting at
+        // t=0 the clock had already run past the midpoint by the time the
+        // second frame landed — the zoom visibly skipped to half, then
+        // finished. Paying the build cost inside the hold makes the motion
+        // that follows continuous.
         transitionsBuilder: (_, anim, _, child) {
-          final curved = CurvedAnimation(
+          final fade = CurvedAnimation(
             parent: anim,
             curve: Curves.easeOutCubic,
             reverseCurve: Curves.easeInCubic,
           );
+          final zoom = CurvedAnimation(
+            parent: anim,
+            curve: const Interval(0.12, 1.0, curve: Curves.easeOutCubic),
+            reverseCurve: Curves.easeInCubic,
+          );
           return FadeTransition(
-            opacity: curved,
+            opacity: fade,
             child: ScaleTransition(
-              scale: Tween<double>(begin: 0.86, end: 1.0).animate(curved),
+              scale: Tween<double>(begin: 0.86, end: 1.0).animate(zoom),
               child: child,
             ),
           );
@@ -928,7 +779,8 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   @override
   Widget build(BuildContext context) {
     final barH = MediaQuery.of(context).padding.top + 52;
-    final bottomPad = MediaQuery.of(context).padding.bottom + 8;
+    // Clear the filter chips docked at the bottom.
+    final bottomPad = MediaQuery.of(context).padding.bottom + 86;
     final sections = _buildSections();
     return Scaffold(
       backgroundColor: Colors.black,
@@ -937,7 +789,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
           if (_loading)
             const BrandedLoader()
           else if (_items.isEmpty)
-            _EmptyGallery(phily: _philyOnly)
+            _EmptyGallery(phily: _byPhily)
           else
             // Inset below the bar so pinned date headers sit under it, not behind.
             Padding(
@@ -957,13 +809,13 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
                       SliverStickyHeader(
                         header: _SectionHeaderBar(s.label),
                         sliver: SliverPadding(
-                          padding: const EdgeInsets.symmetric(horizontal: 3),
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
                           sliver: SliverGrid(
                             gridDelegate:
                                 const SliverGridDelegateWithFixedCrossAxisCount(
                                   crossAxisCount: 3,
-                                  mainAxisSpacing: 3,
-                                  crossAxisSpacing: 3,
+                                  mainAxisSpacing: 5,
+                                  crossAxisSpacing: 5,
                                 ),
                             delegate: SliverChildBuilderDelegate(
                               (_, j) => _cell(s.indices[j]),
@@ -1017,6 +869,55 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
               ),
             ),
 
+          // Filter — ALL / ◆ BY PHILY, docked bottom-centre in the thumb
+          // zone (board 1g).
+          if (!_loading && !_selectMode) ...[
+            // The scrim is purely visual — it must not swallow taps on the
+            // last row of thumbnails scrolling up beneath it.
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: IgnorePointer(
+                child: Container(
+                  height: MediaQuery.of(context).padding.bottom + 78,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                      colors: [
+                        kSmoke.withValues(alpha: 0.98),
+                        kSmoke.withValues(alpha: 0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: MediaQuery.of(context).padding.bottom + 19,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _FilterChip(
+                    label: 'ALL',
+                    active: !_byPhily,
+                    onTap: () => _setByPhily(false),
+                  ),
+                  const SizedBox(width: 10),
+                  _FilterChip(
+                    label: '◆ BY PHILY',
+                    active: _byPhily,
+                    gold: true,
+                    onTap: () => _setByPhily(true),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           // Top bar — "Photos" normally; selection controls in select mode.
           Positioned(
             top: 0,
@@ -1050,6 +951,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
         asset: asset,
         selecting: _selectMode,
         selected: _selectedIds.contains(asset.id),
+        onGuide: _isOnGuide(asset),
         onLoaded: (b) => _cacheThumb(asset.id, b),
       ),
     );
@@ -1096,29 +998,38 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
         ),
       );
     }
+    // Redesign board 1g: the title in the brand's editorial serif, and on the
+    // right the one number that proves the app works — the share of Phily
+    // shots that landed on their guide. Only appears once there's something
+    // to count.
     return Padding(
-      padding: EdgeInsets.only(top: topInset, bottom: 10, left: 16, right: 16),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          // Tracked small-caps — the same chrome-label voice as the camera page.
-          Text(
-            'GALLERY',
-            style: brandLabel(
-              size: 13.5,
-              weight: FontWeight.w600,
-              letterSpacing: 3.2,
-            ),
-          ),
-          // ALL / PHILY filter, floated on the right edge of the bar.
-          Align(
-            alignment: Alignment.centerRight,
-            child: _AlbumToggle(
-              philyOnly: _philyOnly,
-              onChanged: _setPhilyOnly,
-            ),
-          ),
-        ],
+      padding: EdgeInsets.only(top: topInset, bottom: 8, left: 18, right: 18),
+      child: AnimatedBuilder(
+        animation: ShotGuideLog.instance,
+        builder: (_, _) {
+          final int? pct = ShotGuideLog.instance.onGuidePercent;
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(
+                'Gallery',
+                style: brandDisplay(size: 24, weight: FontWeight.w300),
+              ),
+              const Spacer(),
+              if (pct != null)
+                Text(
+                  'LANDED $pct%',
+                  style: brandLabel(
+                    size: 9.5,
+                    weight: FontWeight.w500,
+                    color: kGold.withValues(alpha: 0.8),
+                    letterSpacing: 1.52,
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1131,11 +1042,13 @@ class _GridThumb extends StatefulWidget {
   final void Function(Uint8List bytes)? onLoaded;
   final bool selecting; // multi-select mode is active
   final bool selected; // this cell is selected
+  final bool onGuide; // locked to its composition guide at capture
   const _GridThumb({
     required this.asset,
     this.onLoaded,
     this.selecting = false,
     this.selected = false,
+    this.onGuide = false,
   });
 
   @override
@@ -1204,6 +1117,29 @@ class _GridThumbState extends State<_GridThumb> {
               ),
             ),
           ),
+          // The lozenge (board 1g): one small gilded mark on shots that locked
+          // to their guide. A jewel in the corner, not a badge.
+          if (widget.onGuide)
+            Positioned(
+              left: 6,
+              bottom: 6,
+              child: Transform.rotate(
+                angle: math.pi / 4,
+                child: Container(
+                  width: 5,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: kGold,
+                    boxShadow: [
+                      BoxShadow(
+                        color: kGold.withValues(alpha: 0.7),
+                        blurRadius: 6,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           if (isVideo)
             Positioned(
               right: 5,
@@ -1318,6 +1254,9 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
   late int _index;
   // Anchor for the iOS share sheet popover (the Share button's rect).
   final GlobalKey _shareBtnKey = GlobalKey();
+  // Guide recall (board 1g): the guide the shot was taken with, drawn back
+  // over the photo. Tap the pill to fade it off — the before/after.
+  bool _guideShown = true;
   // Swipe-down-to-dismiss: live drag distance (px). Driven through a notifier so
   // a drag repaints only the transforms — it never rebuilds the PageView/video
   // underneath (that per-frame rebuild was the jitter). _springCtrl eases the
@@ -1341,6 +1280,21 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
   Animation<double>? _enterAnim;
 
   void _toggleChrome() => setState(() => _chromeVisible = !_chromeVisible);
+
+  /// Star/unstar in the system library (iOS Favourites). The returned entity
+  /// replaces ours so the star reflects the new state immediately.
+  Future<void> _toggleFavourite() async {
+    if (!Platform.isIOS) return;
+    final a = widget.assets[_index];
+    try {
+      final updated = await PhotoManager.editor.darwin.favoriteAsset(
+        entity: a,
+        favorite: !a.isFavorite,
+      );
+      if (!mounted) return;
+      setState(() => widget.assets[_index] = updated);
+    } catch (_) {}
+  }
 
   // Fades a chrome element with the tap-to-hide toggle and blocks its taps once
   // hidden; held at 0 (unpainted, so its blur costs nothing) until the open
@@ -1535,7 +1489,8 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
     final screenH = size.height;
     final safeBottom = MediaQuery.of(context).padding.bottom;
     // Bin sits bottom-right; the delete animation flies the photo into it.
-    final binDx = (screenW - 40) - screenW / 2;
+    // Bin is the third of three evenly spaced actions → ~¾ across.
+    final binDx = screenW * 0.75 - screenW / 2;
     final binDy = (screenH - safeBottom - 40) - screenH / 2;
     final total = widget.assets.length;
 
@@ -1579,6 +1534,13 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
               0.0,
               1.0,
             );
+            final AssetEntity cur = widget.assets[_index];
+            final ShotGuide? guide = cur.type == AssetType.image
+                ? ShotGuideLog.instance[cur.id]
+                : null;
+            final double aspect = cur.orientatedHeight > 0
+                ? cur.orientatedWidth / cur.orientatedHeight
+                : 1.0;
             return Stack(
               children: [
                 // Backdrop dims back in as you release, fades out as you drag.
@@ -1610,86 +1572,120 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                   ),
                 ),
 
-                // Floating glass date bubble — the same glossy material as the
-                // action buttons, instead of a full-width top panel.
-                Positioned(
-                  top: MediaQuery.of(context).padding.top + 10,
-                  left: 0,
-                  right: 0,
-                  child: _chrome(
-                    Opacity(
-                      opacity: chrome,
-                      child: Center(
-                        child: _GildedFrost(
-                          borderRadius: BorderRadius.circular(kRadiusLg),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 18,
-                            vertical: 7,
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // Chrome-label voice (matches the camera page);
-                              // the time glints in gold below the date.
-                              Text(
-                                dateLabel(
-                                  widget.assets[_index].createDateTime,
-                                ),
-                                style: brandLabel(
-                                  size: 12.5,
-                                  weight: FontWeight.w600,
-                                  letterSpacing: 0.6,
-                                ),
-                              ),
-                              const SizedBox(height: 1),
-                              Text(
-                                timeLabel(
-                                  widget.assets[_index].createDateTime,
-                                ),
-                                style: brandLabel(
-                                  size: 9,
-                                  weight: FontWeight.w500,
-                                  color: kGold.withValues(alpha: 0.95),
-                                  letterSpacing: 1.6,
-                                ),
-                              ),
-                            ],
+                // Guide recall: the composition the shot was taken with, laid
+                // back over it at the exact fractions. Fades off when the pill
+                // is tapped or the photo is zoomed (the fractions no longer
+                // map once the image moves).
+                if (guide != null && guide.hasGuide)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: AnimatedOpacity(
+                        opacity: (_guideShown && !_pageZoomed && _chromeVisible)
+                            ? chrome
+                            : 0.0,
+                        duration: const Duration(milliseconds: 200),
+                        curve: Curves.easeOut,
+                        child: CustomPaint(
+                          painter: _RecalledGuidePainter(
+                            guide: guide,
+                            imageAspect: aspect,
                           ),
                         ),
                       ),
                     ),
                   ),
+
+                if (_entered) ...[
+                // Top row (board 1g): back · guide pill (or the date) · spacer.
+                Positioned(
+                  top: MediaQuery.of(context).padding.top + 6,
+                  left: 14,
+                  right: 14,
+                  child: _chrome(
+                    Opacity(
+                      opacity: chrome,
+                      child: Row(
+                        children: [
+                          GlassSquareButton(
+                            onTap: () => Navigator.of(context).maybePop(),
+                            child: const Icon(
+                              Icons.chevron_left_rounded,
+                              color: kPaper,
+                              size: 26,
+                            ),
+                          ),
+                          Expanded(
+                            child: Center(
+                              child: guide != null && guide.hasGuide
+                                  ? _GuidePill(
+                                      label: guide.label,
+                                      on: _guideShown,
+                                      onTap: () =>
+                                          setState(() => _guideShown = !_guideShown),
+                                    )
+                                  : _DateChip(
+                                      when: widget.assets[_index].createDateTime,
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(width: 48, height: 48),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
 
-                // Floating glassy share (bottom-left) + bin (bottom-right).
+                // Caption: what the guide saw, in one line, above the actions.
+                if (guide != null && guide.hasGuide)
+                  Positioned(
+                    left: 18,
+                    right: 18,
+                    bottom: safeBottom + 6 + 46 + 18,
+                    child: _chrome(
+                      Opacity(
+                        opacity: chrome,
+                        child: _GuideCaption(
+                          guide: guide,
+                          when: widget.assets[_index].createDateTime,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Actions: share · favourite · bin — evenly spaced, 46pt, in
+                // the thumb zone (board 1g).
                 Positioned(
-                  left: 16,
+                  left: 0,
+                  right: 0,
                   bottom: safeBottom + 6,
                   child: _chrome(
                     Opacity(
                       opacity: chrome,
-                      child: _GlassCircleButton(
-                        key: _shareBtnKey,
-                        icon: Icons.ios_share_rounded,
-                        iconSize: 22,
-                        onTap: _shareCurrent,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          GlassRoundButton(
+                            key: _shareBtnKey,
+                            icon: Icons.ios_share_rounded,
+                            onTap: _shareCurrent,
+                          ),
+                          GlassRoundButton(
+                            icon: widget.assets[_index].isFavorite
+                                ? Icons.star_rounded
+                                : Icons.star_outline_rounded,
+                            active: widget.assets[_index].isFavorite,
+                            onTap: _toggleFavourite,
+                          ),
+                          GlassRoundButton(
+                            icon: Icons.delete_outline_rounded,
+                            onTap: _deleteCurrent,
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ),
-                Positioned(
-                  right: 16,
-                  bottom: safeBottom + 6,
-                  child: _chrome(
-                    Opacity(
-                      opacity: chrome,
-                      child: _GlassCircleButton(
-                        icon: Icons.delete_outline_rounded,
-                        onTap: _deleteCurrent,
-                      ),
-                    ),
-                  ),
-                ),
+                ],
               ],
             );
           },
@@ -2498,4 +2494,191 @@ class _GoldLinePainter extends CustomPainter {
       old.active != active ||
       old.glow != glow ||
       old.shimmer != shimmer;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Viewer chrome (board 1g)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// "◆ THIRDS · GUIDE ON" — the recall toggle, in the app's one pill recipe.
+class _GuidePill extends StatelessWidget {
+  final String label;
+  final bool on;
+  final VoidCallback onTap;
+  const _GuidePill({required this.label, required this.on, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => PopTap(
+    onTap: onTap,
+    child: HintPill(
+      leading: Transform.rotate(
+        angle: math.pi / 4,
+        child: Container(
+          width: 6,
+          height: 6,
+          decoration: BoxDecoration(
+            color: on ? kGold : Colors.transparent,
+            border: Border.all(color: kGold, width: 1),
+          ),
+        ),
+      ),
+      text: '${label.toUpperCase()} · GUIDE ${on ? 'ON' : 'OFF'}',
+      emphasis: on,
+    ),
+  );
+}
+
+/// Date + time, for shots with no guide to recall — same pill.
+class _DateChip extends StatelessWidget {
+  final DateTime when;
+  const _DateChip({required this.when});
+
+  @override
+  Widget build(BuildContext context) => HintPill(
+    icon: Icons.schedule_rounded,
+    text: dateLabel(when),
+    below: Text(
+      timeLabel(when),
+      style: brandLabel(
+        size: 9,
+        weight: FontWeight.w500,
+        color: kGold.withValues(alpha: 0.95),
+        letterSpacing: 1.6,
+      ),
+    ),
+  );
+}
+
+/// "Subject on the top-left crossing. Locked at 0.4° off level." — the
+/// guide's one-line account of the shot, with the date beneath.
+class _GuideCaption extends StatelessWidget {
+  final ShotGuide guide;
+  final DateTime when;
+  const _GuideCaption({required this.guide, required this.when});
+
+  @override
+  Widget build(BuildContext context) {
+    final String? crossing = guide.crossingName;
+    final bool hz = guide.mode == 'horizonGrid';
+    final String lead = crossing != null
+        ? 'Subject on the $crossing crossing.'
+        : hz
+        ? 'Horizon on the guide.'
+        : 'Shot with ${guide.label}.';
+    final String lock = guide.locked
+        ? 'Locked at ${guide.rollDeg.abs().toStringAsFixed(1)}° off level.'
+        : '';
+    final base = brandLabel(
+      size: 12.5,
+      weight: FontWeight.w400,
+      color: kPaper.withValues(alpha: 0.6),
+      letterSpacing: 0.1,
+    ).copyWith(height: 1.5);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text.rich(
+          TextSpan(
+            text: '$lead ',
+            style: base,
+            children: [
+              if (lock.isNotEmpty)
+                TextSpan(text: lock, style: base.copyWith(color: kGold)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          '${dateLabel(when)} · ${timeLabel(when)}',
+          style: brandLabel(
+            size: 9,
+            weight: FontWeight.w500,
+            color: kPaper.withValues(alpha: 0.35),
+            letterSpacing: 1.4,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Draws the shot's guide back over the photo, at the fractions it was
+/// composed to, inside the rect the image actually occupies (BoxFit.contain
+/// in the full-screen page). Lines through the locked crossing read stronger;
+/// the crossing itself gets the camera's gilded power point.
+class _RecalledGuidePainter extends CustomPainter {
+  final ShotGuide guide;
+  final double imageAspect;
+  const _RecalledGuidePainter({required this.guide, required this.imageAspect});
+
+  static const double _phiLo = 0.3819660113, _phiHi = 0.6180339887;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final List<double>? fr = switch (guide.mode) {
+      'ruleOfThirds' => const [1 / 3, 2 / 3],
+      'goldenSection' => const [_phiLo, _phiHi],
+      _ => null,
+    };
+    if (fr == null) return;
+    // The contained image rect.
+    double w = size.width, h = w / imageAspect;
+    if (h > size.height) {
+      h = size.height;
+      w = h * imageAspect;
+    }
+    final Rect r = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height / 2),
+      width: w,
+      height: h,
+    );
+    final int px = guide.point >= 0 ? guide.point % 2 : -1;
+    final int py = guide.point >= 0 ? guide.point ~/ 2 : -1;
+    for (var i = 0; i < 2; i++) {
+      final double xa = (i == px || px < 0) ? 0.45 : 0.2;
+      final double ya = (i == py || py < 0) ? 0.45 : 0.2;
+      final x = r.left + r.width * fr[i];
+      final y = r.top + r.height * fr[i];
+      canvas.drawLine(
+        Offset(x, r.top),
+        Offset(x, r.bottom),
+        Paint()
+          ..color = kGold.withValues(alpha: xa)
+          ..strokeWidth = 1,
+      );
+      canvas.drawLine(
+        Offset(r.left, y),
+        Offset(r.right, y),
+        Paint()
+          ..color = kGold.withValues(alpha: ya)
+          ..strokeWidth = 1,
+      );
+    }
+    if (px >= 0 && py >= 0) {
+      final c = Offset(r.left + r.width * fr[px], r.top + r.height * fr[py]);
+      canvas.drawCircle(
+        c,
+        9,
+        Paint()
+          ..color = kGold.withValues(alpha: 0.6)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
+      );
+      canvas.drawCircle(
+        c,
+        6,
+        Paint()
+          ..shader = ui.Gradient.radial(
+            c.translate(-2, -2),
+            8,
+            const [kGoldLit, kGold, kGoldDeep],
+            const [0.0, 0.5, 1.0],
+          ),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_RecalledGuidePainter old) =>
+      old.guide != guide || old.imageAspect != imageAspect;
 }

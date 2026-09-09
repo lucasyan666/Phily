@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:phily/level_line_state.dart';
 import 'package:phily/screens/paywall.dart';
 import 'package:phily/services/phily_pro.dart';
+import 'package:phily/services/shot_guide_log.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:phily/theme.dart';
@@ -353,6 +354,13 @@ class _CameraPageState extends State<CameraPage>
   final Map<String, _GlowSeg> _glowSegMap = {};
   bool _isProcessingFrame = false;
   DateTime _lastFrameTime = DateTime.fromMillisecondsSinceEpoch(0);
+  // Adaptive detection cadence — see [_noteDetectionCost]. Starts at the floor
+  // (the old fixed value) so a capable device behaves exactly as before and
+  // only slower hardware backs off.
+  static const int _kDetFloorMs = 60; // ~16 fps ceiling on detection
+  static const int _kDetCeilMs = 200; // never worse than ~5 fps tracking
+  int _detIntervalMs = _kDetFloorMs;
+  double _detCostMs = 0;
   // Throttle the (expensive) multi-rotation face-detection re-probe so a scene
   // with no face (landscape/street) doesn't pay 4 synchronous rotations/frame.
   // When a face was tracked recently the probe runs every frame instead, so we
@@ -480,25 +488,6 @@ class _CameraPageState extends State<CameraPage>
     curve: Curves.easeOut,
     child: child,
   );
-
-  /// Announce the free trial once per launch, replacing the chip that used to
-  /// sit over the viewfinder and collide with the composition hints. Only while
-  /// the trial is genuinely running — paying users and lapsed trials never see
-  /// it (the lock card already speaks for the latter).
-  void _maybeShowTrialWelcome() {
-    if (_trialWelcomeShown) return;
-    if (!mounted) return;
-    if (!PhilyPro.instance.showTrialBadge) return;
-    _trialWelcomeShown = true;
-    // Let the first frame (and the branded loader) settle so the popup rises
-    // over a live viewfinder rather than a half-built one.
-    Future.delayed(const Duration(milliseconds: 900), () {
-      if (!mounted) return;
-      // Re-check: a purchase or an expiry could have landed during the wait.
-      if (!PhilyPro.instance.showTrialBadge) return;
-      showTrialWelcome(context);
-    });
-  }
 
   void _onProChanged() {
     if (mounted) setState(() {});
@@ -661,8 +650,9 @@ class _CameraPageState extends State<CameraPage>
     // changes (trial expiry, purchase, restore) so locked modes gate live.
     // The welcome popup waits on init() so it reads a real day count rather
     // than the pre-load default.
-    PhilyPro.instance.init().then((_) => _maybeShowTrialWelcome());
+    PhilyPro.instance.init();
     _loadLevelLinePref();
+    ShotGuideLog.instance.load();
     PhilyPro.instance.addListener(_onProChanged);
     // Delay thumbnail loading to ensure permissions are ready
     Future.delayed(const Duration(milliseconds: 500), () {
@@ -975,6 +965,22 @@ class _CameraPageState extends State<CameraPage>
     final ps = await PhotoManager.requestPermissionExtend();
     _photoPermission = ps.isAuth || ps.hasAccess;
     return _photoPermission!;
+  }
+
+  Future<void> _recordGuideForNewest(ShotGuide guide) async {
+    try {
+      final albums = await PhotoManager.getAssetPathList(
+        type: RequestType.image,
+        hasAll: true,
+        onlyAll: true,
+      );
+      if (albums.isEmpty) return;
+      final newest = await albums.first.getAssetListRange(start: 0, end: 1);
+      if (newest.isEmpty) return;
+      await ShotGuideLog.instance.record(newest.first.id, guide);
+    } catch (e) {
+      debugLog('guide record failed: $e');
+    }
   }
 
   Future<void> _loadLatestThumbnail() async {
@@ -1396,6 +1402,36 @@ class _CameraPageState extends State<CameraPage>
 
   /// Jumps the belt straight to [index] (tapping a mode rather than swiping).
   /// animateToPage fires onPageChanged, so haptic/mode/tip stay in sync.
+  // Belt feedback state — see the belt's Listener/AnimatedScale in build.
+  bool _beltTouched = false;
+  bool _beltScrolling = false;
+  int _beltStartIndex = 0;
+
+  void _setBeltTouched(bool v) {
+    if (_beltTouched == v) return;
+    setState(() => _beltTouched = v);
+  }
+
+  /// Tracks the belt's motion. The start index is remembered so the settle
+  /// haptic fires only when a switch actually COMPLETED on a different mode —
+  /// a nudge that springs back to the same pill stays silent.
+  bool _onBeltScroll(ScrollNotification n) {
+    if (n is ScrollStartNotification) {
+      if (!_beltScrolling) {
+        _beltStartIndex = _currentCompositionIndex;
+        setState(() => _beltScrolling = true);
+      }
+    } else if (n is ScrollEndNotification) {
+      if (_beltScrolling) setState(() => _beltScrolling = false);
+      if (_currentCompositionIndex != _beltStartIndex) {
+        // The landing: one short, definite tap as the pill locks in.
+        HapticFeedback.lightImpact();
+        _beltStartIndex = _currentCompositionIndex;
+      }
+    }
+    return false; // let the notification keep bubbling
+  }
+
   void _goToCompositionIndex(int index) {
     if (index == _currentCompositionIndex) return;
     _compositionPageController.animateToPage(
@@ -1521,11 +1557,14 @@ class _CameraPageState extends State<CameraPage>
     try {
       // takePicture() conflicts with an active stream on some devices.
       _stopImageStream();
+      // What the guide knew at the instant of the shutter — recorded against
+      // the saved asset so the gallery can mark and recall it.
+      final ShotGuide guide = _guideSnapshot();
       final image = await _controller!.takePicture();
       final file = File(image.path);
       _triggerBounceAnimation(file);
       // Crop to the framed viewport, then save (both off the shutter path).
-      _cropThenSave(file.path, _topInsetFrac, _bottomInsetFrac);
+      _cropThenSave(file.path, _topInsetFrac, _bottomInsetFrac, guide);
       // Restart the stream after capture only if the mode needs it.
       await _syncImageStream();
     } catch (e) {
@@ -1539,11 +1578,35 @@ class _CameraPageState extends State<CameraPage>
   /// The heavy decode/encode runs in a throwaway isolate so the UI stays smooth;
   /// on any failure — or when there's nothing to trim — the original is saved
   /// untouched so a shot is never lost.
+  /// The guide state at the shutter: mode, whether it had locked, which
+  /// crossing the subject sat on, and roll off level.
+  ShotGuide _guideSnapshot() {
+    final m = _paintedMode;
+    final spec = kCompositionByMode[m]!;
+    final bool hz = m == CompositionMode.horizonGrid;
+    final bool locked = hz ? _hzLevel.value == 2 : _alignLevel.value >= 2;
+    int point = -1;
+    for (final b in _faceBoxes) {
+      if (b.matched && (b.perfect || b.eyeLevel) && b.intersection >= 0) {
+        point = b.intersection;
+        break;
+      }
+    }
+    return ShotGuide(
+      mode: m.name,
+      label: spec.label,
+      locked: locked,
+      point: point,
+      rollDeg: LevelLineMachine.radToDeg(hz ? _hzDAngle : _relativeRoll),
+    );
+  }
+
   Future<void> _cropThenSave(
     String originalPath,
     double topFrac,
-    double botFrac,
-  ) async {
+    double botFrac, [
+    ShotGuide? guide,
+  ]) async {
     String pathToSave = originalPath;
     try {
       // Skip when the panels haven't been measured yet, or the insets look
@@ -1555,7 +1618,7 @@ class _CameraPageState extends State<CameraPage>
     } catch (e) {
       debugLog('Crop failed, saving original: $e');
     }
-    await _saveMediaInBackground(pathToSave);
+    await _saveMediaInBackground(pathToSave, guide);
   }
 
   /// Crops [originalPath] to the framed viewport and returns the new file path,
@@ -1602,7 +1665,10 @@ class _CameraPageState extends State<CameraPage>
     return outPath;
   }
 
-  Future<void> _saveMediaInBackground(String filePath) async {
+  Future<void> _saveMediaInBackground(
+    String filePath, [
+    ShotGuide? guide,
+  ]) async {
     try {
       // Save to gallery — gal uses separate methods for images vs videos.
       final lower = filePath.toLowerCase();
@@ -1611,6 +1677,9 @@ class _CameraPageState extends State<CameraPage>
         await Gal.putVideo(filePath, album: 'Phily');
       } else {
         await Gal.putImage(filePath, album: 'Phily');
+        // gal doesn't return the new asset, so pick up the newest one in the
+        // library — the save has just completed, so that's this photo.
+        if (guide != null && guide.hasGuide) _recordGuideForNewest(guide);
       }
 
       // Save landed — a settled confirmation as the media reaches the library
@@ -1717,12 +1786,18 @@ class _CameraPageState extends State<CameraPage>
     // is `none` (useful for experimentation). Heavy composition-only logic
     // remains gated on the selected mode.
     final now = DateTime.now();
-    // ~16 fps. Lower = more responsive tracking, but more CPU. With the cached
-    // single-orientation detection this stays cheap enough for smooth tracking.
-    if (now.difference(_lastFrameTime).inMilliseconds < 60) return;
+    // Adaptive gate. The floor is ~16 fps (60 ms) on a device that can afford
+    // it, but detection cost varies enormously across chips — the same ML Kit
+    // pass that takes 15 ms on a recent Pro can take 60 ms+ on an SE or an 11.
+    // Rather than pick one interval for the slowest device (penalising fast
+    // ones) or the fastest (stuttering slow ones), we measure what detection
+    // actually costs here and keep it to roughly half the interval, so there's
+    // always headroom left for the preview and the overlay painters.
+    if (now.difference(_lastFrameTime).inMilliseconds < _detIntervalMs) return;
     if (_isProcessingFrame) return;
     _isProcessingFrame = true;
     _lastFrameTime = now;
+    final Stopwatch detClock = Stopwatch()..start();
     try {
       // Horizon Grid doesn't touch camera frames (its line comes from the gravity
       // sensor); the other detection modes share the face/animal path. Locked
@@ -1748,6 +1823,26 @@ class _CameraPageState extends State<CameraPage>
       debugLog('_onCameraFrame: $e');
     } finally {
       _isProcessingFrame = false;
+      _noteDetectionCost(detClock.elapsedMilliseconds);
+    }
+  }
+
+  /// Feed the measured cost of one detection pass back into the frame gate.
+  ///
+  /// Smoothed, so a single slow frame (a GC pause, a thermal blip) doesn't
+  /// yank the cadence around; clamped so it can never run away in either
+  /// direction. A device that comfortably keeps up converges on [_kDetFloorMs];
+  /// a slower one settles at whatever it can actually sustain instead of
+  /// queueing work it can't finish.
+  void _noteDetectionCost(int ms) {
+    if (ms <= 0) return;
+    // Low-pass the measurement (heavier weight on history than on any one frame).
+    _detCostMs += (ms - _detCostMs) * 0.15;
+    // Aim to leave ~half the interval free for everything else.
+    final int want = (_detCostMs * 2).round().clamp(_kDetFloorMs, _kDetCeilMs);
+    // Ease toward the target so the cadence never jumps mid-session.
+    if (want != _detIntervalMs) {
+      _detIntervalMs += (want - _detIntervalMs).clamp(-4, 4);
     }
   }
 
@@ -2372,8 +2467,6 @@ class _CameraPageState extends State<CameraPage>
   /// "Always show level line" setting; persisted, bypasses the state machine.
   bool _alwaysShowLevel = false;
   static const String _kAlwaysShowLevelPref = 'phily_always_show_level';
-  // Latch so the trial welcome popup shows at most once per app launch.
-  bool _trialWelcomeShown = false;
   // Target (from device motion) that the 60fps ticker eases the displayed line
   // toward.
   double? _hzTAngle, _hzTAx, _hzTAy;
@@ -2841,9 +2934,9 @@ class _CameraPageState extends State<CameraPage>
   void _toggleResolution() async {
     ResolutionPreset newResolution;
     if (_resolution == ResolutionPreset.veryHigh) {
-      newResolution = ResolutionPreset.max; // 48MP
+      newResolution = ResolutionPreset.max; // most the sensor offers
     } else {
-      newResolution = ResolutionPreset.veryHigh; // 24MP
+      newResolution = ResolutionPreset.veryHigh; // high, but cheaper
     }
 
     // Show loading while reinitializing
@@ -3285,10 +3378,23 @@ class _CameraPageState extends State<CameraPage>
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        // Composition guide scrollable belt
-                        SizedBox(
-                          height: 45,
-                          child: PageView.builder(
+                        // Composition guide scrollable belt. Swells a touch
+                        // while your finger is on it or it's still moving, and
+                        // settles back once it lands — the belt answers the
+                        // hand, then goes quiet.
+                        Listener(
+                          onPointerDown: (_) => _setBeltTouched(true),
+                          onPointerUp: (_) => _setBeltTouched(false),
+                          onPointerCancel: (_) => _setBeltTouched(false),
+                          child: AnimatedScale(
+                            scale: (_beltTouched || _beltScrolling) ? 1.05 : 1.0,
+                            duration: const Duration(milliseconds: 240),
+                            curve: Curves.easeOutCubic,
+                            child: SizedBox(
+                              height: 45,
+                              child: NotificationListener<ScrollNotification>(
+                                onNotification: _onBeltScroll,
+                                child: PageView.builder(
                             controller: _compositionPageController,
                             onPageChanged: (index) {
                               HapticFeedback.selectionClick();
@@ -3365,6 +3471,9 @@ class _CameraPageState extends State<CameraPage>
                               );
                             },
                           ),
+                              ),
+                            ),
+                          ),
                         ),
                         if (MediaQuery.of(context).orientation ==
                             Orientation.portrait) ...[
@@ -3394,8 +3503,10 @@ class _CameraPageState extends State<CameraPage>
                                       color: Colors.black.withValues(
                                         alpha: 0.30,
                                       ),
+                                      // Thumbnail radius (8), like the gallery's
+                                      // tiles — it's a picture, not a control.
                                       borderRadius: BorderRadius.circular(
-                                        kRadiusMd,
+                                        kRadiusSm,
                                       ),
                                       // A softly gilded frame around the last shot, to
                                       // rhyme with the gold capture ring beside it.
@@ -3416,7 +3527,7 @@ class _CameraPageState extends State<CameraPage>
                                     child: _latestThumbnail != null
                                         ? ClipRRect(
                                             borderRadius: BorderRadius.circular(
-                                              kRadiusMd - 1,
+                                              kRadiusSm - 1,
                                             ),
                                             child: Image.memory(
                                               _latestThumbnail!,
@@ -3620,13 +3731,20 @@ class _CameraPageState extends State<CameraPage>
               _gridVisible)
             Positioned.fill(
               child: IgnorePointer(
+                // The hint has ONE fixed dock: centred above the gilded lip,
+                // never floating over the subject (redesign board 1b). In a
+                // landscape hold it follows the rotation to the edge that has
+                // become the user's bottom, mirroring the tip bubble's logic.
                 child: AnimatedAlign(
-                  alignment: _userTopAlign,
+                  alignment: _userBottomAlign,
                   duration: const Duration(milliseconds: 340),
                   curve: Curves.easeOutCubic,
                   child: AnimatedPadding(
-                    padding: _bannerInset(
-                      MediaQuery.of(context).padding.top + 86,
+                    // 26px above the hairline (which sits above the measured
+                    // bottom panel); 160 approximates the panel before its
+                    // first measurement, like the grid toggle does.
+                    padding: _dockInset(
+                      (_bottomInset > 0 ? _bottomInset : 160) + 1 + 26,
                     ),
                     duration: const Duration(milliseconds: 340),
                     curve: Curves.easeOutCubic,
@@ -3804,6 +3922,29 @@ class _CameraPageState extends State<CameraPage>
     3 => const Alignment(1, -0.08),
     _ => Alignment.topCenter,
   };
+
+  /// The user's "bottom" edge for the current hold — the mirror of
+  /// [_userTopAlign]. Portrait docks above the bottom chrome; a landscape hold
+  /// puts it along the physical edge under the user's hand.
+  Alignment get _userBottomAlign => switch (_deviceTurns & 3) {
+    1 => const Alignment(1, 0.08),
+    2 => Alignment.topCenter,
+    3 => const Alignment(-1, -0.08),
+    _ => Alignment.bottomCenter,
+  };
+
+  /// Gap between the hint dock and the user's bottom edge. In portrait that's
+  /// [portraitBottom] (clear of the bottom chrome + hairline); rotated it's a
+  /// small gap off the edge, matching [_bannerInset].
+  EdgeInsets _dockInset(double portraitBottom) {
+    const double gap = 24;
+    return switch (_deviceTurns & 3) {
+      1 => const EdgeInsets.only(right: gap),
+      2 => const EdgeInsets.only(top: gap),
+      3 => const EdgeInsets.only(left: gap),
+      _ => EdgeInsets.only(bottom: portraitBottom),
+    };
+  }
 
   /// Like [_rotated] but with a LAYOUT rotation ([RotatedBox]) — a wide pill
   /// becomes a tall box, so [AnimatedAlign] can pin it flush to the top edge in
@@ -4007,6 +4148,11 @@ class _CameraPageState extends State<CameraPage>
   /// NOTE: deliberately NO BackdropFilter. These pills are shown persistently
   /// over the live camera, so a real blur would re-rasterise every frame and
   /// crater FPS. A white→dark gradient fakes the frosted look cheaply.
+  /// The hint dock's pill (redesign board 1b): glyph · hairline · message, on
+  /// gradient-faked glass with a gold-tinted rim. One fixed recipe for every
+  /// message, so the dock reads as a single instrument whose text changes —
+  /// not a different bubble each time. Emphasis (Perfect / Level) keeps the
+  /// gold text + a breathing rim; nothing else about the pill moves.
   Widget _glassPill({
     required Key key,
     required IconData icon,
@@ -4014,69 +4160,8 @@ class _CameraPageState extends State<CameraPage>
     bool emphasis = false,
     bool breathe = false,
   }) {
-    const gold = kGold;
-    Widget build(double pulse) {
-      final Color textColor = emphasis ? gold : kPaper.withValues(alpha: 0.92);
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(kRadiusLg),
-          // Same diagonal sheen→dark recipe as the app's GlassSurface (a touch
-          // darker at the base for legibility, since there's no real blur here).
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Colors.white.withValues(alpha: 0.20),
-              Colors.white.withValues(alpha: 0.06),
-              Colors.black.withValues(alpha: 0.42),
-            ],
-            stops: const [0.0, 0.45, 1.0],
-          ),
-          border: Border.all(
-            color: emphasis
-                ? gold.withValues(alpha: 0.5 + 0.4 * pulse)
-                : Colors.white.withValues(alpha: 0.35),
-            width: emphasis ? 1.0 : 0.8,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: emphasis
-                  ? gold.withValues(alpha: 0.12 + 0.22 * pulse)
-                  : Colors.black.withValues(alpha: 0.30),
-              blurRadius: emphasis ? 14 : 12,
-              spreadRadius: emphasis ? 0.5 : 0,
-              offset: emphasis ? Offset.zero : const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              color: emphasis
-                  ? gold.withValues(alpha: 0.75 + 0.25 * pulse)
-                  : gold,
-              size: 14,
-            ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                text,
-                textAlign: TextAlign.center,
-                style: brandLabel(
-                  size: emphasis ? 12.5 : 11.5,
-                  weight: emphasis ? FontWeight.w600 : FontWeight.w400,
-                  color: textColor,
-                  letterSpacing: emphasis ? 1.0 : 0.2,
-                ).copyWith(height: 1.25),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
+    Widget build(double pulse) =>
+        HintPill(icon: icon, text: text, emphasis: emphasis, pulse: pulse);
 
     if (!breathe) return KeyedSubtree(key: key, child: build(0));
     // Soft breathe for the "Perfect"/"Level" state. Only alpha animates.
@@ -4528,26 +4613,12 @@ class _CameraPageState extends State<CameraPage>
   /// Frosted-glass toggle that dims the composition overlay for a clean frame
   /// (gold + lit when shown, muted with a struck-through grid when hidden).
   Widget _buildGridToggle() {
-    const gold = kGold;
     final on = _gridVisible;
-    return GestureDetector(
-      onTap: () {
-        HapticFeedback.selectionClick();
-        setState(() => _gridVisible = !_gridVisible);
-      },
-      // Smoked-glass chip (gradient-faked): its old BackdropFilter re-blurred
-      // the live preview behind it EVERY frame — this looks the same and is free.
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        width: 42,
-        height: 42,
-        decoration: glassChipDecoration(circle: true, active: on),
-        child: Icon(
-          on ? Icons.grid_3x3_rounded : Icons.grid_off,
-          color: on ? gold : Colors.white.withValues(alpha: 0.6),
-          size: 20,
-        ),
-      ),
+    // The shared round glass control — same object as the gallery's actions.
+    return GlassRoundButton(
+      icon: on ? Icons.grid_3x3_rounded : Icons.grid_off,
+      active: on,
+      onTap: () => setState(() => _gridVisible = !_gridVisible),
     );
   }
 
@@ -4805,84 +4876,40 @@ class _CameraPageState extends State<CameraPage>
     ),
   );
 
+  /// Top chrome, per the redesign's board 1b: no slab, no hairline — a soft
+  /// scrim the pills float on, so the preview reads right up to the status
+  /// bar. Left: one segmented control for the capture settings; right: the
+  /// guide's "i". The scrim container carries [_topPanelKey] so the composition
+  /// band's inset is still measured from the chrome's real height.
   Widget _buildTopSettingsPanel() {
-    const Color gold = kGold;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _buildTopPanelBody(gold),
-        // Gold-leaf edge where the chrome meets the preview.
-        const GildedHairline(opacity: 0.55),
-      ],
-    );
-  }
-
-  Widget _buildTopPanelBody(Color gold) {
     return _frostedChrome(
       Container(
         key: _topPanelKey,
         padding: EdgeInsets.only(
           top: MediaQuery.of(context).padding.top + 10,
           bottom: 14,
-          left: 20,
-          right: 20,
+          left: 14,
+          right: 14,
         ),
-        decoration: _chromeDecoration(top: true),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xDB0A0A0C), Color(0x000A0A0C)],
+          ),
+        ),
         child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // Flash control
-            _buildSettingButton(
-              icon: _flashMode == FlashMode.off
-                  ? Icons.flash_off_rounded
-                  : _flashMode == FlashMode.auto
-                  ? Icons.flash_auto_rounded
-                  : Icons.flash_on_rounded,
-              iconColor: _flashMode == FlashMode.off ? Colors.white : gold,
-              caption: _flashMode == FlashMode.off
-                  ? 'FLASH'
-                  : _flashMode == FlashMode.auto
-                  ? 'AUTO'
-                  : 'ON',
-              onTap: _toggleFlash,
-            ),
-
-            // Divider
-            Container(
-              height: 22,
-              width: 0.5,
-              color: kPaper.withValues(alpha: 0.14),
-            ),
-
-            // Format control
-            _buildSettingButton(label: _imageFormat, onTap: _toggleImageFormat),
-
-            // Divider
-            Container(
-              height: 22,
-              width: 0.5,
-              color: kPaper.withValues(alpha: 0.14),
-            ),
-
-            // Resolution control
-            _buildSettingButton(
-              label: _resolution == ResolutionPreset.veryHigh ? '24MP' : '48MP',
-              onTap: _toggleResolution,
-            ),
-
+            _buildSettingsCluster(),
             // Guide — the front door to the composition guide for the current
             // mode (long-press on a belt pill and tapping the tip bubble are
             // the shortcuts). On None there is nothing to teach, so it leaves
-            // the bar entirely (divider included) and the remaining controls
-            // close the gap; swiping to a real mode eases it back in.
+            // the bar entirely; swiping to a real mode eases it back in.
             _GuideBarSlot(
               visible: _compositionMode != CompositionMode.none,
-              child: _buildSettingButton(
-                icon: Icons.menu_book_rounded,
-                caption: 'GUIDE',
-                onTap: () => showCompositionGuide(context, _compositionMode),
-                onLongPress: _showLevelLineSettings,
-              ),
+              child: _buildGuideButton(),
             ),
           ],
         ),
@@ -4890,61 +4917,100 @@ class _CameraPageState extends State<CameraPage>
     );
   }
 
-  Widget _buildSettingButton({
-    String? label,
-    IconData? icon,
-    Color? iconColor,
-    String? caption,
-    required VoidCallback onTap,
-    VoidCallback? onLongPress,
-  }) {
-    final bool isIconActive =
-        icon != null && iconColor != null && iconColor != Colors.white;
-    return GestureDetector(
-      onTap: onTap,
-      onLongPress: onLongPress,
-      // Opaque + a generous transparent margin around the glyphs: these labels
-      // are 7.5-11px, so without this the tap target is barely bigger than the
-      // text itself and misses are constant. The visual padding below is
-      // unchanged — only the touch area grows, out into the panel's own
-      // breathing room where there's nothing to hit by mistake.
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        // Was symmetric(horizontal: 14, vertical: 4). Same visual gap between
-        // controls (14 = 8 outer + 6 inner), plus 11px of vertical slop.
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 11),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          child: _rotated(
-            icon != null
-                ? Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(icon, color: iconColor ?? Colors.white, size: 18),
-                      const SizedBox(height: 3),
-                      Text(
-                        caption ?? '',
-                        style: brandLabel(
-                          size: 7.5,
-                          weight: FontWeight.w600,
-                          color: isIconActive
-                              ? kGold
-                              : kPaper.withValues(alpha: 0.42),
-                          letterSpacing: 1.8,
-                        ),
-                      ),
-                    ],
-                  )
-                : Text(
-                    label!.toUpperCase(),
-                    style: brandLabel(
-                      size: 11,
-                      weight: FontWeight.w500,
-                      color: kPaper.withValues(alpha: 0.92),
-                      letterSpacing: 1.8,
-                    ),
-                  ),
+  /// Flash · format · resolution as ONE segmented glass control rather than
+  /// three loose chips. Grouping them says what they are — the capture
+  /// settings, distinct from the composition tools — and it's what finally
+  /// gets every segment to a 44pt hit height without the row growing: the
+  /// segments share one pill, so there's no per-chip padding to pay for.
+  Widget _buildSettingsCluster() {
+    final bool flashOn = _flashMode != FlashMode.off;
+    return Container(
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      // The app's shared gradient-faked glass — same material as the mode
+      // action chips, and cheap enough to sit over the live preview.
+      decoration: glassChipDecoration(radius: 16),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _settingsSegment(
+            minWidth: 48,
+            onTap: _toggleFlash,
+            child: Icon(
+              _flashMode == FlashMode.off
+                  ? Icons.flash_off_rounded
+                  : _flashMode == FlashMode.auto
+                  ? Icons.flash_auto_rounded
+                  : Icons.flash_on_rounded,
+              size: 18,
+              color: flashOn ? kGold : kPaper,
+            ),
           ),
+          _segmentDivider(),
+          _settingsSegment(
+            minWidth: 52,
+            onTap: _toggleImageFormat,
+            child: _segmentLabel(_imageFormat),
+          ),
+          _segmentDivider(),
+          // Resolution. Labelled by what the setting actually IS rather than a
+          // megapixel count: ResolutionPreset.max is "the most this sensor
+          // offers", which is 48MP on a recent Pro but far less on an SE — so
+          // a hardcoded number would simply be wrong on most devices.
+          _settingsSegment(
+            minWidth: 52,
+            onTap: _toggleResolution,
+            child: _segmentLabel(
+              _resolution == ResolutionPreset.veryHigh ? 'HIGH' : 'MAX',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One segment of the settings cluster: a full-height 44pt target with the
+  /// content rotated to stay upright for the current hold.
+  Widget _settingsSegment({
+    required double minWidth,
+    required VoidCallback onTap,
+    required Widget child,
+  }) {
+    return PopTap(
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minWidth: minWidth, minHeight: 44),
+        child: Center(child: _rotated(child)),
+      ),
+    );
+  }
+
+  Widget _segmentLabel(String text) => Text(
+    text.toUpperCase(),
+    style: brandLabel(
+      size: 10.5,
+      weight: FontWeight.w500,
+      color: kPaper.withValues(alpha: 0.72),
+      letterSpacing: 1.26, // .12em at 10.5px
+    ),
+  );
+
+  Widget _segmentDivider() =>
+      Container(width: 1, height: 20, color: kPaper.withValues(alpha: 0.14));
+
+  /// The guide button: a 48pt gold-rimmed glass square carrying a single
+  /// serif "i" — the book icon + caption said "GUIDE" twice; the editorial
+  /// "i" says it once, in the brand's display voice. Long-press opens the
+  /// level-line preferences.
+  Widget _buildGuideButton() {
+    return GlassSquareButton(
+      onTap: () => showCompositionGuide(context, _compositionMode),
+      onLongPress: _showLevelLineSettings,
+      active: true,
+      child: _rotated(
+        Text(
+          'i',
+          style: brandDisplay(size: 15, weight: FontWeight.w400, color: kGold),
         ),
       ),
     );
@@ -5613,19 +5679,7 @@ class _GuideBarSlot extends StatelessWidget {
           ),
         );
       },
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // The divider travels with the control — leaving it behind would
-          // strand a hairline against the row's edge on None.
-          Container(
-            height: 22,
-            width: 0.5,
-            color: kPaper.withValues(alpha: 0.14),
-          ),
-          child,
-        ],
-      ),
+      child: child,
     );
   }
 }
