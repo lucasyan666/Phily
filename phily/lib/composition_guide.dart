@@ -290,29 +290,31 @@ class _CompositionGuideSheet extends StatelessWidget {
                     ],
                     if (spec.what != null) _section('WHAT IT IS', spec.what!),
                     const SizedBox(height: 20),
-                    // Dismiss — gilded chip, back to shooting.
+                    // Dismiss — the gallery's gilded filter chip (PopTap, 40pt,
+                    // radius 20), so the sheet's one control is the same object
+                    // as the rest of the app's chrome. The 2pt vertical pad
+                    // lifts the tap target to 44pt without changing the chip.
                     Center(
-                      child: GestureDetector(
-                        onTap: () {
-                          hapticTap();
-                          Navigator.of(context).pop();
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 22,
-                            vertical: 10,
-                          ),
-                          decoration: glassChipDecoration(
-                            radius: kRadiusLg,
-                            active: true,
-                          ),
-                          child: Text(
-                            'GOT IT',
-                            style: brandLabel(
-                              size: 10.5,
-                              weight: FontWeight.w600,
-                              color: kGold,
-                              letterSpacing: 2.4,
+                      child: PopTap(
+                        onTap: () => Navigator.of(context).pop(),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Container(
+                            height: 40,
+                            padding: const EdgeInsets.symmetric(horizontal: 22),
+                            alignment: Alignment.center,
+                            decoration: glassChipDecoration(
+                              radius: kRadiusLg,
+                              active: true,
+                            ),
+                            child: Text(
+                              'GOT IT',
+                              style: brandLabel(
+                                size: 10.5,
+                                weight: FontWeight.w600,
+                                color: kGold,
+                                letterSpacing: 2.4,
+                              ),
                             ),
                           ),
                         ),

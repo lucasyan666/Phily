@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:phily/camera_page.dart';
 import 'package:phily/screens/welcome.dart';
+import 'package:phily/theme.dart';
 
 class _Device {
   final String name;
@@ -173,13 +174,31 @@ void main() {
               lessThanOrEqualTo(d.size.height * 0.86 + 0.5),
               reason: '${spec.mode.name}: sheet height',
             );
-            expect(
-              find.text('GOT IT'),
-              findsOneWidget,
-              reason: '${spec.mode.name}: dismiss',
+            // Dismiss is the shared PopTap control with a ≥44pt tap target,
+            // and tapping it closes the sheet.
+            final gotIt = find.text('GOT IT');
+            expect(gotIt, findsOneWidget, reason: '${spec.mode.name}: dismiss');
+            final dismiss = find.ancestor(
+              of: gotIt,
+              matching: find.byType(PopTap),
             );
-            Navigator.of(ctx).pop();
+            expect(
+              dismiss,
+              findsOneWidget,
+              reason: '${spec.mode.name}: PopTap',
+            );
+            expect(
+              tester.getSize(dismiss).height,
+              greaterThanOrEqualTo(44),
+              reason: '${spec.mode.name}: tap target',
+            );
+            // Long copy on a short phone puts the chip below the fold — the
+            // sheet scrolls by design, so reach it the way a thumb would.
+            await tester.ensureVisible(gotIt);
             await tester.pumpAndSettle();
+            await tester.tap(gotIt);
+            await tester.pumpAndSettle();
+            expect(gotIt, findsNothing, reason: '${spec.mode.name}: closes');
           }
         });
       }

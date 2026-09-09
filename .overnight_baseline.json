@@ -1,6 +1,6 @@
 {
-  "pass": 2,
-  "updated": "2026-09-09T02:56:07+0100",
+  "pass": 3,
+  "updated": "2026-09-09T03:24:47+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,7 +8,7 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-system",
+  "next_type": "design-board",
   "gates": {
     "flutter_analyze_issues": 0,
     "flutter_test_passed": 69,
@@ -56,6 +56,22 @@
       "before": 0,
       "after": 12
     },
-    "guide_sheet_modes_x_configs_no_overflow": 64
+    "guide_sheet_modes_x_configs_no_overflow": 64,
+    "guide_sheet_dismiss": {
+      "tap_target_pt": {
+        "before": 33,
+        "after": 44
+      },
+      "visible_chip_pt": {
+        "before": 33,
+        "after": 40,
+        "matches": "gallery _FilterChip"
+      },
+      "raw_gesture_detector_controls_in_composition_guide": {
+        "before": 1,
+        "after": 0
+      },
+      "uses_poptap": true
+    }
   }
 }

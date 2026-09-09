@@ -40,13 +40,15 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 ### Design-system consistency
 - [ ] Paywall: `_PrimaryButton` / `_TierRow` → `PopTap`; tier rows ≥44pt;
       any remaining one-off glass → `GlassSurface`.
-- [ ] Composition guide sheet: dismiss chip → shared button; section spacing
-      on the 8pt grid. (pass #2 measured the GOT IT chip at ~33pt tall — under
-      the 44pt target; the shared-button swap fixes both.)
+- [~] Composition guide sheet: dismiss chip → shared button (pass #3: PopTap,
+      gallery filter-chip geometry, 44pt target). Section spacing on the 8pt
+      grid is still open — see "Needs eyes".
 - [ ] Branded loader + welcome: same wordmark treatment (`ShaderMask` recipe)
       — extract to `theme.dart` as `GildedWordmark`.
 - [ ] Level-line settings sheet: switch styling matches the paywall's.
-- [ ] Audit every `GestureDetector` on a control → `PopTap`.
+- [ ] Audit every `GestureDetector` on a control → `PopTap`. (pass #3: guide
+      sheet done; remaining raw ones — welcome CTA, paywall `_PrimaryButton` /
+      `_TierRow` / `_LegalLink`, and the camera/gallery call sites.)
 ### Design boards not yet built
 - [ ] 1f after-the-shutter card ("RULE OF THIRDS · LANDED" over the photo,
       3 uses per mode, swipe down) — self-contained, reuses `ShotGuide`.
@@ -68,6 +70,10 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 ## Needs eyes (done, but subjective — review on device)
 - Gallery grid margins 14px / gutters 5px (from board 1g). Tiles are ~117pt on a
   390pt screen; 8px margins would give ~124pt.
+- Guide sheet spacing is 14 / 4 / 14 / 16 / 14 / 20 / 5 — not on the 8pt
+  grid. Moving to 16 / 8 / 16 / 16 / 24 / 8 is a visual call, not a token fix;
+  the sheet's dismiss chip is now 40pt (was ~33) so a re-tune should look at
+  the whole column at once.
 - Pass #1: 3× phones now decode a 355–392px thumb per cell instead of 300px
   (crisp, but ~1.4–1.7× the pixels). Scroll a long library on a 15 Pro and an
   older 3× phone (11 / XS) and confirm the grid still scrolls smoothly.
@@ -116,3 +122,22 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - **Not covered:** camera chrome and gallery grid (plugin channels); the
   paywall (StoreKit — guardrail).
 - **Commit:** `overnight: pass #2 — compatibility — 2026-09-09T02:56:07+0100`
+
+### Pass #3 — design-system — 2026-09-09T03:24:47+0100
+- **What:** the composition guide sheet's "GOT IT" dismiss is now the shared
+  `PopTap` control with the gallery filter chip's geometry (40pt tall, radius
+  20, glass-chip decoration), wrapped in a 2pt vertical pad so the hit area is
+  44pt. The manual `hapticTap()` went with the raw `GestureDetector` — PopTap
+  ticks on its own, so the swap doesn't double the haptic.
+- **Why:** CLAUDE.md's rule is that every small control is PopTap and the
+  camera and gallery are built from the same objects. The sheet's only control
+  was a one-off with no tap feedback and a ~33pt target, under the 44pt
+  minimum.
+- **Metric:** dismiss tap target ~33pt → 44pt (visible chip 40pt, same as the
+  gallery's chips). Raw `GestureDetector` controls in `composition_guide.dart`:
+  1 → 0. Test now asserts, for all 16 modes on SE and landscape at 1.0×/1.3×,
+  that the dismiss is a PopTap, ≥44pt, and closes the sheet when tapped.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 69/69 ·
+  `flutter build ios --simulator` ✓. Diff: +25/−21 in the sheet, test +30.
+  Visual change: the chip is 7pt taller; nothing else moves.
+- **Commit:** `overnight: pass #3 — design-system — 2026-09-09T03:24:47+0100`
