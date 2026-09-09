@@ -1,0 +1,41 @@
+{
+  "pass": 1,
+  "updated": "2026-09-09T02:23:19+0100",
+  "branch": "overnight-polish",
+  "rotation": [
+    "performance",
+    "compatibility",
+    "design-system",
+    "design-board"
+  ],
+  "next_type": "compatibility",
+  "gates": {
+    "flutter_analyze_issues": 0,
+    "flutter_test_passed": 57,
+    "flutter_test_failed": 0,
+    "flutter_build_ios_simulator": "ok"
+  },
+  "metrics": {
+    "gallery_grid_thumb_request_px": {
+      "before": {
+        "fixed": 300
+      },
+      "after": {
+        "iphone_se_375pt_2x": 225,
+        "iphone_15_pro_393pt_3x": 355,
+        "iphone_pro_max_430pt_3x": 392,
+        "landscape_or_tablet_cap": 420,
+        "floor": 160
+      },
+      "decode_px_per_cell_se": {
+        "before": 90000,
+        "after": 50625,
+        "delta_pct": -43.75
+      },
+      "upscale_factor_15_pro": {
+        "before": 1.18,
+        "after": 1.0
+      }
+    }
+  }
+}

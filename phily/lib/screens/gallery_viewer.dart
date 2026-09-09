@@ -16,6 +16,12 @@ import 'dart:io' show Platform;
 
 const _gold = kGold;
 
+// Grid geometry (board 1g). One source for the sliver *and* the thumbnail
+// request size, so the two can't drift apart.
+const int _kGridColumns = 3;
+const double _kGridMargin = 14; // outer horizontal padding, pt
+const double _kGridGutter = 5; // between cells, pt
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared glassy chrome (matches the camera page)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +105,20 @@ String timeLabel(DateTime dt) {
   final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
   final m = dt.minute.toString().padLeft(2, '0');
   return '$h:$m ${dt.hour < 12 ? 'AM' : 'PM'}';
+}
+
+/// Pixel size to request for one grid thumbnail: the cell's on-screen size
+/// (screen width minus margins and gutters, over the column count) times the
+/// device pixel ratio. A fixed 300 was upscaled on 3× phones (soft) and
+/// oversized on 2× ones (wasted decode). Clamped so a tablet-wide layout can't
+/// balloon the thumb cache, and so a tiny width still gets a usable image.
+/// Pixels are computed before the division so integer-friendly inputs stay
+/// exact instead of picking up a stray ceil() from floating-point drift.
+int gridThumbPx(double screenWidthPt, double devicePixelRatio) {
+  final availPx =
+      (screenWidthPt - 2 * _kGridMargin - (_kGridColumns - 1) * _kGridGutter) *
+      devicePixelRatio;
+  return (availPx / _kGridColumns).ceil().clamp(160, 420);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -782,6 +802,9 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
     // Clear the filter chips docked at the bottom.
     final bottomPad = MediaQuery.of(context).padding.bottom + 86;
     final sections = _buildSections();
+    // Thumbnails are requested at the cell's real pixel size — see gridThumbPx.
+    final mq = MediaQuery.of(context);
+    _thumbPx = gridThumbPx(mq.size.width, mq.devicePixelRatio);
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -809,13 +832,15 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
                       SliverStickyHeader(
                         header: _SectionHeaderBar(s.label),
                         sliver: SliverPadding(
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: _kGridMargin,
+                          ),
                           sliver: SliverGrid(
                             gridDelegate:
                                 const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 3,
-                                  mainAxisSpacing: 5,
-                                  crossAxisSpacing: 5,
+                                  crossAxisCount: _kGridColumns,
+                                  mainAxisSpacing: _kGridGutter,
+                                  crossAxisSpacing: _kGridGutter,
                                 ),
                             delegate: SliverChildBuilderDelegate(
                               (_, j) => _cell(s.indices[j]),
@@ -941,6 +966,10 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
     }
   }
 
+  // Refreshed every build from the live MediaQuery; cells read it as they
+  // mount, so a rotation only affects thumbs requested after it.
+  int _thumbPx = 300;
+
   Widget _cell(int i) {
     final asset = _items[i];
     return GestureDetector(
@@ -952,6 +981,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
         selecting: _selectMode,
         selected: _selectedIds.contains(asset.id),
         onGuide: _isOnGuide(asset),
+        thumbPx: _thumbPx,
         onLoaded: (b) => _cacheThumb(asset.id, b),
       ),
     );
@@ -1043,12 +1073,14 @@ class _GridThumb extends StatefulWidget {
   final bool selecting; // multi-select mode is active
   final bool selected; // this cell is selected
   final bool onGuide; // locked to its composition guide at capture
+  final int thumbPx; // request size — the cell's real pixel size
   const _GridThumb({
     required this.asset,
     this.onLoaded,
     this.selecting = false,
     this.selected = false,
     this.onGuide = false,
+    this.thumbPx = 300,
   });
 
   @override
@@ -1062,7 +1094,10 @@ class _GridThumbState extends State<_GridThumb> {
   void initState() {
     super.initState();
     widget.asset
-        .thumbnailDataWithSize(const ThumbnailSize(300, 300), quality: 80)
+        .thumbnailDataWithSize(
+          ThumbnailSize(widget.thumbPx, widget.thumbPx),
+          quality: 80,
+        )
         .then((b) {
           if (mounted) setState(() => _bytes = b);
           if (b != null) widget.onLoaded?.call(b); // cache for instant open
