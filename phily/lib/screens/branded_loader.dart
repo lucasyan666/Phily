@@ -140,23 +140,11 @@ class _BrandedLoaderState extends State<BrandedLoader>
                 ),
               ),
               const SizedBox(height: 42),
-              // Wordmark — editorial serif, finished with a gilded gradient.
-              ShaderMask(
-                shaderCallback: (r) => const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [kPaper, kGold],
-                  stops: [0.3, 1.0],
-                ).createShader(r),
-                child: Text(
-                  'Phily',
-                  style: brandDisplay(
-                    size: 52,
-                    weight: FontWeight.w400,
-                    color: Colors.white, // recoloured by the shader
-                    letterSpacing: 0.5,
-                  ),
-                ),
+              // Wordmark — the shared gilded recipe, larger here.
+              const GildedWordmark(
+                size: 52,
+                weight: FontWeight.w400,
+                letterSpacing: 0.5,
               ),
               const SizedBox(height: 20),
               // Fine gold rule.

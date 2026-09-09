@@ -57,8 +57,8 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - [~] Composition guide sheet: dismiss chip → shared button (pass #3: PopTap,
       gallery filter-chip geometry, 44pt target). Section spacing on the 8pt
       grid is still open — see "Needs eyes".
-- [ ] Branded loader + welcome: same wordmark treatment (`ShaderMask` recipe)
-      — extract to `theme.dart` as `GildedWordmark`.
+- [x] Branded loader + welcome: same wordmark treatment (`ShaderMask` recipe)
+      — extract to `theme.dart` as `GildedWordmark`. (pass #7)
 - [ ] Level-line settings sheet: switch styling matches the paywall's.
 - [ ] Audit every `GestureDetector` on a control → `PopTap`. (pass #3: guide
       sheet done; remaining raw ones — welcome CTA, paywall `_PrimaryButton` /
@@ -111,6 +111,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   grid. Moving to 16 / 8 / 16 / 16 / 24 / 8 is a visual call, not a token fix;
   the sheet's dismiss chip is now 40pt (was ~33) so a re-tune should look at
   the whole column at once.
+- Pass #7: the loader's wordmark gilding changed from a vertical paper→gold
+  sweep (stops 0.3) to the welcome's diagonal one (stops 0.35, board 1f) so
+  the two screens share one recipe. Subtle; check the loading screen once.
 - Pass #6: at AX text sizes (Settings → Accessibility → Larger Text, top
   three sizes) the welcome CTA now grows to two lines and the guide sheet's
   eyebrow drops the PORTRAIT/LANDSCAPE tag to a second line. Worth one look
@@ -265,3 +268,23 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   new) · `flutter build ios --simulator` ✓. `composition_guide.dart` diff is
   mostly the re-indent from the Wrap; `welcome.dart` +5/−2.
 - **Commit:** `overnight: pass #6 — compatibility — 2026-09-09T04:56:03+0100`
+
+### Pass #7 — design-system — 2026-09-09T05:24:32+0100
+- **What:** `GildedWordmark` in `theme.dart` — "Phily" in the editorial serif
+  under the board 1f paper→gold diagonal `ShaderMask`. The branded loader and
+  the first-launch welcome both draw it now, with their own size / weight /
+  tracking (52 · w400 · +0.5 and 44 · w300 · −0.5, unchanged).
+- **Why:** CLAUDE.md's rule is that the app is built from shared objects in
+  `theme.dart`. The two screens carried separate wordmark recipes with
+  *different* gradients (vertical, stops 0.3 vs diagonal, stops 0.35), while
+  the welcome's own comment says it should read as one moment with the
+  loader. The canvas-derived gradient (1f) won; size/weight/tracking are
+  per-context and stayed.
+- **Metric:** wordmark recipes in the codebase: 2 → 1. `ShaderMask` uses
+  outside `theme.dart`: 2 → 0 (asserted per screen: exactly one
+  `GildedWordmark`, exactly one `ShaderMask`). Loader gradient now matches
+  the welcome's — one subtle visual change, on the loading screen only.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 87/87 (3 new,
+  `test/gilded_wordmark_test.dart`) · `flutter build ios --simulator` ✓.
+  Diff: −34/+46 across three files, net −16 lines at the call sites.
+- **Commit:** `overnight: pass #7 — design-system — 2026-09-09T05:24:32+0100`

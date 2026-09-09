@@ -163,6 +163,42 @@ class GildedHairline extends StatelessWidget {
   );
 }
 
+/// The wordmark: "Phily" in the editorial serif, paper melting into gold along
+/// a top-left → bottom-right sweep (board 1f). The branded loader and the
+/// first-launch screen both draw this one object, so the loading moment and
+/// the first screen read as one. Size, weight and tracking are the caller's;
+/// the gilding is not.
+class GildedWordmark extends StatelessWidget {
+  final double size;
+  final FontWeight weight;
+  final double letterSpacing;
+  const GildedWordmark({
+    super.key,
+    this.size = 44,
+    this.weight = FontWeight.w300,
+    this.letterSpacing = -0.5,
+  });
+
+  @override
+  Widget build(BuildContext context) => ShaderMask(
+    shaderCallback: (r) => const LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [kPaper, kGold],
+      stops: [0.35, 1.0],
+    ).createShader(r),
+    child: Text(
+      'Phily',
+      style: brandDisplay(
+        size: size,
+        weight: weight,
+        color: Colors.white, // recoloured by the shader
+        letterSpacing: letterSpacing,
+      ),
+    ),
+  );
+}
+
 /// Smoked-glass chip — the shared decoration for the camera's small floating
 /// controls (grid toggle, mode action buttons, zoom tag). Deliberately
 /// gradient-faked glass: a warm dark body under a diagonal sheen, finished with

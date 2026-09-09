@@ -60,23 +60,11 @@ class WelcomeScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Spacer(flex: 3),
-                        // Gilded wordmark — paper melting into gold.
-                        ShaderMask(
-                          shaderCallback: (r) => const LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [kPaper, kGold],
-                            stops: [0.35, 1.0],
-                          ).createShader(r),
-                          child: Text(
-                            'Phily',
-                            style: brandDisplay(
-                              size: 44,
-                              weight: FontWeight.w300,
-                              color: Colors.white, // recoloured by the shader
-                              letterSpacing: -0.5,
-                            ),
-                          ),
+                        // Gilded wordmark — the same object the loader draws.
+                        const GildedWordmark(
+                          size: 44,
+                          weight: FontWeight.w300,
+                          letterSpacing: -0.5,
                         ),
                         const SizedBox(height: 22),
                         Text(
