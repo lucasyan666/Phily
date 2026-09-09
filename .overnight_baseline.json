@@ -1,6 +1,6 @@
 {
-  "pass": 13,
-  "updated": "2026-09-09T10:26:34+0100",
+  "pass": 14,
+  "updated": "2026-09-09T10:54:19+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "compatibility",
+  "next_type": "design-system",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 97,
+    "flutter_test_passed": 129,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -53,8 +53,8 @@
       "portrait_1x_scroll_extent": 0
     },
     "breakpoint_configs_under_test": {
-      "before": 12,
-      "after": 24,
+      "before": 24,
+      "after": 56,
       "text_scales": [
         1.0,
         1.3,
@@ -190,6 +190,19 @@
       "after": 0,
       "note": "label hoisted into AnimatedBuilder.child; built once per pill",
       "measured": "structural test, not a device trace"
+    },
+    "empty_gallery_bottom_overflow_px": {
+      "before": {
+        "se_3.1x_by_phily": 238,
+        "se_3.1x_all": 90,
+        "15pro_landscape_3.1x_by_phily": 106
+      },
+      "after": {
+        "se_3.1x_by_phily": 0,
+        "se_3.1x_all": 0,
+        "15pro_landscape_3.1x_by_phily": 0
+      },
+      "ordinary_sizes_unchanged": true
     }
   }
 }

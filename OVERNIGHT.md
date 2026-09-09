@@ -46,12 +46,15 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - [~] Widget tests: camera chrome + gallery at iPhone SE (375×667), 15 Pro
       (393×852), Pro Max (430×932), and landscape — no overflow, all targets ≥44pt.
       (pass #2: welcome + guide sheet covered in `test/breakpoints_test.dart`;
-      camera chrome and gallery grid still need channel mocks — open.)
+      pass #14 adds the gallery's empty state via a `@visibleForTesting` seam.
+      The populated grid and the camera chrome still need PhotoManager /
+      camera channel mocks — open.)
 - [~] Text scaling: `MediaQuery.textScaler` ×1.3 — chrome labels must not
       wrap or clip; cap scale on the tracked small-caps if needed.
       (pass #2 covers welcome + guide sheet at 1.3×; pass #6 extends both to
       the AX2 ≈ 2.0× and AX5 ≈ 3.1× accessibility sizes, no caps needed —
-      layouts wrap or grow instead. Camera chrome still open.)
+      layouts wrap or grow instead; pass #14 adds the gallery empty state and
+      found a real 238px overflow there. Camera chrome still open.)
 - [~] Safe areas: notch vs Dynamic Island vs home-button — top scrim height and
       hint dock offsets derive from `MediaQuery.padding`, verify no magic numbers.
       (pass #6 audit: every top offset derives from `padding.top` or the
@@ -458,3 +461,25 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   page, which is plugin- and timer-driven and cannot be pumped. The FPS win
   itself wants a device trace to quantify.
 - **Commit:** `overnight: pass #13 — performance — 2026-09-09T10:26:34+0100`
+
+### Pass #14 — compatibility — 2026-09-09T10:54:19+0100
+- **What:** breakpoint coverage for the gallery's empty state (both variants:
+  all-photos and BY PHILY), via a `@visibleForTesting` seam since the widget
+  is private. The tests found a real overflow and this pass fixes it: the
+  column now scrolls only when it can't fit, and above 1.5× text the
+  decorative 128pt mark shrinks (icon scaling with it) so the copy gets the
+  space. Both lines are centre-aligned for when they wrap.
+- **Why:** the empty state is the first screen a new user sees, before they
+  have taken a photo, and it was the last pure-widget screen with no
+  breakpoint coverage. Its shape — a fixed-size mark above two unbounded
+  lines of copy in a `Center` — is exactly what clips on a short phone at
+  large text, and `Center` clips silently in release.
+- **Metric:** bottom overflow, before → after: SE @3.1× (BY PHILY) 238px → 0
+  · SE @3.1× (all photos) 90px → 0 · 15 Pro landscape @3.1× (BY PHILY) 106px
+  → 0. Breakpoint configurations under test: 24 → 56 (4 devices × 4 text
+  scales × 2 variants added). Ordinary sizes are untouched, asserted: at
+  ≤1.3× nothing scrolls and the mark is still 52pt.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 129/129 (32
+  new) · `flutter build ios --simulator` ✓. Diff: +30/−9 in
+  `gallery_viewer.dart` (seam + layout), test +45.
+- **Commit:** `overnight: pass #14 — compatibility — 2026-09-09T10:54:19+0100`

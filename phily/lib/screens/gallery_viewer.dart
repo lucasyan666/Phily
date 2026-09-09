@@ -54,7 +54,6 @@ class _FrostBar extends StatelessWidget {
   }
 }
 
-
 /// Floating frosted-glass action button (share / bin in the pager): a real
 /// BackdropFilter disc with a top sheen, hairline rim and soft shadow. Springs
 /// down on press; on tap it fires a haptic, a quick icon pop, and a ripple ring.
@@ -181,56 +180,80 @@ class _SectionHeaderBar extends StatelessWidget {
 }
 
 /// Calm empty state when the library (or the Phily filter) has nothing yet.
+/// Test seam: the empty state is private, but it is the first thing a new user
+/// sees and it has to survive every phone and text size. See
+/// `test/breakpoints_test.dart`.
+@visibleForTesting
+Widget debugEmptyGallery({bool phily = false}) => _EmptyGallery(phily: phily);
+
 class _EmptyGallery extends StatelessWidget {
   final bool phily; // true → the BY PHILY filter is active
   const _EmptyGallery({this.phily = false});
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Soft gold aura behind the mark — the same warm glow as the loader.
-          Container(
-            width: 128,
-            height: 128,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: RadialGradient(
-                colors: [kGold.withValues(alpha: 0.14), Colors.transparent],
-                stops: const [0.0, 0.72],
+    // At accessibility text sizes the two lines of copy grow past a short
+    // phone (238px over on an SE at AX5), and a Center just clips. Scroll only
+    // when it doesn't fit, and shrink the decorative mark first — the words
+    // are what the screen is for. `shrinkWrap`-free: the ConstrainedBox keeps
+    // the content vertically centred at ordinary sizes, exactly as before.
+    final double scale = MediaQuery.textScalerOf(context).scale(1);
+    final double mark = scale > 1.5 ? 128 / (scale - 0.5) : 128;
+    return LayoutBuilder(
+      builder: (context, box) => SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minHeight: (box.maxHeight - 32).clamp(0.0, double.infinity),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // Soft gold aura behind the mark — the same warm glow as the loader.
+              Container(
+                width: mark,
+                height: mark,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(
+                    colors: [kGold.withValues(alpha: 0.14), Colors.transparent],
+                    stops: const [0.0, 0.72],
+                  ),
+                ),
+                child: Icon(
+                  Icons.photo_library_outlined,
+                  color: kPaper.withValues(alpha: 0.30),
+                  size: 52 * (mark / 128),
+                ),
               ),
-            ),
-            child: Icon(
-              Icons.photo_library_outlined,
-              color: kPaper.withValues(alpha: 0.30),
-              size: 52,
-            ),
+              const SizedBox(height: 14),
+              Text(
+                phily ? 'Nothing by Phily yet' : 'No photos yet',
+                textAlign: TextAlign.center,
+                style: brandDisplay(
+                  size: 21,
+                  weight: FontWeight.w500,
+                  color: kPaper.withValues(alpha: 0.85),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                phily
+                    ? 'Photos you capture with Phily appear here'
+                    : 'Photos you capture will appear here',
+                textAlign: TextAlign.center,
+                style: brandLabel(
+                  size: 12.5,
+                  weight: FontWeight.w400,
+                  color: kPaper.withValues(alpha: 0.42),
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 14),
-          Text(
-            phily ? 'Nothing by Phily yet' : 'No photos yet',
-            style: brandDisplay(
-              size: 21,
-              weight: FontWeight.w500,
-              color: kPaper.withValues(alpha: 0.85),
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            phily
-                ? 'Photos you capture with Phily appear here'
-                : 'Photos you capture will appear here',
-            style: brandLabel(
-              size: 12.5,
-              weight: FontWeight.w400,
-              color: kPaper.withValues(alpha: 0.42),
-              letterSpacing: 0.3,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1651,100 +1674,103 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                   ),
 
                 if (_entered) ...[
-                // Top row (board 1g): back · guide pill (or the date) · spacer.
-                Positioned(
-                  top: MediaQuery.of(context).padding.top + 6,
-                  left: 14,
-                  right: 14,
-                  child: _chrome(
-                    Opacity(
-                      opacity: chrome,
-                      child: Row(
-                        children: [
-                          GlassSquareButton(
-                            onTap: () => Navigator.of(context).maybePop(),
-                            semanticLabel: 'Back',
-                            child: const Icon(
-                              Icons.chevron_left_rounded,
-                              color: kPaper,
-                              size: 26,
-                            ),
-                          ),
-                          Expanded(
-                            child: Center(
-                              child: guide != null && guide.hasGuide
-                                  ? _GuidePill(
-                                      label: guide.label,
-                                      on: _guideShown,
-                                      onTap: () =>
-                                          setState(() => _guideShown = !_guideShown),
-                                    )
-                                  : _DateChip(
-                                      when: widget.assets[_index].createDateTime,
-                                    ),
-                            ),
-                          ),
-                          const SizedBox(width: 48, height: 48),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
-                // Caption: what the guide saw, in one line, above the actions.
-                if (guide != null && guide.hasGuide)
+                  // Top row (board 1g): back · guide pill (or the date) · spacer.
                   Positioned(
-                    left: 18,
-                    right: 18,
-                    bottom: safeBottom + 6 + 46 + 18,
+                    top: MediaQuery.of(context).padding.top + 6,
+                    left: 14,
+                    right: 14,
                     child: _chrome(
                       Opacity(
                         opacity: chrome,
-                        child: _GuideCaption(
-                          guide: guide,
-                          when: widget.assets[_index].createDateTime,
+                        child: Row(
+                          children: [
+                            GlassSquareButton(
+                              onTap: () => Navigator.of(context).maybePop(),
+                              semanticLabel: 'Back',
+                              child: const Icon(
+                                Icons.chevron_left_rounded,
+                                color: kPaper,
+                                size: 26,
+                              ),
+                            ),
+                            Expanded(
+                              child: Center(
+                                child: guide != null && guide.hasGuide
+                                    ? _GuidePill(
+                                        label: guide.label,
+                                        on: _guideShown,
+                                        onTap: () => setState(
+                                          () => _guideShown = !_guideShown,
+                                        ),
+                                      )
+                                    : _DateChip(
+                                        when: widget
+                                            .assets[_index]
+                                            .createDateTime,
+                                      ),
+                              ),
+                            ),
+                            const SizedBox(width: 48, height: 48),
+                          ],
                         ),
                       ),
                     ),
                   ),
 
-                // Actions: share · favourite · bin — evenly spaced, 46pt, in
-                // the thumb zone (board 1g).
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: safeBottom + 6,
-                  child: _chrome(
-                    Opacity(
-                      opacity: chrome,
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          GlassRoundButton(
-                            key: _shareBtnKey,
-                            icon: Icons.ios_share_rounded,
-                            onTap: _shareCurrent,
-                            semanticLabel: 'Share',
+                  // Caption: what the guide saw, in one line, above the actions.
+                  if (guide != null && guide.hasGuide)
+                    Positioned(
+                      left: 18,
+                      right: 18,
+                      bottom: safeBottom + 6 + 46 + 18,
+                      child: _chrome(
+                        Opacity(
+                          opacity: chrome,
+                          child: _GuideCaption(
+                            guide: guide,
+                            when: widget.assets[_index].createDateTime,
                           ),
-                          GlassRoundButton(
-                            icon: widget.assets[_index].isFavorite
-                                ? Icons.star_rounded
-                                : Icons.star_outline_rounded,
-                            active: widget.assets[_index].isFavorite,
-                            onTap: _toggleFavourite,
-                            semanticLabel: 'Favourite',
-                            toggled: widget.assets[_index].isFavorite,
-                          ),
-                          GlassRoundButton(
-                            icon: Icons.delete_outline_rounded,
-                            onTap: _deleteCurrent,
-                            semanticLabel: 'Delete',
-                          ),
-                        ],
+                        ),
+                      ),
+                    ),
+
+                  // Actions: share · favourite · bin — evenly spaced, 46pt, in
+                  // the thumb zone (board 1g).
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: safeBottom + 6,
+                    child: _chrome(
+                      Opacity(
+                        opacity: chrome,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            GlassRoundButton(
+                              key: _shareBtnKey,
+                              icon: Icons.ios_share_rounded,
+                              onTap: _shareCurrent,
+                              semanticLabel: 'Share',
+                            ),
+                            GlassRoundButton(
+                              icon: widget.assets[_index].isFavorite
+                                  ? Icons.star_rounded
+                                  : Icons.star_outline_rounded,
+                              active: widget.assets[_index].isFavorite,
+                              onTap: _toggleFavourite,
+                              semanticLabel: 'Favourite',
+                              toggled: widget.assets[_index].isFavorite,
+                            ),
+                            GlassRoundButton(
+                              icon: Icons.delete_outline_rounded,
+                              onTap: _deleteCurrent,
+                              semanticLabel: 'Delete',
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
                 ],
               ],
             );
@@ -2556,7 +2582,6 @@ class _GoldLinePainter extends CustomPainter {
       old.shimmer != shimmer;
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Viewer chrome (board 1g)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2566,7 +2591,11 @@ class _GuidePill extends StatelessWidget {
   final String label;
   final bool on;
   final VoidCallback onTap;
-  const _GuidePill({required this.label, required this.on, required this.onTap});
+  const _GuidePill({
+    required this.label,
+    required this.on,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) => PopTap(
@@ -2644,7 +2673,10 @@ class _GuideCaption extends StatelessWidget {
             style: base,
             children: [
               if (lock.isNotEmpty)
-                TextSpan(text: lock, style: base.copyWith(color: kGold)),
+                TextSpan(
+                  text: lock,
+                  style: base.copyWith(color: kGold),
+                ),
             ],
           ),
         ),

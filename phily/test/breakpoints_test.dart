@@ -14,6 +14,7 @@ import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:phily/camera_page.dart';
+import 'package:phily/screens/gallery_viewer.dart';
 import 'package:phily/screens/welcome.dart';
 import 'package:phily/theme.dart';
 
@@ -152,6 +153,67 @@ void main() {
             lessThanOrEqualTo(d.size.height - d.safeArea.bottom),
           );
         });
+      }
+    }
+  });
+
+  group('empty gallery', () {
+    // The first thing a new user sees. Fixed-size mark + two unbounded lines
+    // of copy: exactly the shape that overflows a short phone at large text.
+    for (final d in _devices) {
+      for (final scale in _textScales) {
+        for (final phily in [false, true]) {
+          final which = phily ? 'BY PHILY' : 'all photos';
+          testWidgets('fits ${d.name} at $scale× text ($which)', (
+            tester,
+          ) async {
+            await _pumpOn(
+              tester,
+              d,
+              scale,
+              Scaffold(
+                backgroundColor: Colors.black,
+                body: debugEmptyGallery(phily: phily),
+              ),
+            );
+            expect(tester.takeException(), isNull, reason: 'overflow');
+
+            // At ordinary sizes nothing scrolls and the mark is full size —
+            // the scroll is the escape hatch for large text, not the layout.
+            if (scale <= 1.3) {
+              expect(
+                tester
+                    .state<ScrollableState>(find.byType(Scrollable))
+                    .position
+                    .maxScrollExtent,
+                0,
+                reason: 'should fit without scrolling at $scale×',
+              );
+              expect(tester.getSize(find.byType(Icon)).width, 52);
+            }
+
+            // Both lines of copy are on screen, not clipped off an edge.
+            final headline = find.text(
+              phily ? 'Nothing by Phily yet' : 'No photos yet',
+            );
+            expect(headline, findsOneWidget);
+            for (final f in [headline, find.byType(Icon)]) {
+              final r = tester.getRect(f);
+              expect(r.top, greaterThanOrEqualTo(0), reason: 'clipped top');
+              expect(
+                r.bottom,
+                lessThanOrEqualTo(d.size.height),
+                reason: 'clipped bottom',
+              );
+              expect(r.left, greaterThanOrEqualTo(0), reason: 'clipped left');
+              expect(
+                r.right,
+                lessThanOrEqualTo(d.size.width),
+                reason: 'clipped right',
+              );
+            }
+          });
+        }
       }
     }
   });
