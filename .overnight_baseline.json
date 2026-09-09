@@ -1,6 +1,6 @@
 {
-  "pass": 5,
-  "updated": "2026-09-09T04:23:37+0100",
+  "pass": 6,
+  "updated": "2026-09-09T04:56:03+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "compatibility",
+  "next_type": "design-system",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 72,
+    "flutter_test_passed": 84,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -53,8 +53,14 @@
       "portrait_1x_scroll_extent": 0
     },
     "breakpoint_configs_under_test": {
-      "before": 0,
-      "after": 12
+      "before": 12,
+      "after": 24,
+      "text_scales": [
+        1.0,
+        1.3,
+        2.0,
+        3.1
+      ]
     },
     "guide_sheet_modes_x_configs_no_overflow": 64,
     "guide_sheet_dismiss": {
@@ -65,7 +71,8 @@
       "visible_chip_pt": {
         "before": 33,
         "after": 40,
-        "matches": "gallery _FilterChip"
+        "matches": "gallery _FilterChip",
+        "note": "pass #6: was accidentally full-width from pass #3 to #6; now shrink-wrapped"
       },
       "raw_gesture_detector_controls_in_composition_guide": {
         "before": 1,
@@ -98,6 +105,21 @@
       },
       "first_load_unchanged": true,
       "measured": "analytical"
+    },
+    "ax_text_defects": {
+      "guide_eyebrow_h_overflow_px_se_3.1x": {
+        "before": 127,
+        "after": 0
+      },
+      "welcome_cta_label_spill_configs": {
+        "before": 7,
+        "after": 0
+      },
+      "guide_dismiss_width_pt_se_1x": {
+        "before": 327,
+        "after": "~124",
+        "note": "pass #3 regression: full-width bar \u2192 chip"
+      }
     }
   }
 }

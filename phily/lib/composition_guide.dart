@@ -169,46 +169,60 @@ class _CompositionGuideSheet extends StatelessWidget {
                         ),
                       ),
                     ),
-                    // Eyebrow: GUIDE + recommended hold.
-                    Row(
+                    // Eyebrow: GUIDE + recommended hold. A Wrap, not a Row:
+                    // one line with the hold pushed right at normal sizes, and
+                    // at accessibility text sizes the hold drops to a second
+                    // line instead of overflowing (127px on an SE at AX5).
+                    Wrap(
+                      alignment: WrapAlignment.spaceBetween,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      runSpacing: 4,
                       children: [
-                        const Icon(
-                          Icons.auto_awesome_rounded,
-                          color: kGold,
-                          size: 12,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          'GUIDE',
-                          style: brandLabel(
-                            size: 9,
-                            weight: FontWeight.w600,
-                            color: kGold.withValues(alpha: 0.85),
-                            letterSpacing: 2.8,
-                          ),
-                        ),
-                        const Spacer(),
-                        if (orient != null) ...[
-                          Icon(
-                            orient == 'Portrait'
-                                ? Icons.stay_current_portrait_rounded
-                                : orient == 'Landscape'
-                                ? Icons.stay_current_landscape_rounded
-                                : Icons.screen_rotation_rounded,
-                            color: kGold.withValues(alpha: 0.7),
-                            size: 11,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            orient.toUpperCase(),
-                            style: brandLabel(
-                              size: 9,
-                              weight: FontWeight.w600,
-                              color: kGold.withValues(alpha: 0.7),
-                              letterSpacing: 1.8,
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.auto_awesome_rounded,
+                              color: kGold,
+                              size: 12,
                             ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'GUIDE',
+                              style: brandLabel(
+                                size: 9,
+                                weight: FontWeight.w600,
+                                color: kGold.withValues(alpha: 0.85),
+                                letterSpacing: 2.8,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (orient != null)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                orient == 'Portrait'
+                                    ? Icons.stay_current_portrait_rounded
+                                    : orient == 'Landscape'
+                                    ? Icons.stay_current_landscape_rounded
+                                    : Icons.screen_rotation_rounded,
+                                color: kGold.withValues(alpha: 0.7),
+                                size: 11,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                orient.toUpperCase(),
+                                style: brandLabel(
+                                  size: 9,
+                                  weight: FontWeight.w600,
+                                  color: kGold.withValues(alpha: 0.7),
+                                  letterSpacing: 1.8,
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
                       ],
                     ),
                     const SizedBox(height: 4),
@@ -294,26 +308,33 @@ class _CompositionGuideSheet extends StatelessWidget {
                     // radius 20), so the sheet's one control is the same object
                     // as the rest of the app's chrome. The 2pt vertical pad
                     // lifts the tap target to 44pt without changing the chip.
+                    // Shrink-wrapped explicitly: a Container with `alignment`
+                    // inside a bounded Center expands to the full width, and
+                    // minHeight (not height) lets large type grow the chip
+                    // instead of spilling out of it.
                     Center(
                       child: PopTap(
                         onTap: () => Navigator.of(context).pop(),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(vertical: 2),
                           child: Container(
-                            height: 40,
+                            constraints: const BoxConstraints(minHeight: 40),
                             padding: const EdgeInsets.symmetric(horizontal: 22),
-                            alignment: Alignment.center,
                             decoration: glassChipDecoration(
                               radius: kRadiusLg,
                               active: true,
                             ),
-                            child: Text(
-                              'GOT IT',
-                              style: brandLabel(
-                                size: 10.5,
-                                weight: FontWeight.w600,
-                                color: kGold,
-                                letterSpacing: 2.4,
+                            child: Center(
+                              widthFactor: 1,
+                              heightFactor: 1,
+                              child: Text(
+                                'GOT IT',
+                                style: brandLabel(
+                                  size: 10.5,
+                                  weight: FontWeight.w600,
+                                  color: kGold,
+                                  letterSpacing: 2.4,
+                                ),
                               ),
                             ),
                           ),

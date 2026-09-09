@@ -39,11 +39,16 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       (393×852), Pro Max (430×932), and landscape — no overflow, all targets ≥44pt.
       (pass #2: welcome + guide sheet covered in `test/breakpoints_test.dart`;
       camera chrome and gallery grid still need channel mocks — open.)
-- [ ] Text scaling: `MediaQuery.textScaler` ×1.3 — chrome labels must not
+- [~] Text scaling: `MediaQuery.textScaler` ×1.3 — chrome labels must not
       wrap or clip; cap scale on the tracked small-caps if needed.
-      (pass #2 covers welcome + guide sheet at 1.3×; camera chrome open.)
-- [ ] Safe areas: notch vs Dynamic Island vs home-button — top scrim height and
+      (pass #2 covers welcome + guide sheet at 1.3×; pass #6 extends both to
+      the AX2 ≈ 2.0× and AX5 ≈ 3.1× accessibility sizes, no caps needed —
+      layouts wrap or grow instead. Camera chrome still open.)
+- [~] Safe areas: notch vs Dynamic Island vs home-button — top scrim height and
       hint dock offsets derive from `MediaQuery.padding`, verify no magic numbers.
+      (pass #6 audit: every top offset derives from `padding.top` or the
+      measured `_topInset`; side insets are moot — `main.dart` locks portrait.
+      The bottom chrome does NOT read `padding.bottom` → "Proposals".)
 - [ ] Older-device path: confirm adaptive detection cadence engages (log the
       settled interval once in debug).
 ### Design-system consistency
@@ -83,6 +88,21 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 
 ## Proposals (not done — needs a decision)
 - 1b level glyph in the rail: retires the centre-frame level line in portrait.
+- Camera bottom chrome vs the home indicator (pass #6 audit). The bottom
+  panel is `Positioned(bottom: 0)` with a fixed 16pt pad and never reads
+  `MediaQuery.padding.bottom`. On Face ID phones the indicator bar sits ~13–21pt
+  above the edge, so the 72pt shutter's lowest ~5pt lies under it and its
+  bottom ~20pt is in the system swipe-up zone (touches there can be delayed
+  or taken by iOS). HIG says keep controls clear of it. The fix — add
+  `padding.bottom` (34pt) to the pad, or `max(16, padding.bottom)` — moves the
+  whole shutter row up 18–34pt on every Face ID phone and shrinks the preview
+  band; not a small visual diff, so it needs Lucas on a device. Home-button
+  phones (SE) are unaffected either way.
+- `setPreferredOrientations([portraitUp, portraitDown])` while capture is
+  locked to portraitUp. Face ID phones never rotate to portraitDown, but a
+  home-button SE will: the UI flips 180° and the preview shows the world
+  upside down relative to it. iOS Camera avoids this by allowing portraitUp
+  only. Dropping portraitDown is one line, but it could be intentional.
 
 ## Needs eyes (done, but subjective — review on device)
 - Gallery grid margins 14px / gutters 5px (from board 1g). Tiles are ~117pt on a
@@ -91,6 +111,10 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   grid. Moving to 16 / 8 / 16 / 16 / 24 / 8 is a visual call, not a token fix;
   the sheet's dismiss chip is now 40pt (was ~33) so a re-tune should look at
   the whole column at once.
+- Pass #6: at AX text sizes (Settings → Accessibility → Larger Text, top
+  three sizes) the welcome CTA now grows to two lines and the guide sheet's
+  eyebrow drops the PORTRAIT/LANDSCAPE tag to a second line. Worth one look
+  with AX5 on to confirm it reads as designed rather than broken.
 - Pass #5: scrolling back up the gallery grid should now show already-seen
   thumbs instantly with no fade (iOS Photos behaviour). Fresh cells still fade
   in over 280ms. Check the two don't look inconsistent side by side.
@@ -205,3 +229,39 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - **Also:** read the viewer sharpen and FPS-overlay backlog items; neither
   warrants a change (notes inline in the backlog).
 - **Commit:** `overnight: pass #5 — performance — 2026-09-09T04:23:37+0100`
+
+### Pass #6 — compatibility — 2026-09-09T04:56:03+0100
+- **What:** breakpoint tests extended to Apple's accessibility text sizes
+  (2.0× ≈ AX2, 3.1× ≈ AX5) with two new assertions — a label's laid-out text
+  must fit its own box, and the guide dismiss must be a chip, not a bar. They
+  caught four defects, all fixed:
+  1. **Guide sheet eyebrow** (`GUIDE … PORTRAIT`) overflowed horizontally by
+     127px on an SE at 3.1×. The Row is now a `Wrap` with space-between: one
+     line at normal sizes (identical), the hold tag drops to a second line at
+     AX sizes.
+  2. **Welcome CTA** was a fixed 54pt box; at 2.0×+ the label wrapped and
+     spilled past the gold. Now `minHeight: 54` + padding, so it is exactly
+     54pt at default sizes and grows with its label.
+  3. **Guide dismiss chip** had a fixed 40pt height with the same spill at AX
+     sizes → `minHeight: 40`.
+  4. **Regression from pass #3 (mine):** that chip's `alignment: center` on a
+     `Container` inside a bounded `Center` made it expand to the sheet's full
+     width — it has been a 40pt full-width bar since pass #3, not a chip. The
+     height-only assertion missed it. Now shrink-wrapped
+     (`Center(widthFactor: 1, heightFactor: 1)`) and asserted narrower than
+     the content width for every mode and config.
+- **Why:** Larger Text is the most-used accessibility setting on iOS; the
+  top three sizes are where fixed-height boxes and Spacer rows break. And a
+  full-width dismiss bar was never the design.
+- **Metric:** text-scale configs under test: 2 → 4 (12 → 24 breakpoint
+  tests). Horizontal overflow, guide eyebrow SE @3.1×: 127px → 0. Label
+  spill out of the welcome CTA at 2.0×/3.1×: 7 configs → 0. Dismiss chip
+  width on SE @1.0×: 327pt (full content width) → ~124pt.
+- **Also found, not shipped:** the camera's bottom chrome ignores
+  `padding.bottom` (shutter under the home-indicator zone on Face ID phones)
+  and `portraitDown` is allowed while capture is locked portraitUp. Both
+  change what Lucas sees on device → "Proposals" with numbers.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 84/84 (12
+  new) · `flutter build ios --simulator` ✓. `composition_guide.dart` diff is
+  mostly the re-indent from the Wrap; `welcome.dart` +5/−2.
+- **Commit:** `overnight: pass #6 — compatibility — 2026-09-09T04:56:03+0100`

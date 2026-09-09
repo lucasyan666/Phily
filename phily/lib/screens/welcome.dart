@@ -140,8 +140,12 @@ class _OpenCameraButton extends StatelessWidget {
         onTap();
       },
       behavior: HitTestBehavior.opaque,
+      // minHeight, not height: at accessibility text sizes the label wraps
+      // and the button grows with it instead of the type spilling past the
+      // gold. At default sizes this is exactly 54pt, as before.
       child: Container(
-        height: 54,
+        constraints: const BoxConstraints(minHeight: 54),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(kRadiusLg),
@@ -156,6 +160,7 @@ class _OpenCameraButton extends StatelessWidget {
         ),
         child: const Text(
           'Open the camera',
+          textAlign: TextAlign.center,
           style: TextStyle(
             color: Colors.black,
             fontSize: 16,

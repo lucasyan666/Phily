@@ -10,6 +10,7 @@
 //
 // The camera page stays out — it is plugin- and timer-driven (widget_test.dart).
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:phily/camera_page.dart';
@@ -46,7 +47,9 @@ const _devices = [
   ),
 ];
 
-const _textScales = [1.0, 1.3];
+// 1.3 ≈ the largest non-accessibility size (xxxL); 2.0 and 3.1 ≈ the AX2 and
+// AX5 accessibility sizes. Layouts scroll or grow at these — nothing may clip.
+const _textScales = [1.0, 1.3, 2.0, 3.1];
 
 Future<void> _pumpOn(
   WidgetTester tester,
@@ -119,6 +122,24 @@ void main() {
           expect(button.height, greaterThanOrEqualTo(44));
           expect(button.bottom, lessThanOrEqualTo(d.size.height));
           expect(button.top, greaterThanOrEqualTo(0));
+          // The label must sit inside its button at every text size — a
+          // fixed-height box lets large type spill past the gold. Two checks:
+          // the paragraph's laid-out text fits its own box, and that box sits
+          // inside the button.
+          final para = tester.renderObject<RenderParagraph>(label);
+          expect(
+            para.textSize.height,
+            lessThanOrEqualTo(para.size.height + 0.5),
+            reason:
+                'label text ${para.textSize} overflows its box ${para.size}',
+          );
+          final labelRect = tester.getRect(label);
+          expect(
+            button.inflate(0.5).contains(labelRect.topLeft) &&
+                button.inflate(0.5).contains(labelRect.bottomRight),
+            isTrue,
+            reason: 'label $labelRect spills out of button $button',
+          );
           await tester.tap(label);
           expect(tapped, 1);
 
@@ -191,6 +212,19 @@ void main() {
               tester.getSize(dismiss).height,
               greaterThanOrEqualTo(44),
               reason: '${spec.mode.name}: tap target',
+            );
+            // A chip, not a bar: narrower than the sheet's content width.
+            expect(
+              tester.getSize(dismiss).width,
+              lessThan(sheet.width - 48),
+              reason: '${spec.mode.name}: dismiss stretched to full width',
+            );
+            // And its label fits inside it at every text size.
+            final chipPara = tester.renderObject<RenderParagraph>(gotIt);
+            expect(
+              chipPara.textSize.height,
+              lessThanOrEqualTo(chipPara.size.height + 0.5),
+              reason: '${spec.mode.name}: GOT IT text overflows its chip',
             );
             // Long copy on a short phone puts the chip below the fold — the
             // sheet scrolls by design, so reach it the way a thumb would.
