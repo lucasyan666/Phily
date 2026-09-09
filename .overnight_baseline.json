@@ -1,6 +1,6 @@
 {
-  "pass": 15,
-  "updated": "2026-09-09T11:22:35+0100",
+  "pass": 16,
+  "updated": "2026-09-09T11:50:21+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-board",
+  "next_type": "performance",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 131,
+    "flutter_test_passed": 156,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -53,8 +53,8 @@
       "portrait_1x_scroll_extent": 0
     },
     "breakpoint_configs_under_test": {
-      "before": 24,
-      "after": 56,
+      "before": 56,
+      "after": 80,
       "text_scales": [
         1.0,
         1.3,
@@ -208,6 +208,11 @@
       "before": 1,
       "after": 0,
       "note": "SwitchListTile.adaptive in the level-line sheet \u2192 GildedSwitch"
+    },
+    "guide_caption_semantics_nodes": {
+      "before": 3,
+      "after": 1,
+      "overflows_found": 0
     }
   }
 }

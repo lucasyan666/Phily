@@ -46,7 +46,8 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - [~] Widget tests: camera chrome + gallery at iPhone SE (375×667), 15 Pro
       (393×852), Pro Max (430×932), and landscape — no overflow, all targets ≥44pt.
       (pass #2: welcome + guide sheet covered in `test/breakpoints_test.dart`;
-      pass #14 adds the gallery's empty state via a `@visibleForTesting` seam.
+      pass #14 adds the gallery's empty state and pass #16 the guide caption,
+      both via `@visibleForTesting` seams.
       The populated grid and the camera chrome still need PhotoManager /
       camera channel mocks — open.)
 - [~] Text scaling: `MediaQuery.textScaler` ×1.3 — chrome labels must not
@@ -93,6 +94,7 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       favourite / delete, camera grid toggle, guide "i"); favourite and grid
       toggle announce on/off. Pass #11 added the paywall: tier rows announce
       name + price + selection, legal links and the CTA are named buttons.
+      Pass #16 merged the gallery's guide caption into one spoken sentence.
       Pass #15 named the level-line switch. Pass #12 added the camera's
       bottom chrome: the shutter (with its
       hold-to-record gesture named), the gallery thumb, and the belt pills
@@ -511,3 +513,29 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - **Needs eyes:** the switch is new visual work — a gilt track where an
   iOS-green one used to be. Worth one look on device.
 - **Commit:** `overnight: pass #15 — design-system — 2026-09-09T11:22:35+0100`
+
+### Pass #16 — design-board — 2026-09-09T11:50:21+0100
+- **What:** board 1g's guide caption — "Subject on the top-left crossing.
+  Locked at 0.4° off level." — is wrapped in `MergeSemantics`, so a screen
+  reader gets the recall line, the gold lock clause and the timestamp as one
+  statement rather than three nodes to swipe through. Plus 24 breakpoint
+  tests for it (3 guide variants × SE and landscape × 4 text scales) through
+  a new `@visibleForTesting` seam.
+- **Why:** 1g's whole point is the caption — the app telling you *why* a shot
+  worked. Delivered as three fragments, a swipe lands mid-thought ("Locked at
+  0.4° off level." with no idea what locked, or the timestamp alone). The
+  sentence was written to be read as a sentence.
+- **Metric:** semantics nodes for the caption: 3 → 1, asserted to contain the
+  crossing, the roll figure and the timestamp together. Breakpoint
+  configurations under test: 56 → 80. The layout itself was already sound —
+  0 overflows found across all 24 configurations, so the tests are a
+  regression guard, not a fix.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 156/156 (25
+  new) · `flutter build ios --simulator` ✓. Diff: +12/−2 in
+  `gallery_viewer.dart` (seam + wrapper), test +90. No visual change.
+- **Honest note:** I went looking for a visual defect in 1g and didn't find
+  one; the caption renders correctly everywhere I could test it. The real
+  gap was non-visual, so that is what this pass fixed. The three unbuilt
+  boards (1e ×2, 1f's after-the-shutter card) remain too large for one green
+  pass — each needs its own session.
+- **Commit:** `overnight: pass #16 — design-board — 2026-09-09T11:50:21+0100`

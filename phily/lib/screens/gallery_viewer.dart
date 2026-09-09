@@ -2641,6 +2641,13 @@ class _DateChip extends StatelessWidget {
 
 /// "Subject on the top-left crossing. Locked at 0.4° off level." — the
 /// guide's one-line account of the shot, with the date beneath.
+/// Test seam: board 1g's payoff line is private, but it is the sentence that
+/// explains why a shot worked, and it has to survive every phone and text
+/// size. See `test/breakpoints_test.dart`.
+@visibleForTesting
+Widget debugGuideCaption({required ShotGuide guide, required DateTime when}) =>
+    _GuideCaption(guide: guide, when: when);
+
 class _GuideCaption extends StatelessWidget {
   final ShotGuide guide;
   final DateTime when;
@@ -2664,33 +2671,38 @@ class _GuideCaption extends StatelessWidget {
       color: kPaper.withValues(alpha: 0.6),
       letterSpacing: 0.1,
     ).copyWith(height: 1.5);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text.rich(
-          TextSpan(
-            text: '$lead ',
-            style: base,
-            children: [
-              if (lock.isNotEmpty)
-                TextSpan(
-                  text: lock,
-                  style: base.copyWith(color: kGold),
-                ),
-            ],
+    // One statement, not three fragments: VoiceOver read the recall sentence,
+    // the gold lock clause and the timestamp as separate nodes, so a swipe
+    // landed mid-thought. MergeSemantics reads it as the caption it is.
+    return MergeSemantics(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text.rich(
+            TextSpan(
+              text: '$lead ',
+              style: base,
+              children: [
+                if (lock.isNotEmpty)
+                  TextSpan(
+                    text: lock,
+                    style: base.copyWith(color: kGold),
+                  ),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(height: 3),
-        Text(
-          '${dateLabel(when)} · ${timeLabel(when)}',
-          style: brandLabel(
-            size: 9,
-            weight: FontWeight.w500,
-            color: kPaper.withValues(alpha: 0.35),
-            letterSpacing: 1.4,
+          const SizedBox(height: 3),
+          Text(
+            '${dateLabel(when)} · ${timeLabel(when)}',
+            style: brandLabel(
+              size: 9,
+              weight: FontWeight.w500,
+              color: kPaper.withValues(alpha: 0.35),
+              letterSpacing: 1.4,
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

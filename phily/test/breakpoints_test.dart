@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:phily/camera_page.dart';
 import 'package:phily/screens/gallery_viewer.dart';
+import 'package:phily/services/shot_guide_log.dart';
 import 'package:phily/screens/welcome.dart';
 import 'package:phily/theme.dart';
 
@@ -216,6 +217,100 @@ void main() {
         }
       }
     }
+  });
+
+  group('guide caption (board 1g)', () {
+    // The recall line under a photo: "Subject on the top-left crossing.
+    // Locked at 0.4° off level." Long copy in a fixed-width slot beside the
+    // photo — the shape that clips when the text grows.
+    final cases = <String, ShotGuide>{
+      'crossing + locked': const ShotGuide(
+        mode: 'ruleOfThirds',
+        label: 'Rule of Thirds',
+        locked: true,
+        point: 0,
+        rollDeg: -0.42,
+      ),
+      'horizon': const ShotGuide(
+        mode: 'horizonGrid',
+        label: 'Horizon Grid',
+        locked: true,
+        rollDeg: 0.1,
+      ),
+      'unlocked, no crossing': const ShotGuide(
+        mode: 'goldenSpiral',
+        label: 'Golden Spiral',
+        locked: false,
+      ),
+    };
+    for (final d in [_devices.first, _devices.last]) {
+      for (final scale in _textScales) {
+        for (final entry in cases.entries) {
+          testWidgets('${entry.key} fits ${d.name} at $scale× text', (
+            tester,
+          ) async {
+            await _pumpOn(
+              tester,
+              d,
+              scale,
+              Scaffold(
+                backgroundColor: Colors.black,
+                body: Align(
+                  alignment: Alignment.bottomCenter,
+                  // The viewer gives it the screen width minus 18pt margins.
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                    child: debugGuideCaption(
+                      guide: entry.value,
+                      when: DateTime(2026, 7, 13, 15, 4),
+                    ),
+                  ),
+                ),
+              ),
+            );
+            expect(tester.takeException(), isNull, reason: 'overflow');
+
+            // The timestamp is the last line: it must stay on screen.
+            final stamp = find.textContaining('·');
+            expect(stamp, findsOneWidget);
+            final r = tester.getRect(stamp);
+            expect(r.left, greaterThanOrEqualTo(0));
+            expect(r.right, lessThanOrEqualTo(d.size.width));
+            expect(r.bottom, lessThanOrEqualTo(d.size.height));
+          });
+        }
+      }
+    }
+  });
+
+  testWidgets('the guide caption reads as one sentence, not fragments', (
+    tester,
+  ) async {
+    // Board 1g's payoff: "why this shot worked". A screen reader should get
+    // the recall line, the gold lock clause and the timestamp in one swipe.
+    final handle = tester.ensureSemantics();
+    await _pumpOn(
+      tester,
+      _devices[1],
+      1.0,
+      Scaffold(
+        body: debugGuideCaption(
+          guide: const ShotGuide(
+            mode: 'ruleOfThirds',
+            label: 'Rule of Thirds',
+            locked: true,
+            point: 0,
+            rollDeg: -0.42,
+          ),
+          when: DateTime(2026, 7, 13, 15, 4),
+        ),
+      ),
+    );
+    final node = tester.getSemantics(find.byType(MergeSemantics));
+    expect(node.label, contains('crossing'));
+    expect(node.label, contains('0.4'));
+    expect(node.label, contains('Jul'), reason: 'timestamp merged in');
+    handle.dispose();
   });
 
   group('composition guide sheet', () {
