@@ -4,6 +4,8 @@
 // the selection tick and the callback survive, the 114% bubble does not.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:phily/screens/branded_loader.dart';
 import 'package:phily/theme.dart';
 
 Future<void> _pumpPopTap(
@@ -30,7 +32,50 @@ Future<void> _pumpPopTap(
 double _scale(WidgetTester tester) =>
     tester.widget<ScaleTransition>(find.byType(ScaleTransition)).scale.value;
 
+double _spiralAngle(WidgetTester tester) {
+  final paint = tester
+      .widgetList<CustomPaint>(find.byType(CustomPaint))
+      .map((w) => w.painter)
+      .whereType<FibonacciSpiralPainter>()
+      .single;
+  return paint.rotationAngle;
+}
+
 void main() {
+  setUpAll(() {
+    GoogleFonts.config.allowRuntimeFetching = false;
+  });
+
+  group('branded loader', () {
+    testWidgets('the φ-spiral turns by default', (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: BrandedLoader()));
+      await tester.pump(const Duration(milliseconds: 500));
+      final a = _spiralAngle(tester);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(_spiralAngle(tester), isNot(a));
+    });
+
+    testWidgets('under Reduce Motion the mark holds still', (tester) async {
+      await tester.pumpWidget(
+        const MediaQuery(
+          data: MediaQueryData(disableAnimations: true),
+          child: MaterialApp(home: BrandedLoader()),
+        ),
+      );
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(
+          _spiralAngle(tester),
+          0,
+          reason: 'turned at ~${(i + 1) * 500}ms',
+        );
+      }
+      // The entrance is instant too: fully opaque on the first settled frame.
+      final opacity = tester.widget<Opacity>(find.byType(Opacity).first);
+      expect(opacity.opacity, 1.0);
+    });
+  });
+
   group('PopTap', () {
     testWidgets('bubbles past 105% mid-tap and settles back by default', (
       tester,

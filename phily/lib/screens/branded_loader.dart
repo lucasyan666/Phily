@@ -63,11 +63,24 @@ class _BrandedLoaderState extends State<BrandedLoader>
   @override
   void initState() {
     super.initState();
-    // Slow, continuous rotation — calm rather than busy.
+    // Slow, continuous rotation — calm rather than busy. Started in
+    // didChangeDependencies, where MediaQuery is readable: under Reduce
+    // Motion the mark holds still and the aura rests at mid-breath.
     _spin = AnimationController(
       duration: const Duration(seconds: 5),
       vsync: this,
-    )..repeat();
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final still = reduceMotionOf(context);
+    if (still && _spin.isAnimating) {
+      _spin.stop();
+    } else if (!still && !_spin.isAnimating) {
+      _spin.repeat();
+    }
   }
 
   @override
@@ -82,10 +95,11 @@ class _BrandedLoaderState extends State<BrandedLoader>
     return Container(
       color: Colors.black,
       child: Center(
-        // Gentle one-shot fade + rise so the mark settles in rather than popping.
+        // Gentle one-shot fade + rise so the mark settles in rather than popping
+        // (instant under Reduce Motion).
         child: TweenAnimationBuilder<double>(
           tween: Tween(begin: 0, end: 1),
-          duration: const Duration(milliseconds: 750),
+          duration: motionOf(context, const Duration(milliseconds: 750)),
           curve: Curves.easeOutCubic,
           builder: (_, t, child) => Opacity(
             opacity: t,

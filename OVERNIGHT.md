@@ -73,11 +73,11 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 ### Accessibility
 - [~] Reduce Motion (`MediaQuery.disableAnimations`): pass #4 covers PopTap
       (every glass control / chip / guide dismiss), the gallery thumb fade-in,
-      selection scale, filter chips and the viewer's zoom-open. Still ignoring
-      it: the branded loader's spin, the paywall CTA sweep + press scale, the
-      gallery viewer's delete / favourite animations, camera-page decorative
-      fades (hint dock, belt). Informational motion (level line, targets) is
-      deliberately left alone.
+      selection scale, filter chips and the viewer's zoom-open; pass #8 adds
+      the branded loader (spin, breathing aura, entrance rise). Still ignoring
+      it: the paywall CTA sweep + press scale, the gallery viewer's delete /
+      favourite animations, camera-page decorative fades (hint dock, belt).
+      Informational motion (level line, targets) is deliberately left alone.
 ### Hygiene
 - [ ] `flutter analyze --fatal-infos` clean (currently only warnings/errors gated).
 - [ ] Dead code sweep after the redesign (unused private members, stale comments
@@ -288,3 +288,21 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   `test/gilded_wordmark_test.dart`) · `flutter build ios --simulator` ✓.
   Diff: −34/+46 across three files, net −16 lines at the call sites.
 - **Commit:** `overnight: pass #7 — design-system — 2026-09-09T05:24:32+0100`
+
+### Pass #8 — design-board — 2026-09-09T05:51:41+0100
+- **What:** the branded loader honours Reduce Motion. The φ-spiral's 5s
+  rotation is started from `didChangeDependencies` (where MediaQuery is
+  readable) only when motion is allowed; under Reduce Motion the mark holds
+  at angle 0, the aura rests at mid-breath, and the 750ms fade-and-rise
+  entrance is instant via `motionOf`. Default behaviour is unchanged.
+- **Why:** the loader is the first thing on screen on every cold start, and
+  it was the largest remaining decorative motion ignoring the setting after
+  pass #4 — a continuously spinning mark is exactly what Reduce Motion users
+  turn the setting on to avoid.
+- **Metric:** decorative animation sites honouring Reduce Motion: 6 → 7 (the
+  loader counts its spin, aura and entrance as one site). Asserted: the
+  spiral's angle stays 0 across 3s of frames under Reduce Motion and advances
+  without it; the entrance is fully opaque on the first settled frame.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 89/89 (2 new)
+  · `flutter build ios --simulator` ✓. Diff: +18/−4 in `branded_loader.dart`.
+- **Commit:** `overnight: pass #8 — design-board — 2026-09-09T05:51:41+0100`

@@ -1,6 +1,6 @@
 {
-  "pass": 7,
-  "updated": "2026-09-09T05:24:32+0100",
+  "pass": 8,
+  "updated": "2026-09-09T05:51:41+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-board",
+  "next_type": "performance",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 87,
+    "flutter_test_passed": 89,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -81,15 +81,16 @@
       "uses_poptap": true
     },
     "reduce_motion_honoured_sites": {
-      "before": 0,
-      "after": 6,
+      "before": 6,
+      "after": 7,
       "sites": [
         "PopTap",
         "GlassRoundButton",
         "gallery _FilterChip",
         "grid thumb fade-in",
         "grid selection scale",
-        "viewer zoom-open (crossfade)"
+        "viewer zoom-open (crossfade)",
+        "branded loader (spin, aura, entrance)"
       ],
       "default_motion_unchanged": true
     },
