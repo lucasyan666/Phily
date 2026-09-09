@@ -150,6 +150,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   only. Dropping portraitDown is one line, but it could be intentional.
 
 ## Needs eyes (done, but subjective — review on device)
+- Pass #20: the hint pill is now up to 340pt wide instead of a flat 260pt, so
+  the dock reads wider and shorter on every phone. Board 1b's "one rail, one
+  slot, one message" — check the proportion against the canvas.
 - Gallery grid margins 14px / gutters 5px (from board 1g). Tiles are ~117pt on a
   390pt screen; 8px margins would give ~124pt.
 - Guide sheet spacing is 14 / 4 / 14 / 16 / 14 / 20 / 5 — not on the 8pt
@@ -637,3 +640,32 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   `flutter build ios --simulator` ✓. Diff: +32/−18 across two files. Visual
   change: the welcome CTA now bubbles on tap like every other control.
 - **Commit:** `overnight: pass #19 — design-system — 2026-09-09T13:16:46+0100`
+
+### Pass #20 — design-board — 2026-09-09T13:45:22+0100
+- **What:** `HintPill`'s width cap is responsive. It was a hard-coded 260pt on
+  every device; it now takes the screen width less a 24pt inset each side,
+  clamped to 200–340pt, with the old fixed value still available via the
+  (now optional) `maxWidth` parameter. 8 breakpoint tests cover it.
+- **Why:** board 1b's status layer is "one rail, one slot, one message, docked
+  above the gilded lip". A 260pt cap on a 430pt Pro Max wasn't a dock, and
+  because the pill could only grow *downward*, a long guide line at
+  accessibility text sizes became a tower over the viewfinder — the one thing
+  the board says must stay clear. The pill is the app's only chrome made of
+  words, so this is the message layer's whole footprint.
+- **Metric:** measured with the longest real guide line ("Tilt left until the
+  horizon meets the guide"), pill height before → after: **375pt screen** —
+  1.0×: 84 → 68pt · 2.0×: 284 → 185pt · 3.1×: 620 → **420pt**. **430pt
+  screen** — same 84/284/620 → 68/185/420, and the pill now actually widens
+  to 340pt there instead of staying at 260. Height at AX5 down 32%; the
+  viewfinder gets ~200pt back. Asserted: the pill uses more than 260pt and
+  still clears the screen edge by 40pt.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 176/176 (8
+  new) · `flutter build ios --simulator` ✓. Diff: +20/−4 `theme.dart`, test
+  +48. No call site passed `maxWidth`, so every pill — camera hint dock,
+  gallery guide pill, date chip — gets this.
+- **On the unbuilt boards:** I looked at 1f's after-the-shutter card again
+  this pass. It needs per-mode use counts persisted, a card widget, a
+  swipe-down dismiss and camera-page wiring, none of it testable without
+  channel mocks — a session, not a green pass. Not started rather than
+  half-landed.
+- **Commit:** `overnight: pass #20 — design-board — 2026-09-09T13:45:22+0100`

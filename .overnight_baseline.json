@@ -1,6 +1,6 @@
 {
-  "pass": 19,
-  "updated": "2026-09-09T13:16:46+0100",
+  "pass": 20,
+  "updated": "2026-09-09T13:45:22+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-board",
+  "next_type": "performance",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 168,
+    "flutter_test_passed": 176,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -256,6 +256,41 @@
       },
       "raw_detectors_remaining": 21,
       "note": "remaining are gesture handlers or controls with richer feedback; audit closed"
+    },
+    "hint_pill_height_pt": {
+      "measured_with": "Tilt left until the horizon meets the guide",
+      "screen_375": {
+        "1.0x": {
+          "before": 84,
+          "after": 68
+        },
+        "2.0x": {
+          "before": 284,
+          "after": 185
+        },
+        "3.1x": {
+          "before": 620,
+          "after": 420
+        }
+      },
+      "screen_430": {
+        "1.0x": {
+          "before": 84,
+          "after": 68
+        },
+        "2.0x": {
+          "before": 284,
+          "after": 185
+        },
+        "3.1x": {
+          "before": 620,
+          "after": 420
+        }
+      },
+      "width": {
+        "before": "260 fixed",
+        "after": "screen \u2212 48, clamped 200\u2013340"
+      }
     }
   }
 }

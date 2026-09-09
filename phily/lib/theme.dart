@@ -694,7 +694,11 @@ class HintPill extends StatelessWidget {
   final Widget? below; // optional second line (e.g. the time)
   final bool emphasis;
   final double pulse;
-  final double maxWidth;
+
+  /// Cap on the pill's width. Defaults to null, meaning "as wide as the
+  /// screen sensibly allows" — see [build]. Pass a number only where a
+  /// narrower pill is the design.
+  final double? maxWidth;
   const HintPill({
     super.key,
     this.icon,
@@ -703,8 +707,15 @@ class HintPill extends StatelessWidget {
     this.below,
     this.emphasis = false,
     this.pulse = 0,
-    this.maxWidth = 260,
+    this.maxWidth,
   });
+
+  /// Widest the pill may get regardless of screen — beyond this a single line
+  /// of chrome copy becomes a wall of text rather than a glance.
+  static const double _kCap = 340;
+
+  /// Kept clear at each side so the pill reads as a floating dock, not a bar.
+  static const double _kSideInset = 24;
 
   @override
   Widget build(BuildContext context) {
@@ -719,8 +730,15 @@ class HintPill extends StatelessWidget {
                   alpha: emphasis ? 0.75 + 0.25 * pulse : 0.85,
                 ),
               ));
+    // A fixed 260pt cap ignored the screen it was docked on: the same pill on
+    // a 430pt Pro Max used the same 260pt, and at accessibility text sizes it
+    // grew *downward* instead — 620pt tall at AX5, a tower over the
+    // viewfinder where board 1b asks for one docked strip. Take the width
+    // that is actually there, then cap it.
+    final double available = MediaQuery.sizeOf(context).width - _kSideInset * 2;
+    final double limit = maxWidth ?? available.clamp(200.0, _kCap);
     return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxWidth, minHeight: 38),
+      constraints: BoxConstraints(maxWidth: limit, minHeight: 38),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
         decoration: BoxDecoration(

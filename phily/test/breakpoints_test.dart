@@ -321,6 +321,60 @@ void main() {
     handle.dispose();
   });
 
+  group('hint pill (board 1b status rail)', () {
+    // One rail, one slot, one message, docked above the gilded lip. The
+    // message is the only thing on the camera screen made of words, so it has
+    // to survive a long guide line at accessibility sizes on a narrow phone.
+    const longest = 'Tilt left until the horizon meets the guide';
+    for (final d in [_devices.first, _devices[1]]) {
+      for (final scale in _textScales) {
+        testWidgets('fits ${d.name} at $scale× text', (tester) async {
+          await _pumpOn(
+            tester,
+            d,
+            scale,
+            const Scaffold(
+              backgroundColor: Colors.black,
+              body: Center(
+                child: HintPill(icon: Icons.straighten, text: longest),
+              ),
+            ),
+          );
+          expect(tester.takeException(), isNull, reason: 'overflow');
+
+          // The pill must stay inside the screen it is docked on.
+          final r = tester.getRect(find.byType(HintPill));
+          expect(r.left, greaterThanOrEqualTo(0), reason: 'off the left edge');
+          expect(
+            r.right,
+            lessThanOrEqualTo(d.size.width),
+            reason:
+                'off the right edge — ${r.width}pt on a ${d.size.width}pt '
+                'screen',
+          );
+
+          // And the text inside it must not be clipped.
+          final para = tester.renderObject<RenderParagraph>(find.text(longest));
+          expect(
+            para.textSize.height,
+            lessThanOrEqualTo(para.size.height + 0.5),
+            reason: 'message clipped inside the pill',
+          );
+
+          // Board 1b wants a docked strip, not a tower: the pill uses the
+          // width the screen actually offers rather than a fixed 260pt, so a
+          // long message wraps to fewer lines and stays out of the frame.
+          expect(
+            r.width,
+            greaterThan(260),
+            reason: 'pill is not using the ${d.size.width}pt screen',
+          );
+          expect(r.width, lessThanOrEqualTo(d.size.width - 40));
+        });
+      }
+    }
+  });
+
   group('composition guide sheet', () {
     // Worst cases only: the narrowest phone and the shortest orientation.
     final tight = [_devices.first, _devices.last];
