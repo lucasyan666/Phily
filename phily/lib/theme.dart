@@ -430,7 +430,21 @@ class PopTap extends StatefulWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final Widget child;
-  const PopTap({super.key, this.onTap, this.onLongPress, required this.child});
+
+  /// VoiceOver name for icon-only controls. Text children announce
+  /// themselves (their label merges into this node), so leave it null there.
+  final String? semanticLabel;
+
+  /// On/off controls (grid toggle, favourite) announce their state.
+  final bool? toggled;
+  const PopTap({
+    super.key,
+    this.onTap,
+    this.onLongPress,
+    required this.child,
+    this.semanticLabel,
+    this.toggled,
+  });
 
   @override
   State<PopTap> createState() => _PopTapState();
@@ -471,23 +485,34 @@ class _PopTapState extends State<PopTap> with SingleTickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final bool enabled = widget.onTap != null || widget.onLongPress != null;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: widget.onTap == null
-          ? null
-          : () {
-              _pop();
-              widget.onTap!();
-            },
-      onLongPress: widget.onLongPress == null
-          ? null
-          : () {
-              _pop();
-              widget.onLongPress!();
-            },
-      child: Opacity(
-        opacity: enabled ? 1.0 : 0.4,
-        child: ScaleTransition(scale: _scale, child: widget.child),
+    // One semantics node per control — the button trait, its name and its
+    // state — merged with whatever the child says, so VoiceOver reads
+    // "Share, button" for an icon and "GOT IT, button" for a text chip.
+    return MergeSemantics(
+      child: Semantics(
+        button: enabled,
+        enabled: enabled,
+        label: widget.semanticLabel,
+        toggled: widget.toggled,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap == null
+              ? null
+              : () {
+                  _pop();
+                  widget.onTap!();
+                },
+          onLongPress: widget.onLongPress == null
+              ? null
+              : () {
+                  _pop();
+                  widget.onLongPress!();
+                },
+          child: Opacity(
+            opacity: enabled ? 1.0 : 0.4,
+            child: ScaleTransition(scale: _scale, child: widget.child),
+          ),
+        ),
       ),
     );
   }
@@ -502,6 +527,8 @@ class GlassRoundButton extends StatelessWidget {
   final bool active;
   final double size;
   final double iconSize;
+  final String? semanticLabel; // icon-only: name it for VoiceOver
+  final bool? toggled; // on/off controls announce their state
   const GlassRoundButton({
     super.key,
     required this.icon,
@@ -509,11 +536,15 @@ class GlassRoundButton extends StatelessWidget {
     this.active = false,
     this.size = 46,
     this.iconSize = 20,
+    this.semanticLabel,
+    this.toggled,
   });
 
   @override
   Widget build(BuildContext context) => PopTap(
     onTap: onTap,
+    semanticLabel: semanticLabel,
+    toggled: toggled,
     child: AnimatedContainer(
       duration: motionOf(context, kDurFast),
       curve: Curves.easeOut,
@@ -536,18 +567,21 @@ class GlassSquareButton extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final bool active;
+  final String? semanticLabel; // glyph-only: name it for VoiceOver
   const GlassSquareButton({
     super.key,
     required this.child,
     required this.onTap,
     this.onLongPress,
     this.active = false,
+    this.semanticLabel,
   });
 
   @override
   Widget build(BuildContext context) => PopTap(
     onTap: onTap,
     onLongPress: onLongPress,
+    semanticLabel: semanticLabel,
     child: Container(
       width: 48,
       height: 48,

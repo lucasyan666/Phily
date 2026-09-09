@@ -1663,6 +1663,7 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                         children: [
                           GlassSquareButton(
                             onTap: () => Navigator.of(context).maybePop(),
+                            semanticLabel: 'Back',
                             child: const Icon(
                               Icons.chevron_left_rounded,
                               color: kPaper,
@@ -1723,6 +1724,7 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                             key: _shareBtnKey,
                             icon: Icons.ios_share_rounded,
                             onTap: _shareCurrent,
+                            semanticLabel: 'Share',
                           ),
                           GlassRoundButton(
                             icon: widget.assets[_index].isFavorite
@@ -1730,10 +1732,13 @@ class _GalleryViewerPageState extends State<GalleryViewerPage>
                                 : Icons.star_outline_rounded,
                             active: widget.assets[_index].isFavorite,
                             onTap: _toggleFavourite,
+                            semanticLabel: 'Favourite',
+                            toggled: widget.assets[_index].isFavorite,
                           ),
                           GlassRoundButton(
                             icon: Icons.delete_outline_rounded,
                             onTap: _deleteCurrent,
+                            semanticLabel: 'Delete',
                           ),
                         ],
                       ),

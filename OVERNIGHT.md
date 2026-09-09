@@ -75,6 +75,13 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - [ ] 1e scene suggestion card ("Plate detected · try Circular") — needs a
       detection signal; scope first.
 ### Accessibility
+- [~] VoiceOver: pass #10 gives every `PopTap` the button trait + enabled
+      state, and names the six icon-only glass controls (gallery back / share /
+      favourite / delete, camera grid toggle, guide "i"); favourite and grid
+      toggle announce on/off. Still unlabelled: the camera's belt pills (text —
+      readable, but "RULE OF THIRDS, button" says nothing about being
+      selected), the shutter / gallery-thumb / mode-action buttons in the
+      bottom chrome (raw GestureDetectors), the zoom + exposure controls.
 - [~] Reduce Motion (`MediaQuery.disableAnimations`): pass #4 covers PopTap
       (every glass control / chip / guide dismiss), the gallery thumb fade-in,
       selection scale, filter chips and the viewer's zoom-open; pass #8 adds
@@ -336,3 +343,27 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   · `flutter build ios --simulator` ✓. Diff: +17/−1 in
   `camera_overlays.dart`, +1 import in `camera_page.dart`. No visual change.
 - **Commit:** `overnight: pass #9 — performance — 2026-09-09T06:20:32+0100`
+
+### Pass #10 — compatibility — 2026-09-09T06:49:31+0100
+- **What:** VoiceOver support for the shared controls. `PopTap` now wraps its
+  detector in `MergeSemantics` + `Semantics(button, enabled, label, toggled)`,
+  so every small control in the app is announced as a button, text chips are
+  named by their own text, and icon-only controls take a `semanticLabel`.
+  `GlassRoundButton` / `GlassSquareButton` forward `semanticLabel` /
+  `toggled`; the six icon-only call sites are named — Back, Share,
+  Favourite (toggled), Delete, Composition guide (toggled), About this
+  guide. `test/semantics_test.dart` locks the contract.
+- **Why:** there was not one `Semantics`, `semanticLabel` or `Tooltip` in
+  `lib/`. A VoiceOver user reaching the gallery's action row heard three
+  unnamed, trait-less targets; the camera's grid toggle and guide button the
+  same. Assistive tech is device compatibility, and this is the cheapest
+  layer to fix because the app is built from one control.
+- **Metric:** icon-only controls with a VoiceOver name: 0/6 → 6/6. Controls
+  exposing the button trait: 0 → every `PopTap` (glass buttons, filter chips,
+  guide dismiss, settings segments, guide pill). Toggles announcing state:
+  0 → 2. Disabled controls announce disabled rather than button (asserted).
+  No visual change.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 95/95 (4 new)
+  · `flutter build ios --simulator` ✓. Diff: +52/−18 in `theme.dart`
+  (mostly the re-indent under the two wrappers), +5 gallery, +3 camera.
+- **Commit:** `overnight: pass #10 — compatibility — 2026-09-09T06:49:31+0100`

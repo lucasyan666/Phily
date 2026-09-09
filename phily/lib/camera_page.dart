@@ -4620,6 +4620,8 @@ class _CameraPageState extends State<CameraPage>
       icon: on ? Icons.grid_3x3_rounded : Icons.grid_off,
       active: on,
       onTap: () => setState(() => _gridVisible = !_gridVisible),
+      semanticLabel: 'Composition guide',
+      toggled: on,
     );
   }
 
@@ -5008,6 +5010,7 @@ class _CameraPageState extends State<CameraPage>
       onTap: () => showCompositionGuide(context, _compositionMode),
       onLongPress: _showLevelLineSettings,
       active: true,
+      semanticLabel: 'About this guide',
       child: _rotated(
         Text(
           'i',

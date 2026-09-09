@@ -1,6 +1,6 @@
 {
-  "pass": 9,
-  "updated": "2026-09-09T06:20:32+0100",
+  "pass": 10,
+  "updated": "2026-09-09T06:49:31+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "compatibility",
+  "next_type": "design-system",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 91,
+    "flutter_test_passed": 95,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -134,6 +134,24 @@
       "before": 1,
       "after": 0,
       "asserted_modes": "all"
+    },
+    "voiceover": {
+      "icon_only_controls_named": {
+        "before": "0/6",
+        "after": "6/6"
+      },
+      "controls_with_button_trait": {
+        "before": 0,
+        "after": "every PopTap"
+      },
+      "toggles_announcing_state": {
+        "before": 0,
+        "after": 2
+      },
+      "semantics_widgets_in_lib": {
+        "before": 0,
+        "after": 1
+      }
     }
   }
 }
