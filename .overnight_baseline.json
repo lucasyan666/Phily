@@ -1,6 +1,6 @@
 {
-  "pass": 1,
-  "updated": "2026-09-09T02:23:19+0100",
+  "pass": 2,
+  "updated": "2026-09-09T02:56:07+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "compatibility",
+  "next_type": "design-system",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 57,
+    "flutter_test_passed": 69,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -36,6 +36,26 @@
         "before": 1.18,
         "after": 1.0
       }
-    }
+    },
+    "welcome_bottom_overflow_px": {
+      "before": {
+        "se_375x667_1.3x": 191,
+        "15pro_393x852_1.3x": 30,
+        "15pro_landscape_1.0x": 23,
+        "15pro_landscape_1.3x": 92
+      },
+      "after": {
+        "se_375x667_1.3x": 0,
+        "15pro_393x852_1.3x": 0,
+        "15pro_landscape_1.0x": 0,
+        "15pro_landscape_1.3x": 0
+      },
+      "portrait_1x_scroll_extent": 0
+    },
+    "breakpoint_configs_under_test": {
+      "before": 0,
+      "after": 12
+    },
+    "guide_sheet_modes_x_configs_no_overflow": 64
   }
 }
