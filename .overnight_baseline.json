@@ -1,6 +1,6 @@
 {
-  "pass": 22,
-  "updated": "2026-09-09T14:42:30+0100",
+  "pass": 23,
+  "updated": "2026-09-09T15:11:09+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-system",
+  "next_type": "design-board",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 202,
+    "flutter_test_passed": 204,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -314,6 +314,21 @@
         "before": 30,
         "after": 30
       }
+    },
+    "gold_aura_duplication": {
+      "hand_written_auras": {
+        "before": 3,
+        "after": 1
+      },
+      "kgold_hex_literals_outside_theme": {
+        "before": 6,
+        "after": 0
+      },
+      "redundant_ignorepointer_wrappers": {
+        "before": 3,
+        "after": 0
+      },
+      "alpha_drift_found": "paywall 0x33 vs 0x2E elsewhere \u2014 preserved per screen"
     }
   }
 }

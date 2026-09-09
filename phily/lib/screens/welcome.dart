@@ -21,17 +21,7 @@ class WelcomeScreen extends StatelessWidget {
             top: -120,
             left: -80,
             right: -80,
-            child: IgnorePointer(
-              child: Container(
-                height: 420,
-                decoration: const BoxDecoration(
-                  gradient: RadialGradient(
-                    radius: 0.7,
-                    colors: [Color(0x2EE5C158), Color(0x00E5C158)],
-                  ),
-                ),
-              ),
-            ),
+            child: const GoldAura(height: 420, radius: 0.7),
           ),
           // One screen when it fits — the Spacers place the copy — and a scroll
           // only when it can't (large accessibility text, a landscape hold), so

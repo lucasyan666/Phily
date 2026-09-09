@@ -712,6 +712,42 @@ class _PulseOverlay extends StatelessWidget {
   );
 }
 
+/// The warm gold aura that sits behind a brand moment — the loader's mark, the
+/// first-launch wordmark, the paywall's crown. A soft radial bloom of [kGold]
+/// fading to nothing, so those screens read as lit from within by the same
+/// light.
+///
+/// Was hand-written three times with the brand gold spelled as raw hex
+/// (`0x2EE5C158`), which had already drifted apart in alpha (0x2E vs 0x33).
+/// [strength] is the centre alpha; [radius] how far the bloom reaches.
+class GoldAura extends StatelessWidget {
+  final double height;
+  final double strength;
+  final double radius;
+  const GoldAura({
+    super.key,
+    required this.height,
+    this.strength = 0.18,
+    this.radius = 0.75,
+  });
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    child: Container(
+      height: height,
+      decoration: BoxDecoration(
+        gradient: RadialGradient(
+          radius: radius,
+          colors: [
+            kGold.withValues(alpha: strength),
+            kGold.withValues(alpha: 0),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
 // ── Hint pill ────────────────────────────────────────────────────────────────
 
 /// The app's one text bubble: glyph · hairline · message on gradient-faked

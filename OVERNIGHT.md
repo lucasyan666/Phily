@@ -77,6 +77,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       instead of logging. A log only helps someone watching a console; the
       tests hold on every run.)
 ### Design-system consistency
+- [x] Gold aura behind brand moments → `GoldAura` in `theme.dart`. Was
+      hand-written 3× with `kGold` spelled as raw hex, already drifted in
+      alpha (0x2E vs 0x33). (pass #23)
 - [x] Paywall: `_PrimaryButton` / `_TierRow` → `PopTap`; tier rows ≥44pt;
       any remaining one-off glass → `GlassSurface`. (pass #11: tier rows and
       legal links are PopTaps at 44pt; the CTA keeps its own detector — it
@@ -158,6 +161,10 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   only. Dropping portraitDown is one line, but it could be intentional.
 
 ## Needs eyes (done, but subjective — review on device)
+- Pass #23: the paywall's aura was 0x33 (α≈0.20) where the guide sheet and
+  welcome used 0x2E (α≈0.18). `GoldAura` keeps each screen's own value
+  (`strength:`) rather than picking one — if they should match, that's a
+  one-word change now.
 - Pass #21: the breathing "Perfect"/"Level" rim + glow now paint as a
   foreground decoration over the pill instead of inside it. Same values, new
   paint order — confirm the gold still reads the same on device.
@@ -736,3 +743,33 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   size. It holds — no fix needed, so those 16 configurations are a regression
   guard.
 - **Commit:** `overnight: pass #22 — compatibility — 2026-09-09T14:42:30+0100`
+
+### Pass #23 — design-system — 2026-09-09T15:11:09+0100
+- **What:** `GoldAura` in `theme.dart` — the warm radial bloom of [kGold] that
+  sits behind a brand moment. The composition guide sheet, the first-launch
+  welcome and the paywall all draw it now instead of each hand-rolling a
+  `Container` + `RadialGradient` with the gold spelled as raw hex.
+- **Why:** CLAUDE.md's rule is that `theme.dart` is "the single definition of
+  the app's gold/glass language". Three copies of the aura had the brand gold
+  written as `0x2EE5C158` — the same value as `kGold`, but a literal, so
+  changing the brand colour would have left three auras behind. They had
+  already drifted: the paywall's centre alpha was `0x33` where the other two
+  were `0x2E`.
+- **Metric:** hand-written gold auras: 3 → 1 shared component. Raw
+  `kGold`-as-hex literals outside `theme.dart`: 6 → 0 (three `0x2E/0x33` +
+  three `0x00` fade-outs). Redundant `IgnorePointer` wrappers at call sites:
+  3 → 0 (the component owns it). Asserted: every stop in the gradient is
+  `kGold` by channel — a hex copy that drifts fails — and the aura doesn't
+  swallow taps behind it.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 204/204 (2
+  new) · `flutter build ios --simulator` ✓. Diff: +37 `theme.dart`, −24
+  across the three screens. No visual change — each screen keeps its own
+  height, radius and alpha.
+- **Deliberately not touched:** the guide sheet's 14/4/14/16/14/20/5 spacing,
+  the last open design-system item. It is a subjective visual call, which the
+  guardrails route to "Needs eyes", not to a pass.
+- **Also spotted, not fixed:** two different "level greens" in
+  `camera_overlays.dart` (`0xFF4CD964` and `0xFF4CD97B`) and the recording red
+  `0xFFFF3B30` repeated in two files. Status colours are a small palette of
+  their own — worth one deliberate pass, not a drive-by.
+- **Commit:** `overnight: pass #23 — design-system — 2026-09-09T15:11:09+0100`

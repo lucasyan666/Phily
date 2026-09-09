@@ -36,6 +36,49 @@ void main() {
     expect(text.style?.letterSpacing, 0.5);
   });
 
+  group('GoldAura', () {
+    testWidgets('blooms the brand gold, fading to nothing', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(home: Scaffold(body: GoldAura(height: 220))),
+      );
+      final box = tester.widget<Container>(
+        find.descendant(
+          of: find.byType(GoldAura),
+          matching: find.byType(Container),
+        ),
+      );
+      final gradient =
+          (box.decoration! as BoxDecoration).gradient! as RadialGradient;
+      // Both stops are kGold — the aura is the brand gold fading out, not a
+      // hand-written hex that can drift from it.
+      for (final c in gradient.colors) {
+        expect(c.r, kGold.r);
+        expect(c.g, kGold.g);
+        expect(c.b, kGold.b);
+      }
+      expect(gradient.colors.first.a, greaterThan(0));
+      expect(gradient.colors.last.a, 0);
+    });
+
+    testWidgets('does not swallow taps behind it', (tester) async {
+      var taps = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Stack(
+              children: [
+                Positioned.fill(child: GestureDetector(onTap: () => taps++)),
+                const Positioned.fill(child: GoldAura(height: 400)),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.tapAt(const Offset(200, 100));
+      expect(taps, 1, reason: 'the aura is decoration, not a lid');
+    });
+  });
+
   testWidgets(
     'the welcome screen draws exactly one wordmark, no other recipe',
     (tester) async {

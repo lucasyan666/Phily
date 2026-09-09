@@ -132,17 +132,7 @@ class _CompositionGuideSheet extends StatelessWidget {
                 top: -90,
                 left: -40,
                 right: -40,
-                child: IgnorePointer(
-                  child: Container(
-                    height: 220,
-                    decoration: const BoxDecoration(
-                      gradient: RadialGradient(
-                        radius: 0.75,
-                        colors: [Color(0x2EE5C158), Color(0x00E5C158)],
-                      ),
-                    ),
-                  ),
-                ),
+                child: const GoldAura(height: 220),
               ),
               // Gold-leaf top edge.
               const Positioned(

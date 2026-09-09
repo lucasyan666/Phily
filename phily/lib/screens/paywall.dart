@@ -126,17 +126,7 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                     top: -100,
                     left: -40,
                     right: -40,
-                    child: IgnorePointer(
-                      child: Container(
-                        height: 260,
-                        decoration: const BoxDecoration(
-                          gradient: RadialGradient(
-                            radius: 0.75,
-                            colors: [Color(0x33E5C158), Color(0x00E5C158)],
-                          ),
-                        ),
-                      ),
-                    ),
+                    child: const GoldAura(height: 260, strength: 0.20),
                   ),
                   // Gold-leaf top edge, burning brightest at the centre.
                   const Positioned(
