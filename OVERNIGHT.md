@@ -56,6 +56,14 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       favourites — belt carries favourites + current group.
 - [ ] 1e scene suggestion card ("Plate detected · try Circular") — needs a
       detection signal; scope first.
+### Accessibility
+- [~] Reduce Motion (`MediaQuery.disableAnimations`): pass #4 covers PopTap
+      (every glass control / chip / guide dismiss), the gallery thumb fade-in,
+      selection scale, filter chips and the viewer's zoom-open. Still ignoring
+      it: the branded loader's spin, the paywall CTA sweep + press scale, the
+      gallery viewer's delete / favourite animations, camera-page decorative
+      fades (hint dock, belt). Informational motion (level line, targets) is
+      deliberately left alone.
 ### Hygiene
 - [ ] `flutter analyze --fatal-infos` clean (currently only warnings/errors gated).
 - [ ] Dead code sweep after the redesign (unused private members, stale comments
@@ -141,3 +149,25 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   `flutter build ios --simulator` ✓. Diff: +25/−21 in the sheet, test +30.
   Visual change: the chip is 7pt taller; nothing else moves.
 - **Commit:** `overnight: pass #3 — design-system — 2026-09-09T03:24:47+0100`
+
+### Pass #4 — design-board — 2026-09-09T03:53:51+0100
+- **What:** iOS Reduce Motion now stills the app's decorative motion. Two
+  helpers in `theme.dart` — `reduceMotionOf(context)` and
+  `motionOf(context, duration)` — wired into `PopTap` (the tick and the
+  callback stay; the 114% bubble doesn't run), `GlassRoundButton`, the gallery
+  filter chips, the grid thumb fade-in and selection scale, and the viewer's
+  open transition (crossfade only, the way iOS itself opens a photo).
+- **Why:** the boards make motion a deliberate part of the design — Targets
+  are "the only thing allowed to move over the subject" — and the loop's brief
+  asks for prefers-reduced-motion to be respected. It was honoured nowhere.
+  Routing it through PopTap covers every small control at once, camera and
+  gallery alike, without touching call sites.
+- **Metric:** decorative animations honouring Reduce Motion: 0 → 6 sites
+  (PopTap, GlassRoundButton, `_FilterChip`, thumb fade, selection scale,
+  viewer zoom-open); via PopTap that is every glass control in the app.
+  Users without Reduce Motion see no change (asserted: the bubble still peaks
+  past 105% mid-tap and settles to 1.0).
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 72/72 (3 new,
+  `test/reduce_motion_test.dart`) · `flutter build ios --simulator` ✓.
+  Diff: +21/−6 across `theme.dart` and `gallery_viewer.dart`.
+- **Commit:** `overnight: pass #4 — design-board — 2026-09-09T03:53:51+0100`

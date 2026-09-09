@@ -421,7 +421,7 @@ class _FilterChip extends StatelessWidget {
     return PopTap(
       onTap: onTap,
       child: AnimatedContainer(
-        duration: kDurFast,
+        duration: motionOf(context, kDurFast),
         curve: Curves.easeOut,
         height: 40,
         padding: const EdgeInsets.symmetric(horizontal: 18),
@@ -768,12 +768,16 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
         // second frame landed — the zoom visibly skipped to half, then
         // finished. Paying the build cost inside the hold makes the motion
         // that follows continuous.
-        transitionsBuilder: (_, anim, _, child) {
+        transitionsBuilder: (ctx, anim, _, child) {
           final fade = CurvedAnimation(
             parent: anim,
             curve: Curves.easeOutCubic,
             reverseCurve: Curves.easeInCubic,
           );
+          // Reduce Motion: crossfade only — the way iOS itself opens a photo.
+          if (reduceMotionOf(ctx)) {
+            return FadeTransition(opacity: fade, child: child);
+          }
           final zoom = CurvedAnimation(
             parent: anim,
             curve: const Interval(0.12, 1.0, curve: Curves.easeOutCubic),
@@ -1120,7 +1124,7 @@ class _GridThumbState extends State<_GridThumb> {
     // Gentle fade-in as each thumbnail loads (instead of popping in).
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 280),
+      duration: motionOf(context, const Duration(milliseconds: 280)),
       curve: Curves.easeOut,
       builder: (_, t, child) => Opacity(opacity: t, child: child),
       child: Stack(
@@ -1129,7 +1133,7 @@ class _GridThumbState extends State<_GridThumb> {
           // Selected cells shrink slightly to read as "lifted".
           AnimatedScale(
             scale: widget.selected ? 0.86 : 1.0,
-            duration: const Duration(milliseconds: 140),
+            duration: motionOf(context, const Duration(milliseconds: 140)),
             curve: Curves.easeOut,
             child: Container(
               // A gold rim hugs the lifted cell while it's selected.

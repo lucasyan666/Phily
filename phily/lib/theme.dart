@@ -100,6 +100,16 @@ const Duration kDurFast = Duration(milliseconds: 200); // taps, toggles
 const Duration kDurMed = Duration(milliseconds: 340); // pills, hints
 const Duration kDurSlow = Duration(milliseconds: 460); // sheets, reveals
 
+/// iOS Reduce Motion (Settings → Accessibility → Motion). Decorative motion —
+/// the tap bubble, fades, zooms — collapses to an instant state change. Motion
+/// that carries information (the level line, detection targets) is untouched.
+bool reduceMotionOf(BuildContext context) =>
+    MediaQuery.disableAnimationsOf(context);
+
+/// [d], or zero under Reduce Motion — for implicit animations' `duration:`.
+Duration motionOf(BuildContext context, Duration d) =>
+    reduceMotionOf(context) ? Duration.zero : d;
+
 // ── Haptics ──────────────────────────────────────────────────────────────────
 
 /// The app's standard tap tick — selection-style, used on every deliberate tap.
@@ -418,7 +428,8 @@ class _PopTapState extends State<PopTap> with SingleTickerProviderStateMixin {
 
   void _pop() {
     HapticFeedback.selectionClick();
-    _ctrl.forward(from: 0);
+    // The tick stays under Reduce Motion; only the bubble is motion.
+    if (!reduceMotionOf(context)) _ctrl.forward(from: 0);
   }
 
   @override
@@ -468,7 +479,7 @@ class GlassRoundButton extends StatelessWidget {
   Widget build(BuildContext context) => PopTap(
     onTap: onTap,
     child: AnimatedContainer(
-      duration: kDurFast,
+      duration: motionOf(context, kDurFast),
       curve: Curves.easeOut,
       width: size,
       height: size,
