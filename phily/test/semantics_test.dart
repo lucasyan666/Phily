@@ -134,6 +134,87 @@ void main() {
     handle.dispose();
   });
 
+  group('GildedSwitch', () {
+    testWidgets('toggles, and announces its name and state', (tester) async {
+      final handle = tester.ensureSemantics();
+      var value = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: StatefulBuilder(
+                builder: (_, setState) => GildedSwitch(
+                  value: value,
+                  semanticLabel: 'Always show level line',
+                  onChanged: (v) => setState(() => value = v),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(
+        tester.getSemantics(find.byType(GildedSwitch)),
+        matchesSemantics(
+          label: 'Always show level line',
+          isButton: true,
+          hasTapAction: true,
+          hasEnabledState: true,
+          isEnabled: true,
+          hasToggledState: true,
+          isToggled: false,
+        ),
+      );
+
+      await tester.tap(find.byType(GildedSwitch));
+      await tester.pumpAndSettle();
+      expect(value, isTrue);
+      expect(
+        tester.getSemantics(find.byType(GildedSwitch)),
+        matchesSemantics(
+          label: 'Always show level line',
+          isButton: true,
+          hasTapAction: true,
+          hasEnabledState: true,
+          isEnabled: true,
+          hasToggledState: true,
+          isToggled: true,
+        ),
+      );
+      handle.dispose();
+    });
+
+    testWidgets('wears the brand gold when on, glass when off', (tester) async {
+      // The point of replacing Switch.adaptive: no iOS green anywhere.
+      for (final on in [true, false]) {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: GildedSwitch(value: on, onChanged: (_) {}),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final box = tester.widget<AnimatedContainer>(
+          find.descendant(
+            of: find.byType(GildedSwitch),
+            matching: find.byType(AnimatedContainer),
+          ),
+        );
+        final decoration = box.decoration! as BoxDecoration;
+        final colors = (decoration.gradient! as LinearGradient).colors;
+        expect(
+          colors.contains(kGold),
+          on,
+          reason: on ? 'on track should be gilt' : 'off track should be glass',
+        );
+      }
+    });
+  });
+
   testWidgets('a disabled control is not announced as a button', (
     tester,
   ) async {

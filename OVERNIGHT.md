@@ -73,7 +73,10 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       grid is still open — see "Needs eyes".
 - [x] Branded loader + welcome: same wordmark treatment (`ShaderMask` recipe)
       — extract to `theme.dart` as `GildedWordmark`. (pass #7)
-- [ ] Level-line settings sheet: switch styling matches the paywall's.
+- [x] Level-line settings sheet: switch styling matches the paywall's.
+      (pass #15: `GildedSwitch` in `theme.dart` — gilt track on, smoked glass
+      off, on a `PopTap`. It was `SwitchListTile.adaptive`, the last
+      platform-default control in the app.)
 - [ ] Audit every `GestureDetector` on a control → `PopTap`. (pass #3: guide
       sheet done; remaining raw ones — welcome CTA, paywall `_PrimaryButton` /
       `_TierRow` / `_LegalLink`, and the camera/gallery call sites.)
@@ -90,7 +93,8 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       favourite / delete, camera grid toggle, guide "i"); favourite and grid
       toggle announce on/off. Pass #11 added the paywall: tier rows announce
       name + price + selection, legal links and the CTA are named buttons.
-      Pass #12 added the camera's bottom chrome: the shutter (with its
+      Pass #15 named the level-line switch. Pass #12 added the camera's
+      bottom chrome: the shutter (with its
       hold-to-record gesture named), the gallery thumb, and the belt pills
       (which now carry `selected`, so VoiceOver distinguishes the active mode
       from the other fifteen). Still unlabelled: the zoom + exposure controls
@@ -483,3 +487,27 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   new) · `flutter build ios --simulator` ✓. Diff: +30/−9 in
   `gallery_viewer.dart` (seam + layout), test +45.
 - **Commit:** `overnight: pass #14 — compatibility — 2026-09-09T10:54:19+0100`
+
+### Pass #15 — design-system — 2026-09-09T11:22:35+0100
+- **What:** `GildedSwitch` in `theme.dart` — a 46×27 gilded track (the paywall
+  CTA's lit-gold metal when on, an inactive chip's smoked glass when off) with
+  a polished thumb, sitting on `PopTap`. The level-line settings sheet uses it
+  instead of `SwitchListTile.adaptive`, and its copy is laid out by hand so it
+  keeps the sheet's type scale and can wrap at large text sizes.
+- **Why:** the sheet was the last place in the app showing a platform default:
+  an iOS-green switch track in a screen whose every other pixel is gold on
+  smoked glass. CLAUDE.md's rule is that the app is built from `theme.dart`
+  objects, and a switch is a control like any other — routing it through
+  `PopTap` means it inherits the tick, the bubble, the button trait and
+  Reduce Motion for free, none of which the adaptive switch had.
+- **Metric:** platform-default controls in `lib/`: 1 → 0. Switch styling
+  matching the app palette: no → yes (asserted: the on-track gradient
+  contains `kGold`, the off-track doesn't). Controls announcing name + state
+  in the settings sheet: 0 → 1. The manual `hapticTap()` the old
+  `onChanged` called is now `PopTap`'s — fires once, not twice (verified).
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 131/131 (2
+  new) · `flutter build ios --simulator` ✓. Diff: +102/−4 `theme.dart` (the
+  new widget), +48/−30 `camera_page.dart` (the swap).
+- **Needs eyes:** the switch is new visual work — a gilt track where an
+  iOS-green one used to be. Worth one look on device.
+- **Commit:** `overnight: pass #15 — design-system — 2026-09-09T11:22:35+0100`

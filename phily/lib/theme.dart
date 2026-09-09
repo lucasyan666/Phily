@@ -418,7 +418,6 @@ class _GlassRimPainter extends CustomPainter {
   bool shouldRepaint(_GlassRimPainter old) => old.radius != radius;
 }
 
-
 // ── Interaction ──────────────────────────────────────────────────────────────
 
 /// Tap feedback for the app's small chrome controls, camera and gallery alike:
@@ -457,15 +456,17 @@ class _PopTapState extends State<PopTap> with SingleTickerProviderStateMixin {
   );
   late final Animation<double> _scale = TweenSequence<double>([
     TweenSequenceItem(
-      tween: Tween(begin: 1.0, end: 1.14).chain(
-        CurveTween(curve: Curves.easeOutBack),
-      ),
+      tween: Tween(
+        begin: 1.0,
+        end: 1.14,
+      ).chain(CurveTween(curve: Curves.easeOutBack)),
       weight: 40,
     ),
     TweenSequenceItem(
-      tween: Tween(begin: 1.14, end: 1.0).chain(
-        CurveTween(curve: Curves.easeOutCubic),
-      ),
+      tween: Tween(
+        begin: 1.14,
+        end: 1.0,
+      ).chain(CurveTween(curve: Curves.easeOutCubic)),
       weight: 60,
     ),
   ]).animate(_ctrl);
@@ -590,6 +591,93 @@ class GlassSquareButton extends StatelessWidget {
       child: child,
     ),
   );
+}
+
+/// The app's switch — a gilded track with a polished thumb, in the same
+/// gold-and-glass language as every other control. Replaces
+/// `Switch.adaptive`, whose iOS-green track was the one place the app showed
+/// a platform default instead of its own palette.
+///
+/// A [PopTap] underneath gives it the shared tick, bubble and button trait;
+/// [semanticLabel] names it, and the on/off state is announced.
+class GildedSwitch extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  final String? semanticLabel;
+  const GildedSwitch({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.semanticLabel,
+  });
+
+  static const double _w = 46;
+  static const double _h = 27;
+  static const double _pad = 3;
+
+  @override
+  Widget build(BuildContext context) {
+    const double thumb = _h - _pad * 2;
+    return PopTap(
+      onTap: onChanged == null ? null : () => onChanged!(!value),
+      semanticLabel: semanticLabel,
+      toggled: value,
+      child: AnimatedContainer(
+        duration: motionOf(context, kDurFast),
+        curve: kEaseOut,
+        width: _w,
+        height: _h,
+        padding: const EdgeInsets.all(_pad),
+        alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(_h / 2),
+          // On: lit gilt melting to gold, the paywall CTA's metal. Off: the
+          // same smoked glass as an inactive chip.
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: value
+                ? const [kGoldLit, kGold, kGoldDeep]
+                : [
+                    Colors.white.withValues(alpha: 0.10),
+                    Colors.white.withValues(alpha: 0.03),
+                    kSmoke.withValues(alpha: 0.52),
+                  ],
+            stops: const [0.0, 0.5, 1.0],
+          ),
+          border: Border.all(
+            color: value
+                ? kGold.withValues(alpha: 0.9)
+                : Colors.white.withValues(alpha: 0.22),
+            width: value ? 1.0 : 0.8,
+          ),
+          boxShadow: value
+              ? [
+                  BoxShadow(
+                    color: kGold.withValues(alpha: 0.22),
+                    blurRadius: 10,
+                  ),
+                ]
+              : null,
+        ),
+        child: Container(
+          width: thumb,
+          height: thumb,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: value ? kSmoke : kPaper.withValues(alpha: 0.82),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x40000000),
+                blurRadius: 4,
+                offset: Offset(0, 1),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // ── Hint pill ────────────────────────────────────────────────────────────────

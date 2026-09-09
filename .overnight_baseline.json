@@ -1,6 +1,6 @@
 {
-  "pass": 14,
-  "updated": "2026-09-09T10:54:19+0100",
+  "pass": 15,
+  "updated": "2026-09-09T11:22:35+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-system",
+  "next_type": "design-board",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 129,
+    "flutter_test_passed": 131,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -203,6 +203,11 @@
         "15pro_landscape_3.1x_by_phily": 0
       },
       "ordinary_sizes_unchanged": true
+    },
+    "platform_default_controls": {
+      "before": 1,
+      "after": 0,
+      "note": "SwitchListTile.adaptive in the level-line sheet \u2192 GildedSwitch"
     }
   }
 }

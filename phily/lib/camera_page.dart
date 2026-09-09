@@ -551,36 +551,60 @@ class _CameraPageState extends State<CameraPage>
                   ),
                 ),
                 const SizedBox(height: 10),
+                // The app's own switch, not `Switch.adaptive` — its iOS-green
+                // track was the one platform default left in the UI. Laid out
+                // by hand rather than with SwitchListTile so the copy keeps
+                // the sheet's type scale and can wrap at large text sizes.
                 StatefulBuilder(
-                  builder: (ctx, setSheet) => SwitchListTile.adaptive(
-                    contentPadding: EdgeInsets.zero,
-                    value: _alwaysShowLevel,
-                    activeThumbColor: kGold,
-                    title: Text(
-                      'Always show level line',
-                      style: brandLabel(
-                        size: 13,
-                        weight: FontWeight.w500,
-                        color: kPaper.withValues(alpha: 0.92),
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                    subtitle: Text(
-                      'Keep it on screen at all times. Off, it appears only '
-                      'while you\'re levelling the shot.',
-                      style: brandLabel(
-                        size: 11.5,
-                        weight: FontWeight.w400,
-                        color: kPaper.withValues(alpha: 0.55),
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                    onChanged: (v) {
+                  builder: (ctx, setSheet) {
+                    void toggle(bool v) {
                       setSheet(() {});
                       _setAlwaysShowLevel(v);
-                      hapticTap();
-                    },
-                  ),
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Always show level line',
+                                  style: brandLabel(
+                                    size: 13,
+                                    weight: FontWeight.w500,
+                                    color: kPaper.withValues(alpha: 0.92),
+                                    letterSpacing: 0.2,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  'Keep it on screen at all times. Off, it '
+                                  'appears only while you\'re levelling the '
+                                  'shot.',
+                                  style: brandLabel(
+                                    size: 11.5,
+                                    weight: FontWeight.w400,
+                                    color: kPaper.withValues(alpha: 0.55),
+                                    letterSpacing: 0.2,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          GildedSwitch(
+                            value: _alwaysShowLevel,
+                            onChanged: toggle,
+                            semanticLabel: 'Always show level line',
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ],
             ),
