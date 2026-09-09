@@ -103,6 +103,37 @@ void main() {
     handle.dispose();
   });
 
+  testWidgets('a selectable row announces its name, price and selection', (
+    tester,
+  ) async {
+    // The paywall's tier rows are PopTaps now, so this is their contract:
+    // one merged node carrying the spoken label and the selected state, not
+    // three unnamed fragments.
+    final handle = tester.ensureSemantics();
+    await _pump(
+      tester,
+      PopTap(
+        onTap: () {},
+        semanticLabel: 'Yearly, £19.99 per year',
+        toggled: true,
+        child: const SizedBox(width: 300, height: 44),
+      ),
+    );
+    expect(
+      tester.getSemantics(find.byType(PopTap)),
+      matchesSemantics(
+        label: 'Yearly, £19.99 per year',
+        isButton: true,
+        hasTapAction: true,
+        hasEnabledState: true,
+        isEnabled: true,
+        hasToggledState: true,
+        isToggled: true,
+      ),
+    );
+    handle.dispose();
+  });
+
   testWidgets('a disabled control is not announced as a button', (
     tester,
   ) async {

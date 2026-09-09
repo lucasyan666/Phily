@@ -367,13 +367,22 @@ class _TierRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    // PopTap, like every other control in the app: the row ticks and bubbles
+    // on tap, is announced as a selectable button, and stills under Reduce
+    // Motion. `constraints` guarantees the 44pt minimum target — the padding
+    // alone left short rows under it.
+    return PopTap(
       onTap: onTap,
+      semanticLabel: price == null
+          ? tier.name
+          : '${tier.name}, $price ${tier.cadence}',
+      toggled: selected,
       // Animated so selection GLIDES between tiers — the gilt fill, rim and
       // glow melt from one row to the next rather than snapping.
       child: AnimatedContainer(
-        duration: kDurFast,
+        duration: motionOf(context, kDurFast),
         curve: kEaseOut,
+        constraints: const BoxConstraints(minHeight: 44),
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
@@ -518,11 +527,14 @@ class _LegalLink extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    // A link, but still a tap target: PopTap for the tick + button trait, and
+    // a 44pt minimum box around the 11px text.
+    return PopTap(
       onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
         child: Text(
           label,
           style: TextStyle(
@@ -556,8 +568,21 @@ class _PrimaryButtonState extends State<_PrimaryButton>
   late final AnimationController _sweep = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 2800),
-  )..repeat();
+  );
   bool _pressed = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // The shimmer is decoration: a light band crossing the bar every 2.8s,
+    // forever. Under Reduce Motion the bar rests as polished metal instead.
+    final still = reduceMotionOf(context);
+    if (still && _sweep.isAnimating) {
+      _sweep.stop();
+    } else if (!still && !_sweep.isAnimating) {
+      _sweep.repeat();
+    }
+  }
 
   @override
   void dispose() {
@@ -568,83 +593,89 @@ class _PrimaryButtonState extends State<_PrimaryButton>
   @override
   Widget build(BuildContext context) {
     final bool enabled = widget.onTap != null;
-    return GestureDetector(
-      onTap: widget.onTap,
-      onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
-      onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
-      onTapCancel: () => setState(() => _pressed = false),
-      child: AnimatedScale(
-        scale: _pressed ? 0.97 : 1.0,
-        duration: kDurFast,
-        curve: kEaseOut,
-        child: Container(
-          height: 52,
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(kRadiusMd),
-            // Metallic gilt: a bright lit lip up top melting through gold into a
-            // deeper antique-gold base — a polished bar, not a flat fill.
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: enabled
-                  ? [kGoldLit, kGold, kGoldDeep]
-                  : [
-                      kGold.withValues(alpha: 0.32),
-                      kGold.withValues(alpha: 0.26),
-                    ],
-              stops: enabled ? const [0.0, 0.5, 1.0] : null,
+    // The CTA is a bare GestureDetector (it owns a press scale and a shimmer,
+    // so it is not a PopTap); it still has to announce itself as a button.
+    return Semantics(
+      button: enabled,
+      enabled: enabled,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
+        onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
+        onTapCancel: () => setState(() => _pressed = false),
+        child: AnimatedScale(
+          scale: _pressed ? 0.97 : 1.0,
+          duration: motionOf(context, kDurFast),
+          curve: kEaseOut,
+          child: Container(
+            height: 52,
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(kRadiusMd),
+              // Metallic gilt: a bright lit lip up top melting through gold into a
+              // deeper antique-gold base — a polished bar, not a flat fill.
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: enabled
+                    ? [kGoldLit, kGold, kGoldDeep]
+                    : [
+                        kGold.withValues(alpha: 0.32),
+                        kGold.withValues(alpha: 0.26),
+                      ],
+                stops: enabled ? const [0.0, 0.5, 1.0] : null,
+              ),
+              boxShadow: enabled
+                  ? [
+                      BoxShadow(
+                        color: kGold.withValues(alpha: 0.38),
+                        blurRadius: 20,
+                        offset: const Offset(0, 7),
+                      ),
+                    ]
+                  : null,
             ),
-            boxShadow: enabled
-                ? [
-                    BoxShadow(
-                      color: kGold.withValues(alpha: 0.38),
-                      blurRadius: 20,
-                      offset: const Offset(0, 7),
-                    ),
-                  ]
-                : null,
-          ),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // Light sweep: a soft white band gliding across the metal.
-              if (enabled)
-                AnimatedBuilder(
-                  animation: _sweep,
-                  builder: (_, _) => FractionalTranslation(
-                    translation: Offset(
-                      -1.0 + 2.0 * Curves.easeInOut.transform(_sweep.value),
-                      0,
-                    ),
-                    child: const DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                          colors: [
-                            Color(0x00FFFFFF),
-                            Color(0x59FFFFFF),
-                            Color(0x00FFFFFF),
-                          ],
-                          stops: [0.35, 0.5, 0.65],
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // Light sweep: a soft white band gliding across the metal.
+                if (enabled)
+                  AnimatedBuilder(
+                    animation: _sweep,
+                    builder: (_, _) => FractionalTranslation(
+                      translation: Offset(
+                        -1.0 + 2.0 * Curves.easeInOut.transform(_sweep.value),
+                        0,
+                      ),
+                      child: const DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.centerLeft,
+                            end: Alignment.centerRight,
+                            colors: [
+                              Color(0x00FFFFFF),
+                              Color(0x59FFFFFF),
+                              Color(0x00FFFFFF),
+                            ],
+                            stops: [0.35, 0.5, 0.65],
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              Center(
-                child: Text(
-                  widget.label,
-                  style: const TextStyle(
-                    color: Colors.black,
-                    fontSize: 15.5,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.2,
+                Center(
+                  child: Text(
+                    widget.label,
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.2,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

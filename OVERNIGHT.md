@@ -56,8 +56,11 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - [ ] Older-device path: confirm adaptive detection cadence engages (log the
       settled interval once in debug).
 ### Design-system consistency
-- [ ] Paywall: `_PrimaryButton` / `_TierRow` → `PopTap`; tier rows ≥44pt;
-      any remaining one-off glass → `GlassSurface`.
+- [x] Paywall: `_PrimaryButton` / `_TierRow` → `PopTap`; tier rows ≥44pt;
+      any remaining one-off glass → `GlassSurface`. (pass #11: tier rows and
+      legal links are PopTaps at 44pt; the CTA keeps its own detector — it
+      owns a press scale + shimmer — but gained the button trait and Reduce
+      Motion. No one-off `GlassSurface` candidates were left.)
 - [~] Composition guide sheet: dismiss chip → shared button (pass #3: PopTap,
       gallery filter-chip geometry, 44pt target). Section spacing on the 8pt
       grid is still open — see "Needs eyes".
@@ -82,12 +85,15 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       readable, but "RULE OF THIRDS, button" says nothing about being
       selected), the shutter / gallery-thumb / mode-action buttons in the
       bottom chrome (raw GestureDetectors), the zoom + exposure controls.
+      Pass #11 added the paywall: tier rows announce name + price + selection,
+      legal links and the CTA are named buttons.
 - [~] Reduce Motion (`MediaQuery.disableAnimations`): pass #4 covers PopTap
       (every glass control / chip / guide dismiss), the gallery thumb fade-in,
       selection scale, filter chips and the viewer's zoom-open; pass #8 adds
       the branded loader (spin, breathing aura, entrance rise). Still ignoring
-      it: the paywall CTA sweep + press scale, the gallery viewer's delete /
-      favourite animations, camera-page decorative fades (hint dock, belt).
+      it: the gallery viewer's delete / favourite animations and camera-page
+      decorative fades (hint dock, belt). Pass #11 covered the paywall CTA
+      sweep + press scale and the tier-row selection glide.
       Informational motion (level line, targets) is deliberately left alone.
 ### Hygiene
 - [ ] `flutter analyze --fatal-infos` clean (currently only warnings/errors gated).
@@ -367,3 +373,29 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   · `flutter build ios --simulator` ✓. Diff: +52/−18 in `theme.dart`
   (mostly the re-indent under the two wrappers), +5 gallery, +3 camera.
 - **Commit:** `overnight: pass #10 — compatibility — 2026-09-09T06:49:31+0100`
+
+### Pass #11 — design-system — 2026-09-09T09:30:11+0100
+- **What:** the paywall now uses the app's shared control. `_TierRow` and
+  `_LegalLink` are `PopTap`s (selection tick, bubble, button trait) with
+  explicit 44pt minimum targets; the tier-row selection glide and the CTA's
+  press scale go through `motionOf`; the CTA's 2.8s shimmer loop starts only
+  when motion is allowed. Tier rows announce "Yearly, £19.99 per year" with
+  their selected state; the CTA announces as a button.
+- **Why:** CLAUDE.md's rule is that every small control is `PopTap` and the
+  camera and gallery are built from the same objects — the paywall was the
+  last screen still on raw `GestureDetector`s. It was also the last place
+  with a forever-looping decorative animation ignoring Reduce Motion, on the
+  one screen a user reads carefully before spending money.
+- **Metric:** raw `GestureDetector` controls in `paywall.dart`: 3 → 1 (the
+  CTA, which owns a press scale and shimmer; it gained the button trait
+  instead). Controls below the 44pt target: 2 → 0 (legal links were ~23pt,
+  short tier rows ~41pt). Decorative animation sites honouring Reduce
+  Motion: 7 → 9. Paywall controls with a VoiceOver name: 0 → 5.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 96/96 (1 new)
+  · `flutter build ios --simulator` ✓. Diff: 185 lines raw, but 40
+  substantive — the rest is re-indentation under the new wrappers
+  (`git diff --ignore-all-space` = +40/−9). No visual change at default
+  settings.
+- **StoreKit untouched:** no change to purchase, restore, product lookup or
+  entitlement logic — presentation only, per the guardrail.
+- **Commit:** `overnight: pass #11 — design-system — 2026-09-09T09:30:11+0100`

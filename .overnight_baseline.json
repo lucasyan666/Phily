@@ -1,6 +1,6 @@
 {
-  "pass": 10,
-  "updated": "2026-09-09T06:49:31+0100",
+  "pass": 11,
+  "updated": "2026-09-09T09:30:11+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-system",
+  "next_type": "design-board",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 95,
+    "flutter_test_passed": 96,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -81,8 +81,8 @@
       "uses_poptap": true
     },
     "reduce_motion_honoured_sites": {
-      "before": 6,
-      "after": 7,
+      "before": 7,
+      "after": 9,
       "sites": [
         "PopTap",
         "GlassRoundButton",
@@ -90,7 +90,9 @@
         "grid thumb fade-in",
         "grid selection scale",
         "viewer zoom-open (crossfade)",
-        "branded loader (spin, aura, entrance)"
+        "branded loader (spin, aura, entrance)",
+        "paywall CTA (shimmer + press scale)",
+        "paywall tier-row selection glide"
       ],
       "default_motion_unchanged": true
     },
@@ -151,6 +153,21 @@
       "semantics_widgets_in_lib": {
         "before": 0,
         "after": 1
+      }
+    },
+    "paywall_design_system": {
+      "raw_gesture_detector_controls": {
+        "before": 3,
+        "after": 1,
+        "note": "CTA keeps its own detector for press scale + shimmer; has the button trait"
+      },
+      "controls_under_44pt": {
+        "before": 2,
+        "after": 0
+      },
+      "voiceover_named_controls": {
+        "before": 0,
+        "after": 5
       }
     }
   }
