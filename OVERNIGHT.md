@@ -83,9 +83,15 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       (pass #15: `GildedSwitch` in `theme.dart` — gilt track on, smoked glass
       off, on a `PopTap`. It was `SwitchListTile.adaptive`, the last
       platform-default control in the app.)
-- [ ] Audit every `GestureDetector` on a control → `PopTap`. (pass #3: guide
-      sheet done; remaining raw ones — welcome CTA, paywall `_PrimaryButton` /
-      `_TierRow` / `_LegalLink`, and the camera/gallery call sites.)
+- [x] Audit every `GestureDetector` on a control → `PopTap`. Done across
+      passes #3 (guide sheet), #11 (paywall tier rows + legal links) and #19
+      (welcome CTA). The audit's conclusion: the 21 raw `GestureDetector`s
+      left are **correctly** raw — pan/zoom/swipe handlers (viewer pager,
+      InteractiveViewer, tap-to-hide-chrome), and three controls that own
+      richer feedback than the bubble: the paywall CTA (press scale +
+      shimmer), the shutter (bop + record glow) and the grid cell (0.86
+      "lifted" selection scale, which a 114% bubble would fight). Those three
+      carry the button trait via `Semantics` instead. Nothing left to convert.
 ### Design boards not yet built
 - [ ] 1f after-the-shutter card ("RULE OF THIRDS · LANDED" over the photo,
       3 uses per mode, swipe down) — self-contained, reuses `ShotGuide`.
@@ -607,3 +613,27 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   These tests are what makes that instruction enforceable rather than
   advisory — a fixed interval now fails five of them.
 - **Commit:** `overnight: pass #18 — compatibility — 2026-09-09T12:48:18+0100`
+
+### Pass #19 — design-system — 2026-09-09T13:16:46+0100
+- **What:** the welcome screen's "Open the camera" CTA is now a `PopTap`
+  (its manual `hapticTap()` is gone — `PopTap`'s tick replaces it), and the
+  gallery grid cell gained `Semantics`: named by date, `selected` in select
+  mode, with "Select photos" as its long-press hint. Closes the
+  `GestureDetector` audit that has been open since pass #3.
+- **Why:** the CTA is the first button anyone taps in the app and it was
+  still a one-off — no bubble, no button trait, no Reduce Motion. The audit
+  also needed *finishing*, not just progressing: I checked all 21 remaining
+  raw detectors rather than converting the easy ones and leaving a vague
+  note. They are correctly raw.
+- **Metric:** controls that should be `PopTap` but aren't: 1 → 0. Unnamed
+  tappable elements in the gallery grid: every cell → 0 (a screen reader got
+  an unlabelled image with no hint that long-press starts selection).
+  Manual `hapticTap()` calls duplicating `PopTap`'s tick: 1 → 0. Asserted:
+  the welcome CTA is a `PopTap` at every breakpoint.
+- **Deliberately not converted:** the grid cell. A 114% bubble fights the
+  0.86 "lifted" scale selection already gives it — the design system says
+  *one* control vocabulary, not one animation regardless of context.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 168/168 ·
+  `flutter build ios --simulator` ✓. Diff: +32/−18 across two files. Visual
+  change: the welcome CTA now bubbles on tap like every other control.
+- **Commit:** `overnight: pass #19 — design-system — 2026-09-09T13:16:46+0100`

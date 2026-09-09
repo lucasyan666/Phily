@@ -1011,18 +1011,31 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
 
   Widget _cell(int i) {
     final asset = _items[i];
-    return GestureDetector(
-      key: ValueKey(asset.id),
-      onTap: () => _selectMode ? _toggleSelect(asset) : _openAt(i),
-      onLongPress: _selectMode ? null : () => _enterSelect(asset),
-      child: _GridThumb(
-        asset: asset,
-        initialBytes: _thumbCache[asset.id],
-        selecting: _selectMode,
-        selected: _selectedIds.contains(asset.id),
-        onGuide: _isOnGuide(asset),
-        thumbPx: _thumbPx,
-        onLoaded: (b) => _cacheThumb(asset.id, b),
+    final bool selected = _selectedIds.contains(asset.id);
+    // Deliberately NOT a PopTap: a photo tile that swells to 114% would fight
+    // the 0.86 "lifted" scale selection already gives it. It still needs the
+    // button trait and a name — a screen reader was getting an unlabelled
+    // tappable image, with no way to know a long-press starts selection.
+    return Semantics(
+      button: true,
+      selected: _selectMode ? selected : null,
+      label: _selectMode
+          ? (selected ? 'Photo, selected' : 'Photo')
+          : 'Photo, ${dateLabel(asset.createDateTime)}',
+      onLongPressHint: _selectMode ? null : 'Select photos',
+      child: GestureDetector(
+        key: ValueKey(asset.id),
+        onTap: () => _selectMode ? _toggleSelect(asset) : _openAt(i),
+        onLongPress: _selectMode ? null : () => _enterSelect(asset),
+        child: _GridThumb(
+          asset: asset,
+          initialBytes: _thumbCache[asset.id],
+          selecting: _selectMode,
+          selected: selected,
+          onGuide: _isOnGuide(asset),
+          thumbPx: _thumbPx,
+          onLoaded: (b) => _cacheThumb(asset.id, b),
+        ),
       ),
     );
   }

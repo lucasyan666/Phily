@@ -1,6 +1,6 @@
 {
-  "pass": 18,
-  "updated": "2026-09-09T12:48:18+0100",
+  "pass": 19,
+  "updated": "2026-09-09T13:16:46+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,7 +8,7 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-system",
+  "next_type": "design-board",
   "gates": {
     "flutter_analyze_issues": 0,
     "flutter_test_passed": 168,
@@ -240,6 +240,22 @@
         "ignores bad readings"
       ],
       "behaviour_change": "none \u2014 arithmetic relocated and named"
+    },
+    "gesture_detector_audit": {
+      "controls_needing_poptap": {
+        "before": 1,
+        "after": 0
+      },
+      "unnamed_grid_cells": {
+        "before": "all",
+        "after": 0
+      },
+      "duplicate_haptic_calls": {
+        "before": 1,
+        "after": 0
+      },
+      "raw_detectors_remaining": 21,
+      "note": "remaining are gesture handlers or controls with richer feedback; audit closed"
     }
   }
 }

@@ -117,6 +117,14 @@ void main() {
           // The one tap target: ≥44pt, reachable, fully on screen, wired up.
           final label = find.text('Open the camera');
           expect(label, findsOneWidget);
+          // It is the shared control, not a one-off — so it carries the tick,
+          // the bubble, the button trait and Reduce Motion for free.
+          expect(
+            find.ancestor(of: label, matching: find.byType(PopTap)),
+            findsOneWidget,
+            reason: 'the first button in the app should be a PopTap',
+          );
+
           await tester.ensureVisible(label);
           final button = tester.getRect(
             find.ancestor(of: label, matching: find.byType(Container)).first,

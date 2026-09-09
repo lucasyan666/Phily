@@ -122,12 +122,13 @@ class _OpenCameraButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () {
-        hapticTap();
-        onTap();
-      },
-      behavior: HitTestBehavior.opaque,
+    // PopTap, like every other control: it brings the selection tick (which
+    // replaces the manual hapticTap here), the 114% bubble, the button trait
+    // and Reduce Motion. This is the first button anyone taps in the app —
+    // it should feel like the rest of it.
+    return PopTap(
+      onTap: onTap,
+      semanticLabel: 'Open the camera',
       // minHeight, not height: at accessibility text sizes the label wraps
       // and the button grows with it instead of the type spilling past the
       // gold. At default sizes this is exactly 54pt, as before.
