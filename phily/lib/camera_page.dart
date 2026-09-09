@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:phily/debug.dart';
+import 'package:phily/detection_cadence.dart';
 import 'package:flutter/physics.dart' show FrictionSimulation;
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
@@ -355,13 +356,10 @@ class _CameraPageState extends State<CameraPage>
   final Map<String, _GlowSeg> _glowSegMap = {};
   bool _isProcessingFrame = false;
   DateTime _lastFrameTime = DateTime.fromMillisecondsSinceEpoch(0);
-  // Adaptive detection cadence — see [_noteDetectionCost]. Starts at the floor
-  // (the old fixed value) so a capable device behaves exactly as before and
-  // only slower hardware backs off.
-  static const int _kDetFloorMs = 60; // ~16 fps ceiling on detection
-  static const int _kDetCeilMs = 200; // never worse than ~5 fps tracking
-  int _detIntervalMs = _kDetFloorMs;
-  double _detCostMs = 0;
+  // Adaptive detection cadence. The policy lives in [DetectionCadence] — pure
+  // Dart, so the behaviour that only shows up on slower hardware is testable
+  // without that hardware.
+  final DetectionCadence _cadence = DetectionCadence();
   // Throttle the (expensive) multi-rotation face-detection re-probe so a scene
   // with no face (landscape/street) doesn't pay 4 synchronous rotations/frame.
   // When a face was tracked recently the probe runs every frame instead, so we
@@ -1818,7 +1816,9 @@ class _CameraPageState extends State<CameraPage>
     // ones) or the fastest (stuttering slow ones), we measure what detection
     // actually costs here and keep it to roughly half the interval, so there's
     // always headroom left for the preview and the overlay painters.
-    if (now.difference(_lastFrameTime).inMilliseconds < _detIntervalMs) return;
+    if (now.difference(_lastFrameTime).inMilliseconds < _cadence.intervalMs) {
+      return;
+    }
     if (_isProcessingFrame) return;
     _isProcessingFrame = true;
     _lastFrameTime = now;
@@ -1853,23 +1853,8 @@ class _CameraPageState extends State<CameraPage>
   }
 
   /// Feed the measured cost of one detection pass back into the frame gate.
-  ///
-  /// Smoothed, so a single slow frame (a GC pause, a thermal blip) doesn't
-  /// yank the cadence around; clamped so it can never run away in either
-  /// direction. A device that comfortably keeps up converges on [_kDetFloorMs];
-  /// a slower one settles at whatever it can actually sustain instead of
-  /// queueing work it can't finish.
-  void _noteDetectionCost(int ms) {
-    if (ms <= 0) return;
-    // Low-pass the measurement (heavier weight on history than on any one frame).
-    _detCostMs += (ms - _detCostMs) * 0.15;
-    // Aim to leave ~half the interval free for everything else.
-    final int want = (_detCostMs * 2).round().clamp(_kDetFloorMs, _kDetCeilMs);
-    // Ease toward the target so the cadence never jumps mid-session.
-    if (want != _detIntervalMs) {
-      _detIntervalMs += (want - _detIntervalMs).clamp(-4, 4);
-    }
-  }
+  /// See [DetectionCadence] for the policy and its tuning constants.
+  void _noteDetectionCost(int ms) => _cadence.note(ms);
 
   // Caches the physical quarter-turn rotation that finds faces per device-turns.
   final Map<int, int> _qtCache = {};

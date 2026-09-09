@@ -64,8 +64,10 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       (pass #6 audit: every top offset derives from `padding.top` or the
       measured `_topInset`; side insets are moot — `main.dart` locks portrait.
       The bottom chrome does NOT read `padding.bottom` → "Proposals".)
-- [ ] Older-device path: confirm adaptive detection cadence engages (log the
-      settled interval once in debug).
+- [x] Older-device path: confirm adaptive detection cadence engages. (pass
+      #18: extracted to `DetectionCadence` — pure Dart — and tested directly
+      instead of logging. A log only helps someone watching a console; the
+      tests hold on every run.)
 ### Design-system consistency
 - [x] Paywall: `_PrimaryButton` / `_TierRow` → `PopTap`; tier rows ≥44pt;
       any remaining one-off glass → `GlassSurface`. (pass #11: tier rows and
@@ -577,3 +579,31 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   ticked), so the code committed without them; amended in place. The gates
   above all ran on the committed tree.
 - **Commit:** `overnight: pass #17 — performance — 2026-09-09T12:18:35+0100`
+
+### Pass #18 — compatibility — 2026-09-09T12:48:18+0100
+- **What:** the adaptive detection cadence moved out of `camera_page.dart`
+  into `lib/detection_cadence.dart` as `DetectionCadence` — pure Dart, no
+  Flutter, tuning constants named (`kFloorMs`, `kCeilMs`, `kSmoothing`,
+  `kMaxStepMs`, `kDutyCycle`) rather than inline magic numbers. Behaviour is
+  unchanged: same floor, ceiling, smoothing and step. 10 tests cover it.
+- **Why:** the backlog asked to "confirm the cadence engages (log the settled
+  interval once in debug)". A debug log only confirms anything if a person is
+  watching a console on the right phone at the right moment, and `kPhilyDebug`
+  must be false for release anyway. The cadence is the reason an iPhone SE or
+  11 stays usable, and it is pure arithmetic — so the honest way to confirm it
+  is to assert it. Follows the `LevelLineConfig` precedent CLAUDE.md sets:
+  tuning in one pure object, testable without hardware.
+- **Metric:** test coverage of the older-device path: 0 → 10 assertions.
+  Verified: starts at the floor (a capable device behaves exactly as before);
+  holds the floor at 12ms/pass; settles above it at 55ms; tracks ~2× measured
+  cost across 40/55/70/90ms; caps at the 200ms ceiling at 500ms/pass; a single
+  400ms outlier moves it ≤4ms; it recovers to the floor when the device speeds
+  up; never steps more than 4ms between passes; ignores zero/negative
+  readings. `camera_page.dart` is 15 lines shorter.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 168/168 (10
+  new) · `flutter build ios --simulator` ✓. No behaviour change — the
+  arithmetic is identical, only relocated and named.
+- **Guardrail:** CLAUDE.md says "Don't replace it with a fixed interval."
+  These tests are what makes that instruction enforceable rather than
+  advisory — a fixed interval now fails five of them.
+- **Commit:** `overnight: pass #18 — compatibility — 2026-09-09T12:48:18+0100`
