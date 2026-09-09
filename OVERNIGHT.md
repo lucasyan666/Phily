@@ -22,8 +22,17 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       per tick; make sure the gravity/level path never repaints the guide layer.
 - [ ] Viewer 1440px sharpen: use `precacheImage` before the `setState` swap so
       the sharpen never lands as a hitch; `cacheWidth` on `Image.memory`.
-- [ ] `_FpsOverlay` sanity: confirm no debug-only work runs when `kShowFPS`
-      is false (allocation in build paths).
+      (pass #5 read the path: the decode is already off the UI thread and
+      `gaplessPlayback` holds the old frame; the remaining cost is the raster
+      texture upload, which precache doesn't remove. Needs a device trace
+      before changing anything — not shipped blind.)
+- [x] Gallery grid: seed cells from the page's thumb LRU on mount so scrolling
+      back is free — no platform round-trip, no re-decode, no second fade-in.
+      (pass #5)
+- [x] `_FpsOverlay` sanity: confirm no debug-only work runs when `kShowFPS`
+      is false (allocation in build paths). (pass #5: gated by
+      `if (kPhilyDebug && kShowFPS)`, both compile-time consts — the overlay
+      is tree-shaken out entirely. Nothing to do.)
 - [ ] Belt: `AnimatedBuilder` per pill — confirm only visible pills rebuild.
 ### Compatibility
 - [~] Widget tests: camera chrome + gallery at iPhone SE (375×667), 15 Pro
@@ -82,6 +91,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   grid. Moving to 16 / 8 / 16 / 16 / 24 / 8 is a visual call, not a token fix;
   the sheet's dismiss chip is now 40pt (was ~33) so a re-tune should look at
   the whole column at once.
+- Pass #5: scrolling back up the gallery grid should now show already-seen
+  thumbs instantly with no fade (iOS Photos behaviour). Fresh cells still fade
+  in over 280ms. Check the two don't look inconsistent side by side.
 - Pass #1: 3× phones now decode a 355–392px thumb per cell instead of 300px
   (crisp, but ~1.4–1.7× the pixels). Scroll a long library on a 15 Pro and an
   older 3× phone (11 / XS) and confirm the grid still scrolls smoothly.
@@ -171,3 +183,25 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   `test/reduce_motion_test.dart`) · `flutter build ios --simulator` ✓.
   Diff: +21/−6 across `theme.dart` and `gallery_viewer.dart`.
 - **Commit:** `overnight: pass #4 — design-board — 2026-09-09T03:53:51+0100`
+
+### Pass #5 — performance — 2026-09-09T04:23:37+0100
+- **What:** gallery grid cells are seeded from the page's 300-entry thumbnail
+  LRU on mount (`_GridThumb.initialBytes`). On a hit the cell shows the bytes
+  immediately, skips the `thumbnailDataWithSize` request, skips the fade-in,
+  and bumps the entry's recency. Misses are unchanged.
+- **Why:** cells don't keep alive, so every cell scrolled back into view was
+  re-requesting its thumbnail — a platform round-trip, an iOS-side JPEG
+  re-encode of a 355px thumb, a Dart decode — and fading in again, for bytes
+  the page already held. The cache was only ever read by the viewer's
+  placeholder.
+- **Metric:** platform thumbnail requests on scroll-back: 1 per re-entered
+  cell → 0 for any cell in the LRU (≈300 cells ≈ 14 screens at 3×7). Repeat
+  fade-ins on scroll-back: 1 per cell → 0. Forward scrolling and first open
+  are unchanged. Analytical — the widget is private and the page needs
+  photo_manager channel mocks to pump, so no unit test this pass.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 72/72 ·
+  `flutter build ios --simulator` ✓. Diff: +20/−4 in `gallery_viewer.dart`.
+  On-device check → "Needs eyes".
+- **Also:** read the viewer sharpen and FPS-overlay backlog items; neither
+  warrants a change (notes inline in the backlog).
+- **Commit:** `overnight: pass #5 — performance — 2026-09-09T04:23:37+0100`

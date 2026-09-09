@@ -982,6 +982,7 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
       onLongPress: _selectMode ? null : () => _enterSelect(asset),
       child: _GridThumb(
         asset: asset,
+        initialBytes: _thumbCache[asset.id],
         selecting: _selectMode,
         selected: _selectedIds.contains(asset.id),
         onGuide: _isOnGuide(asset),
@@ -1069,10 +1070,13 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
   }
 }
 
-/// One square grid cell — small thumbnail + a video badge. Caches its thumbnail
-/// in state; keyed by asset id so it survives list re-orders without reloading.
+/// One square grid cell — small thumbnail + a video badge. Keyed by asset id so
+/// it survives list re-orders; when it scrolls out of the cache extent its state
+/// is dropped, so [initialBytes] (the page's LRU) is what makes scrolling back
+/// free — no platform round-trip, no re-decode, no second fade-in.
 class _GridThumb extends StatefulWidget {
   final AssetEntity asset;
+  final Uint8List? initialBytes; // page cache hit — show instantly, no request
   final void Function(Uint8List bytes)? onLoaded;
   final bool selecting; // multi-select mode is active
   final bool selected; // this cell is selected
@@ -1080,6 +1084,7 @@ class _GridThumb extends StatefulWidget {
   final int thumbPx; // request size — the cell's real pixel size
   const _GridThumb({
     required this.asset,
+    this.initialBytes,
     this.onLoaded,
     this.selecting = false,
     this.selected = false,
@@ -1093,10 +1098,18 @@ class _GridThumb extends StatefulWidget {
 
 class _GridThumbState extends State<_GridThumb> {
   Uint8List? _bytes;
+  bool _cached = false; // came from the page cache: already seen, no fade
 
   @override
   void initState() {
     super.initState();
+    final hit = widget.initialBytes;
+    if (hit != null) {
+      _bytes = hit;
+      _cached = true;
+      widget.onLoaded?.call(hit); // bump LRU recency
+      return;
+    }
     widget.asset
         .thumbnailDataWithSize(
           ThumbnailSize(widget.thumbPx, widget.thumbPx),
@@ -1121,10 +1134,13 @@ class _GridThumbState extends State<_GridThumb> {
       );
     }
     final isVideo = widget.asset.type == AssetType.video;
-    // Gentle fade-in as each thumbnail loads (instead of popping in).
+    // Gentle fade-in as each thumbnail loads (instead of popping in). A cached
+    // thumb has already been seen — it lands instantly, like iOS Photos.
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
-      duration: motionOf(context, const Duration(milliseconds: 280)),
+      duration: _cached
+          ? Duration.zero
+          : motionOf(context, const Duration(milliseconds: 280)),
       curve: Curves.easeOut,
       builder: (_, t, child) => Opacity(opacity: t, child: child),
       child: Stack(

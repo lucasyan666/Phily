@@ -1,6 +1,6 @@
 {
-  "pass": 4,
-  "updated": "2026-09-09T03:53:51+0100",
+  "pass": 5,
+  "updated": "2026-09-09T04:23:37+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,7 +8,7 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "performance",
+  "next_type": "compatibility",
   "gates": {
     "flutter_analyze_issues": 0,
     "flutter_test_passed": 72,
@@ -85,6 +85,19 @@
         "viewer zoom-open (crossfade)"
       ],
       "default_motion_unchanged": true
+    },
+    "gallery_grid_scrollback": {
+      "platform_thumb_requests_per_reentered_cell": {
+        "before": 1,
+        "after": 0,
+        "when": "cell id in 300-entry LRU"
+      },
+      "repeat_fade_ins_per_reentered_cell": {
+        "before": 1,
+        "after": 0
+      },
+      "first_load_unchanged": true,
+      "measured": "analytical"
     }
   }
 }
