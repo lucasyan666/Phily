@@ -680,6 +680,38 @@ class GildedSwitch extends StatelessWidget {
   }
 }
 
+/// The breathing half of an emphasised [HintPill]: the gold rim and glow whose
+/// alpha rides the pulse. Painted *over* an already-built pill, so a 60fps
+/// breathe costs one decoration rebuild per frame instead of re-shaping text
+/// over the live preview. Non-hit-testing — the pill beneath keeps its taps.
+class _PulseOverlay extends StatelessWidget {
+  final double pulse;
+  final Widget child;
+  const _PulseOverlay({required this.pulse, required this.child});
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    ignoring: true,
+    child: DecoratedBox(
+      position: DecorationPosition.foreground,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(kRadiusLg),
+        border: Border.all(
+          color: kGold.withValues(alpha: 0.5 + 0.4 * pulse),
+          width: 1.0,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: kGold.withValues(alpha: 0.10 + 0.20 * pulse),
+            blurRadius: 14,
+          ),
+        ],
+      ),
+      child: child,
+    ),
+  );
+}
+
 // ── Hint pill ────────────────────────────────────────────────────────────────
 
 /// The app's one text bubble: glyph · hairline · message on gradient-faked
@@ -716,6 +748,40 @@ class HintPill extends StatelessWidget {
 
   /// Kept clear at each side so the pill reads as a floating dock, not a bar.
   static const double _kSideInset = 24;
+
+  /// A breathing pill, without rebuilding the pill.
+  ///
+  /// [pulse] only drives three alpha values — the glyph tint, the rim and the
+  /// glow. Everything else (the text, its layout, the whole child subtree) is
+  /// identical on every frame, so driving a [HintPill] straight from a 60fps
+  /// animation re-ran text shaping 60×/second over the live preview. This
+  /// builds the pill once and rebuilds only the decoration around it.
+  ///
+  /// [listenable] ticks the animation; [pulseOf] reads 0..1 from it.
+  static Widget breathing({
+    Key? key,
+    IconData? icon,
+    Widget? leading,
+    required String text,
+    Widget? below,
+    double maxWidth = double.nan,
+    required Listenable listenable,
+    required double Function() pulseOf,
+  }) => AnimatedBuilder(
+    key: key,
+    animation: listenable,
+    // Built once: the costly half (text shaping, layout, the child subtree).
+    child: HintPill(
+      icon: icon,
+      leading: leading,
+      text: text,
+      below: below,
+      emphasis: true,
+      maxWidth: maxWidth.isNaN ? null : maxWidth,
+      pulse: 0,
+    ),
+    builder: (context, child) => _PulseOverlay(pulse: pulseOf(), child: child!),
+  );
 
   @override
   Widget build(BuildContext context) {

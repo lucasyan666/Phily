@@ -4214,13 +4214,17 @@ class _CameraPageState extends State<CameraPage>
         HintPill(icon: icon, text: text, emphasis: emphasis, pulse: pulse);
 
     if (!breathe) return KeyedSubtree(key: key, child: build(0));
-    // Soft breathe for the "Perfect"/"Level" state. Only alpha animates.
-    return AnimatedBuilder(
+    // Soft breathe for the "Perfect"/"Level" state. Only alpha animates — so
+    // the pill itself is built once and only its rim/glow rebuild each frame
+    // (see HintPill.breathing). This runs over the live preview at 60fps.
+    return HintPill.breathing(
       key: key,
-      animation: _faceAnim!,
-      builder: (context, _) {
+      icon: icon,
+      text: text,
+      listenable: _faceAnim!,
+      pulseOf: () {
         final t = DateTime.now().millisecondsSinceEpoch / 900.0;
-        return build(0.5 + 0.5 * math.sin(t));
+        return 0.5 + 0.5 * math.sin(t);
       },
     );
   }

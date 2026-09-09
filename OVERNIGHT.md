@@ -15,6 +15,8 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 
 ## Backlog — pull from the top
 ### Speed (measurable)
+- [x] Breathing "Perfect"/"Level" pill: hoist the pill out of its 60fps
+      animation so only the rim/glow rebuild. (pass #21)
 - [x] Gallery grid: request thumbnails at the cell's actual pixel size
       (`ThumbnailSize` ≈ cell px × devicePixelRatio) instead of a fixed 300 —
       fewer bytes decoded per cell; verify scroll smoothness unchanged. (pass #1)
@@ -150,6 +152,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   only. Dropping portraitDown is one line, but it could be intentional.
 
 ## Needs eyes (done, but subjective — review on device)
+- Pass #21: the breathing "Perfect"/"Level" rim + glow now paint as a
+  foreground decoration over the pill instead of inside it. Same values, new
+  paint order — confirm the gold still reads the same on device.
 - Pass #20: the hint pill is now up to 340pt wide instead of a flat 260pt, so
   the dock reads wider and shorter on every phone. Board 1b's "one rail, one
   slot, one message" — check the proportion against the canvas.
@@ -669,3 +674,31 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   channel mocks — a session, not a green pass. Not started rather than
   half-landed.
 - **Commit:** `overnight: pass #20 — design-board — 2026-09-09T13:45:22+0100`
+
+### Pass #21 — performance — 2026-09-09T14:13:47+0100
+- **What:** `HintPill.breathing` — a factory that builds the pill once and
+  rebuilds only a `_PulseOverlay` (the gold rim + glow) each frame. The
+  camera's "Perfect" / "Level" badge uses it instead of driving a whole
+  `HintPill` from `_faceAnim`.
+- **Why:** that badge breathes at 60fps **over the live preview**, which
+  CLAUDE.md names as the app's first-class performance concern. Only three
+  alpha values ride the pulse — glyph tint, rim, glow — but the old builder
+  reconstructed the entire pill every frame: `ConstrainedBox`, `Container`,
+  the full `BoxDecoration` gradient, the `Row`, and a `Text` whose shaping
+  (uppercase, tracked, wrapping against the new responsive width cap) is the
+  expensive part. All of it identical frame to frame.
+- **Metric:** widget subtree rebuilds per breathe frame: whole pill → rim +
+  glow only. Text shaping runs during the breathe: 60/second → **0**.
+  Asserted in `test/hint_pill_breathe_test.dart`: across 20 pumped frames the
+  `HintPill` element is never rebuilt (same instance, never marked dirty)
+  while the pulse is read 20 times. Second test guards the other direction —
+  the rim alpha must still brighten, so the breathe can't be "optimised" into
+  a static pill.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 178/178 (2
+  new) · `flutter build ios --simulator` ✓. Diff: +66 `theme.dart`, +9/−5
+  `camera_page.dart`.
+- **Visual:** the rim and glow are now drawn as a foreground decoration over
+  the pill rather than as part of it. Geometry and colours are the same
+  values, but it is a different paint order — worth a glance on device that
+  the "Perfect" state still reads identically. → "Needs eyes".
+- **Commit:** `overnight: pass #21 — performance — 2026-09-09T14:13:47+0100`

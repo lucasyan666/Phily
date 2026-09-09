@@ -1,6 +1,6 @@
 {
-  "pass": 20,
-  "updated": "2026-09-09T13:45:22+0100",
+  "pass": 21,
+  "updated": "2026-09-09T14:13:47+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "performance",
+  "next_type": "compatibility",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 176,
+    "flutter_test_passed": 178,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -291,6 +291,17 @@
         "before": "260 fixed",
         "after": "screen \u2212 48, clamped 200\u2013340"
       }
+    },
+    "breathing_pill_rebuilds": {
+      "subtree_per_frame": {
+        "before": "whole HintPill",
+        "after": "rim + glow only"
+      },
+      "text_shaping_per_second_during_breathe": {
+        "before": 60,
+        "after": 0
+      },
+      "measured": "element identity across 20 pumped frames"
     }
   }
 }
