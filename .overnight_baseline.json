@@ -1,6 +1,6 @@
 {
-  "pass": 16,
-  "updated": "2026-09-09T11:50:21+0100",
+  "pass": 17,
+  "updated": "2026-09-09T12:18:35+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "performance",
+  "next_type": "compatibility",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 156,
+    "flutter_test_passed": 158,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -213,6 +213,17 @@
       "before": 3,
       "after": 1,
       "overflows_found": 0
+    },
+    "gallery_overlay_repaint_isolation": {
+      "sibling_repaints_over_12_overlay_frames": {
+        "before": 12,
+        "after": 0
+      },
+      "boundaried": [
+        "fast-scroll thumb + date bubble",
+        "pull-to-dismiss dim"
+      ],
+      "measured": "behavioural test counting CustomPainter.paint calls"
     }
   }
 }

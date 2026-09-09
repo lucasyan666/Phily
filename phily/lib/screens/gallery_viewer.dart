@@ -883,15 +883,20 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
             ),
 
           // Cheap dim that follows the pull (springs back with the bounce).
+          // Boundaried for the same reason as the thumb: it repaints on every
+          // frame of the pull and the spring-back, and it is full-screen — the
+          // most expensive possible thing to share a layer with the grid.
           Positioned.fill(
             child: IgnorePointer(
-              child: ValueListenableBuilder<double>(
-                valueListenable: _pull,
-                builder: (_, p, _) {
-                  final a = (p / 150).clamp(0.0, 0.9);
-                  if (a <= 0.001) return const SizedBox.shrink();
-                  return ColoredBox(color: Colors.black.withValues(alpha: a));
-                },
+              child: RepaintBoundary(
+                child: ValueListenableBuilder<double>(
+                  valueListenable: _pull,
+                  builder: (_, p, _) {
+                    final a = (p / 150).clamp(0.0, 0.9);
+                    if (a <= 0.001) return const SizedBox.shrink();
+                    return ColoredBox(color: Colors.black.withValues(alpha: a));
+                  },
+                ),
               ),
             ),
           ),
@@ -904,20 +909,27 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
               right: 0,
               bottom: bottomPad,
               width: 32,
-              child: _FastScrollThumb(
-                frac: _scrollFrac,
-                onGrab: () => HapticFeedback.mediumImpact(),
-                onScrub: _scrubTo,
-                // Approximate the date by mapping the scroll fraction linearly
-                // onto the loaded items — close enough for a scrub hint.
-                labelForFrac: (frac) {
-                  if (_items.isEmpty) return '';
-                  final i = (frac * (_items.length - 1)).round().clamp(
-                    0,
-                    _items.length - 1,
-                  );
-                  return dateLabel(_items[i].createDateTime);
-                },
+              // Its own layer: the thumb tracks the scroll offset at display
+              // rate and its date bubble moves with the finger, so without a
+              // boundary every one of those frames marks the whole Stack —
+              // grid cells included — dirty. It is a sibling of the scrolling
+              // grid, not a child, so nothing else needs to change.
+              child: RepaintBoundary(
+                child: _FastScrollThumb(
+                  frac: _scrollFrac,
+                  onGrab: () => HapticFeedback.mediumImpact(),
+                  onScrub: _scrubTo,
+                  // Approximate the date by mapping the scroll fraction linearly
+                  // onto the loaded items — close enough for a scrub hint.
+                  labelForFrac: (frac) {
+                    if (_items.isEmpty) return '';
+                    final i = (frac * (_items.length - 1)).round().clamp(
+                      0,
+                      _items.length - 1,
+                    );
+                    return dateLabel(_items[i].createDateTime);
+                  },
+                ),
               ),
             ),
 

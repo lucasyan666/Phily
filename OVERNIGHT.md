@@ -37,6 +37,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       is false (allocation in build paths). (pass #5: gated by
       `if (kPhilyDebug && kShowFPS)`, both compile-time consts — the overlay
       is tree-shaken out entirely. Nothing to do.)
+- [x] Gallery overlay chrome (fast-scroll thumb, pull dim) in its own
+      `RepaintBoundary` — both repaint per frame as siblings of the grid in
+      one `Stack`, so their frames were dirtying grid cells. (pass #17)
 - [x] Belt: `AnimatedBuilder` per pill — confirm only visible pills rebuild.
       (pass #13: `PageView.builder` already limits *which* pills exist —
       `viewportFraction: 0.28` keeps ~5 alive. The waste was inside each one:
@@ -539,3 +542,38 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   boards (1e ×2, 1f's after-the-shutter card) remain too large for one green
   pass — each needs its own session.
 - **Commit:** `overnight: pass #16 — design-board — 2026-09-09T11:50:21+0100`
+
+### Pass #17 — performance — 2026-09-09T12:18:35+0100
+- **What:** the gallery grid's two per-frame overlays — the fast-scroll thumb
+  (and its date bubble) and the pull-to-dismiss dim — each get a
+  `RepaintBoundary`. Both are siblings of the scrolling grid inside one
+  `Stack`, so every frame they painted marked the shared layer dirty and the
+  grid's thumbnails repainted with them.
+- **Why:** CLAUDE.md already applies exactly this reasoning on the camera
+  side ("the level indicator and composition overlay are separate
+  `CustomPaint`s inside their own `RepaintBoundary`s, so ~50 Hz gravity
+  updates repaint only the small indicator"). The gallery had the same shape
+  without the same treatment: the thumb tracks the scroll offset at display
+  rate, and the dim follows the finger through the pull *and* its spring-back
+  — full-screen, over a grid of decoded images.
+- **Metric:** sibling repaints while an overlay animates: 12 frames → 0
+  (asserted in `test/repaint_isolation_test.dart`, which counts real
+  `CustomPainter.paint` calls). The `_pull` notifier's own comment already
+  claimed "the GridView is never rebuilt mid-pull" — true of *rebuild*, but
+  it was still being *repainted*; that gap is now closed.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 158/158 (2
+  new) · `flutter build ios --simulator` ✓. Diff: +33/−21 in
+  `gallery_viewer.dart`, mostly re-indentation under the two wrappers. No
+  visual change.
+- **Test design:** the isolation test ships with its own control — a second
+  case asserting the *unboundaried* arrangement does repaint the sibling. If
+  a future Flutter change made the first test vacuous, the control fails and
+  says so, rather than the suite quietly proving nothing.
+- **Note:** the one remaining Speed item (viewer 1440px sharpen) stays open
+  by choice — pass #5 established it needs a device trace, and this loop
+  cannot produce one.
+- **Process note:** the log/baseline write for this pass aborted on a stale
+  anchor (it searched for an unticked backlog line that pass #13 had already
+  ticked), so the code committed without them; amended in place. The gates
+  above all ran on the committed tree.
+- **Commit:** `overnight: pass #17 — performance — 2026-09-09T12:18:35+0100`
