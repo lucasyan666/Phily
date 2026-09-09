@@ -81,12 +81,14 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - [~] VoiceOver: pass #10 gives every `PopTap` the button trait + enabled
       state, and names the six icon-only glass controls (gallery back / share /
       favourite / delete, camera grid toggle, guide "i"); favourite and grid
-      toggle announce on/off. Still unlabelled: the camera's belt pills (text —
-      readable, but "RULE OF THIRDS, button" says nothing about being
-      selected), the shutter / gallery-thumb / mode-action buttons in the
-      bottom chrome (raw GestureDetectors), the zoom + exposure controls.
-      Pass #11 added the paywall: tier rows announce name + price + selection,
-      legal links and the CTA are named buttons.
+      toggle announce on/off. Pass #11 added the paywall: tier rows announce
+      name + price + selection, legal links and the CTA are named buttons.
+      Pass #12 added the camera's bottom chrome: the shutter (with its
+      hold-to-record gesture named), the gallery thumb, and the belt pills
+      (which now carry `selected`, so VoiceOver distinguishes the active mode
+      from the other fifteen). Still unlabelled: the zoom + exposure controls
+      (both continuous — they want value + increase/decrease actions, not a
+      label, so they are their own pass).
 - [~] Reduce Motion (`MediaQuery.disableAnimations`): pass #4 covers PopTap
       (every glass control / chip / guide dismiss), the gallery thumb fade-in,
       selection scale, filter chips and the viewer's zoom-open; pass #8 adds
@@ -399,3 +401,28 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - **StoreKit untouched:** no change to purchase, restore, product lookup or
   entitlement logic — presentation only, per the guardrail.
 - **Commit:** `overnight: pass #11 — design-system — 2026-09-09T09:30:11+0100`
+
+### Pass #12 — design-board — 2026-09-09T09:58:06+0100
+- **What:** the camera's bottom chrome announces itself to VoiceOver. Three
+  `Semantics` wrappers: the shutter (`Take photo` / `Stop recording`, plus an
+  `onLongPressHint` for hold-to-record), the gallery thumbnail
+  (`Open the gallery`), and each belt pill (the mode's label, `selected` for
+  the active one, and `Open the guide` as the long-press hint).
+- **Why:** board 1b's rule is that the viewfinder carries Guide, Targets and
+  Status as distinct layers — the belt is how you change the Guide layer, and
+  a screen reader could not tell which of the sixteen modes was active, or
+  that a long-press opened the guide at all. The shutter, the app's primary
+  control, was an unnamed 70pt target. Board 1b is about making the current
+  state legible; this makes it legible non-visually.
+- **Metric:** unnamed camera controls: 3 → 0 (shutter, gallery thumb, 16 belt
+  pills). Belt pills conveying selection: 0 → 16. Gestures with a spoken
+  hint: 0 → 2 (hold-to-record, long-press-for-guide). The aspect-ratio and
+  turn/flip buttons were already readable — they carry text or are
+  `GlassRoundButton`s named in pass #10.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 96/96 ·
+  `flutter build ios --simulator` ✓. Diff: 81 lines raw, 63 substantive minus
+  re-indentation. No visual change — semantics only. Not unit-tested: the
+  camera page is plugin- and timer-driven and can't be pumped (the shared
+  `PopTap` contract is covered in `test/semantics_test.dart`); verify with
+  VoiceOver on device.
+- **Commit:** `overnight: pass #12 — design-board — 2026-09-09T09:58:06+0100`

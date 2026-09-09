@@ -2460,11 +2460,13 @@ class _CameraPageState extends State<CameraPage>
   // grid); `level` is the mode-aware "you're square" verdict. Runs in Horizon +
   // the people modes; pushed only on meaningful change to avoid repaints.
   final ValueNotifier<LevelReading?> _levelAttitude = ValueNotifier(null);
+
   /// Hold the level machine was last seeded for; a change re-seeds it.
   int _levelLineTurns = 0;
   int _levelLastMs = 0; // previous sensor tick, for dt-based easing
   /// Drives when the gravity line is shown — see [LevelLineMachine].
   final LevelLineMachine _levelLine = LevelLineMachine();
+
   /// "Always show level line" setting; persisted, bypasses the state machine.
   bool _alwaysShowLevel = false;
   static const String _kAlwaysShowLevelPref = 'phily_always_show_level';
@@ -3388,7 +3390,9 @@ class _CameraPageState extends State<CameraPage>
                           onPointerUp: (_) => _setBeltTouched(false),
                           onPointerCancel: (_) => _setBeltTouched(false),
                           child: AnimatedScale(
-                            scale: (_beltTouched || _beltScrolling) ? 1.05 : 1.0,
+                            scale: (_beltTouched || _beltScrolling)
+                                ? 1.05
+                                : 1.0,
                             duration: const Duration(milliseconds: 240),
                             curve: Curves.easeOutCubic,
                             child: SizedBox(
@@ -3396,82 +3400,105 @@ class _CameraPageState extends State<CameraPage>
                               child: NotificationListener<ScrollNotification>(
                                 onNotification: _onBeltScroll,
                                 child: PageView.builder(
-                            controller: _compositionPageController,
-                            onPageChanged: (index) {
-                              HapticFeedback.selectionClick();
-                              setState(() {
-                                _currentCompositionIndex = index;
-                                _compositionMode = _compositionModes[index];
-                                // Every mode starts fresh on (re-)entry: turn/flip
-                                // orientations reset to their defaults.
-                                _resetModeOrientations();
-                                if (_compositionMode == CompositionMode.cross) {
-                                  _resetCross();
-                                }
-                                // Recognition boxes are mode-specific (alignment
-                                // targets differ between thirds/phi/spiral) — clear
-                                // targets on every switch so stale boxes smoothly
-                                // fade out via the normal grace-period animation
-                                // instead of lingering into the new mode.
-                                if (_faceBoxes.isNotEmpty) {
-                                  _updateFaceTargets(const []);
-                                }
-                              });
-                              if (!_modeLocked) {
-                                _showCompositionTip(); // "best for" bubble (~3s)
-                              } else {
-                                _dismissTip();
-                              }
-                              _syncFocalAnim(); // run the bubble clock only in Focal Mass
-                              _syncImageStream(); // stream/ML only in detection modes
-                            },
-                            itemCount: _compositionModes.length,
-                            itemBuilder: (context, index) {
-                              // Rebuild each label as the belt scrolls, driving its
-                              // pill + scale off the LIVE fractional page position so
-                              // the transition is continuous, not a settle-point swap.
-                              return AnimatedBuilder(
-                                animation: _compositionPageController,
-                                builder: (context, _) {
-                                  final double page =
-                                      (_compositionPageController.hasClients &&
-                                          _compositionPageController
-                                              .position
-                                              .haveDimensions)
-                                      ? _compositionPageController.page!
-                                      : _currentCompositionIndex.toDouble();
-                                  // 1 at centre → 0 a full page away.
-                                  final double t = (1.0 - (index - page).abs())
-                                      .clamp(0.0, 1.0);
-                                  return GestureDetector(
-                                    // Tap a mode to jump (in addition to swiping);
-                                    // opaque so the whole slot is tappable.
-                                    // Long-press → the mode's guide sheet.
-                                    behavior: HitTestBehavior.opaque,
-                                    onTap: () => _goToCompositionIndex(index),
-                                    onLongPress: () {
+                                  controller: _compositionPageController,
+                                  onPageChanged: (index) {
+                                    HapticFeedback.selectionClick();
+                                    setState(() {
+                                      _currentCompositionIndex = index;
+                                      _compositionMode =
+                                          _compositionModes[index];
+                                      // Every mode starts fresh on (re-)entry: turn/flip
+                                      // orientations reset to their defaults.
+                                      _resetModeOrientations();
+                                      if (_compositionMode ==
+                                          CompositionMode.cross) {
+                                        _resetCross();
+                                      }
+                                      // Recognition boxes are mode-specific (alignment
+                                      // targets differ between thirds/phi/spiral) — clear
+                                      // targets on every switch so stale boxes smoothly
+                                      // fade out via the normal grace-period animation
+                                      // instead of lingering into the new mode.
+                                      if (_faceBoxes.isNotEmpty) {
+                                        _updateFaceTargets(const []);
+                                      }
+                                    });
+                                    if (!_modeLocked) {
+                                      _showCompositionTip(); // "best for" bubble (~3s)
+                                    } else {
                                       _dismissTip();
-                                      showCompositionGuide(
-                                        context,
-                                        _compositionModes[index],
-                                      );
-                                    },
-                                    child: Center(
-                                      child: Transform.scale(
-                                        scale:
-                                            0.9 +
-                                            0.1 * Curves.easeOut.transform(t),
-                                        child: _buildCompositionButton(
-                                          _compositionModes[index].label,
-                                          t,
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              );
-                            },
-                          ),
+                                    }
+                                    _syncFocalAnim(); // run the bubble clock only in Focal Mass
+                                    _syncImageStream(); // stream/ML only in detection modes
+                                  },
+                                  itemCount: _compositionModes.length,
+                                  itemBuilder: (context, index) {
+                                    // Rebuild each label as the belt scrolls, driving its
+                                    // pill + scale off the LIVE fractional page position so
+                                    // the transition is continuous, not a settle-point swap.
+                                    return AnimatedBuilder(
+                                      animation: _compositionPageController,
+                                      builder: (context, _) {
+                                        final double page =
+                                            (_compositionPageController
+                                                    .hasClients &&
+                                                _compositionPageController
+                                                    .position
+                                                    .haveDimensions)
+                                            ? _compositionPageController.page!
+                                            : _currentCompositionIndex
+                                                  .toDouble();
+                                        // 1 at centre → 0 a full page away.
+                                        final double t =
+                                            (1.0 - (index - page).abs()).clamp(
+                                              0.0,
+                                              1.0,
+                                            );
+                                        // The pill's gold fill says "selected" to the
+                                        // eye; `selected` says it to VoiceOver, which
+                                        // otherwise reads sixteen identical buttons.
+                                        // The long-press opens the guide, so name it
+                                        // rather than leaving the gesture invisible.
+                                        return Semantics(
+                                          button: true,
+                                          selected:
+                                              index == _currentCompositionIndex,
+                                          label: _compositionModes[index].label,
+                                          onLongPressHint: 'Open the guide',
+                                          child: GestureDetector(
+                                            // Tap a mode to jump (in addition to swiping);
+                                            // opaque so the whole slot is tappable.
+                                            // Long-press → the mode's guide sheet.
+                                            behavior: HitTestBehavior.opaque,
+                                            onTap: () =>
+                                                _goToCompositionIndex(index),
+                                            onLongPress: () {
+                                              _dismissTip();
+                                              showCompositionGuide(
+                                                context,
+                                                _compositionModes[index],
+                                              );
+                                            },
+                                            child: Center(
+                                              child: Transform.scale(
+                                                scale:
+                                                    0.9 +
+                                                    0.1 *
+                                                        Curves.easeOut
+                                                            .transform(t),
+                                                child: _buildCompositionButton(
+                                                  _compositionModes[index]
+                                                      .label,
+                                                  t,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    );
+                                  },
+                                ),
                               ),
                             ),
                           ),
@@ -3493,57 +3520,65 @@ class _CameraPageState extends State<CameraPage>
                             Expanded(
                               child: Align(
                                 alignment: Alignment.centerLeft,
-                                child: GestureDetector(
-                                  onTap: _isRecording
-                                      ? null
-                                      : _openGalleryViewer,
-                                  child: Container(
-                                    width: 52,
-                                    height: 52,
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withValues(
-                                        alpha: 0.30,
-                                      ),
-                                      // Thumbnail radius (8), like the gallery's
-                                      // tiles — it's a picture, not a control.
-                                      borderRadius: BorderRadius.circular(
-                                        kRadiusSm,
-                                      ),
-                                      // A softly gilded frame around the last shot, to
-                                      // rhyme with the gold capture ring beside it.
-                                      border: Border.all(
-                                        color: kGold.withValues(alpha: 0.34),
-                                        width: 1.0,
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withValues(
-                                            alpha: 0.30,
-                                          ),
-                                          blurRadius: 10,
-                                          offset: const Offset(0, 3),
+                                child: Semantics(
+                                  button: true,
+                                  enabled: !_isRecording,
+                                  // It shows the last shot, so the image is
+                                  // the affordance — name what tapping does.
+                                  label: 'Open the gallery',
+                                  child: GestureDetector(
+                                    onTap: _isRecording
+                                        ? null
+                                        : _openGalleryViewer,
+                                    child: Container(
+                                      width: 52,
+                                      height: 52,
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withValues(
+                                          alpha: 0.30,
                                         ),
-                                      ],
-                                    ),
-                                    child: _latestThumbnail != null
-                                        ? ClipRRect(
-                                            borderRadius: BorderRadius.circular(
-                                              kRadiusSm - 1,
+                                        // Thumbnail radius (8), like the gallery's
+                                        // tiles — it's a picture, not a control.
+                                        borderRadius: BorderRadius.circular(
+                                          kRadiusSm,
+                                        ),
+                                        // A softly gilded frame around the last shot, to
+                                        // rhyme with the gold capture ring beside it.
+                                        border: Border.all(
+                                          color: kGold.withValues(alpha: 0.34),
+                                          width: 1.0,
+                                        ),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.black.withValues(
+                                              alpha: 0.30,
                                             ),
-                                            child: Image.memory(
-                                              _latestThumbnail!,
-                                              fit: BoxFit.cover,
-                                            ),
-                                          )
-                                        : _rotated(
-                                            Icon(
-                                              Icons.photo_library_outlined,
-                                              color: kPaper.withValues(
-                                                alpha: 0.6,
-                                              ),
-                                              size: 24,
-                                            ),
+                                            blurRadius: 10,
+                                            offset: const Offset(0, 3),
                                           ),
+                                        ],
+                                      ),
+                                      child: _latestThumbnail != null
+                                          ? ClipRRect(
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                    kRadiusSm - 1,
+                                                  ),
+                                              child: Image.memory(
+                                                _latestThumbnail!,
+                                                fit: BoxFit.cover,
+                                              ),
+                                            )
+                                          : _rotated(
+                                              Icon(
+                                                Icons.photo_library_outlined,
+                                                color: kPaper.withValues(
+                                                  alpha: 0.6,
+                                                ),
+                                                size: 24,
+                                              ),
+                                            ),
+                                    ),
                                   ),
                                 ),
                               ),
@@ -4433,176 +4468,189 @@ class _CameraPageState extends State<CameraPage>
 
         return Transform.scale(
           scale: scale,
-          child: GestureDetector(
-            onTap: _isInitialized && !_isRecording ? _capturePhoto : null,
-            onLongPressStart: _isInitialized
-                ? (_) => _startVideoRecording()
-                : null,
-            onLongPressEnd: _isInitialized
-                ? (_) => _stopVideoRecording()
-                : null,
-            child: Container(
-              width: 70,
-              height: 70,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                // Outer glow — a warm gilded halo at rest that swells to a bright
-                // pulse while recording, plus a soft contact shadow for lift.
-                boxShadow: _isRecording
-                    ? [
-                        BoxShadow(
-                          color: Colors.white.withValues(
-                            alpha: 0.6 * glowIntensity,
+          // The app's most important control had no name at all: VoiceOver
+          // read a 70pt unlabelled target. The hold-to-record gesture is
+          // named too, since nothing else announces it.
+          child: Semantics(
+            button: true,
+            enabled: _isInitialized,
+            label: _isRecording ? 'Stop recording' : 'Take photo',
+            onLongPressHint: 'Hold to record video',
+            child: GestureDetector(
+              onTap: _isInitialized && !_isRecording ? _capturePhoto : null,
+              onLongPressStart: _isInitialized
+                  ? (_) => _startVideoRecording()
+                  : null,
+              onLongPressEnd: _isInitialized
+                  ? (_) => _stopVideoRecording()
+                  : null,
+              child: Container(
+                width: 70,
+                height: 70,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  // Outer glow — a warm gilded halo at rest that swells to a bright
+                  // pulse while recording, plus a soft contact shadow for lift.
+                  boxShadow: _isRecording
+                      ? [
+                          BoxShadow(
+                            color: Colors.white.withValues(
+                              alpha: 0.6 * glowIntensity,
+                            ),
+                            blurRadius: 30,
+                            spreadRadius: 4,
                           ),
-                          blurRadius: 30,
-                          spreadRadius: 4,
+                          BoxShadow(
+                            color: kGold.withValues(
+                              alpha: 0.45 * glowIntensity,
+                            ),
+                            blurRadius: 22,
+                            spreadRadius: 2,
+                          ),
+                        ]
+                      : [
+                          BoxShadow(
+                            color: kGold.withValues(alpha: 0.30),
+                            blurRadius: 18,
+                            spreadRadius: 1,
+                          ),
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.35),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                ),
+                child: Stack(
+                  children: [
+                    // Opaque circular backdrop — prevents composition lines showing through
+                    Positioned.fill(
+                      child: ClipOval(
+                        child: Container(
+                          color: Colors.black.withValues(alpha: 0.55),
                         ),
-                        BoxShadow(
-                          color: kGold.withValues(alpha: 0.45 * glowIntensity),
-                          blurRadius: 22,
-                          spreadRadius: 2,
-                        ),
-                      ]
-                    : [
-                        BoxShadow(
-                          color: kGold.withValues(alpha: 0.30),
-                          blurRadius: 18,
-                          spreadRadius: 1,
-                        ),
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.35),
-                          blurRadius: 12,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-              ),
-              child: Stack(
-                children: [
-                  // Opaque circular backdrop — prevents composition lines showing through
-                  Positioned.fill(
-                    child: ClipOval(
-                      child: Container(
-                        color: Colors.black.withValues(alpha: 0.55),
                       ),
                     ),
-                  ),
 
-                  // Centre-frame live preview peek.
-                  // BackdropFilter can only sample pixels physically behind the
-                  // widget (bottom of screen). Instead, render a second CameraPreview
-                  // at full-screen dimensions inside an OverflowBox so that the
-                  // centre of the camera frame always appears in the centre of the
-                  // circle, regardless of where the button sits on screen.
-                  // Flutter's Texture widget safely shares the same GPU texture
-                  // across multiple widgets, so there is no performance cost.
-                  Center(
-                    child: ClipOval(
-                      child: SizedBox(
-                        width: 58,
-                        height: 58,
-                        child: _isInitialized && _controller != null
-                            ? OverflowBox(
-                                alignment: Alignment.center,
-                                minWidth: 0,
-                                maxWidth: double.infinity,
-                                minHeight: 0,
-                                maxHeight: double.infinity,
-                                child: SizedBox(
-                                  // Render the preview at full-screen size so the
-                                  // OverflowBox centres the frame and the 58×58 clip
-                                  // reveals only the very centre of the camera feed.
-                                  width: MediaQuery.of(context).size.width,
-                                  height: MediaQuery.of(context).size.height,
-                                  child: CameraPreview(_controller!),
+                    // Centre-frame live preview peek.
+                    // BackdropFilter can only sample pixels physically behind the
+                    // widget (bottom of screen). Instead, render a second CameraPreview
+                    // at full-screen dimensions inside an OverflowBox so that the
+                    // centre of the camera frame always appears in the centre of the
+                    // circle, regardless of where the button sits on screen.
+                    // Flutter's Texture widget safely shares the same GPU texture
+                    // across multiple widgets, so there is no performance cost.
+                    Center(
+                      child: ClipOval(
+                        child: SizedBox(
+                          width: 58,
+                          height: 58,
+                          child: _isInitialized && _controller != null
+                              ? OverflowBox(
+                                  alignment: Alignment.center,
+                                  minWidth: 0,
+                                  maxWidth: double.infinity,
+                                  minHeight: 0,
+                                  maxHeight: double.infinity,
+                                  child: SizedBox(
+                                    // Render the preview at full-screen size so the
+                                    // OverflowBox centres the frame and the 58×58 clip
+                                    // reveals only the very centre of the camera feed.
+                                    width: MediaQuery.of(context).size.width,
+                                    height: MediaQuery.of(context).size.height,
+                                    child: CameraPreview(_controller!),
+                                  ),
+                                )
+                              : Container(
+                                  color: Colors.black.withValues(alpha: 0.30),
                                 ),
-                              )
-                            : Container(
-                                color: Colors.black.withValues(alpha: 0.30),
-                              ),
-                      ),
-                    ),
-                  ),
-
-                  // Gilded rim — at rest, a machined-metal bezel (sweep-gradient
-                  // champagne→gold→antique, like a polished watch ring catching
-                  // light); while recording it brightens to a pulsing white ring.
-                  if (_isRecording)
-                    Container(
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.transparent,
-                        border: Border.all(
-                          color: Colors.white.withValues(
-                            alpha: 0.6 + (0.3 * glowIntensity),
-                          ),
-                          width: 2.5,
                         ),
                       ),
-                    )
-                  else
-                    const Positioned.fill(
-                      child: CustomPaint(painter: MetalRingPainter(width: 2.5)),
                     ),
 
-                  // Fine inner hairline — a second, glassier ring just inside the
-                  // gilt for a jewelled double-ring.
-                  Positioned.fill(
-                    child: Padding(
-                      padding: const EdgeInsets.all(4.5),
-                      child: DecoratedBox(
+                    // Gilded rim — at rest, a machined-metal bezel (sweep-gradient
+                    // champagne→gold→antique, like a polished watch ring catching
+                    // light); while recording it brightens to a pulsing white ring.
+                    if (_isRecording)
+                      Container(
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
+                          color: Colors.transparent,
                           border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.28),
-                            width: 0.8,
+                            color: Colors.white.withValues(
+                              alpha: 0.6 + (0.3 * glowIntensity),
+                            ),
+                            width: 2.5,
+                          ),
+                        ),
+                      )
+                    else
+                      const Positioned.fill(
+                        child: CustomPaint(
+                          painter: MetalRingPainter(width: 2.5),
+                        ),
+                      ),
+
+                    // Fine inner hairline — a second, glassier ring just inside the
+                    // gilt for a jewelled double-ring.
+                    Positioned.fill(
+                      child: Padding(
+                        padding: const EdgeInsets.all(4.5),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.28),
+                              width: 0.8,
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
 
-                  // Top left light reflection (glass highlight)
-                  Positioned(
-                    top: 6,
-                    left: 6,
-                    child: Container(
-                      width: 35,
-                      height: 35,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [
-                            Colors.white.withValues(alpha: 0.5),
-                            Colors.white.withValues(alpha: 0.2),
-                            Colors.white.withValues(alpha: 0.08),
-                            Colors.transparent,
-                          ],
-                          stops: const [0.0, 0.3, 0.6, 1.0],
+                    // Top left light reflection (glass highlight)
+                    Positioned(
+                      top: 6,
+                      left: 6,
+                      child: Container(
+                        width: 35,
+                        height: 35,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(
+                            colors: [
+                              Colors.white.withValues(alpha: 0.5),
+                              Colors.white.withValues(alpha: 0.2),
+                              Colors.white.withValues(alpha: 0.08),
+                              Colors.transparent,
+                            ],
+                            stops: const [0.0, 0.3, 0.6, 1.0],
+                          ),
                         ),
                       ),
                     ),
-                  ),
 
-                  // Secondary subtle reflection (right side)
-                  Positioned(
-                    top: 25,
-                    right: 10,
-                    child: Container(
-                      width: 15,
-                      height: 15,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [
-                            Colors.white.withValues(alpha: 0.25),
-                            Colors.white.withValues(alpha: 0.08),
-                            Colors.transparent,
-                          ],
+                    // Secondary subtle reflection (right side)
+                    Positioned(
+                      top: 25,
+                      right: 10,
+                      child: Container(
+                        width: 15,
+                        height: 15,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(
+                            colors: [
+                              Colors.white.withValues(alpha: 0.25),
+                              Colors.white.withValues(alpha: 0.08),
+                              Colors.transparent,
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -5676,10 +5724,7 @@ class _GuideBarSlot extends StatelessWidget {
             // Fade on the back half of the widen so it reads as arriving into
             // the space rather than stretching open.
             opacity: Curves.easeOut.transform(t),
-            child: Transform.scale(
-              scale: 0.88 + 0.12 * t,
-              child: slot,
-            ),
+            child: Transform.scale(scale: 0.88 + 0.12 * t, child: slot),
           ),
         );
       },
