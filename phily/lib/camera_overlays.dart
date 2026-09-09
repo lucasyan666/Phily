@@ -955,6 +955,17 @@ class _LevelDialPainter extends CustomPainter {
       old.deviceTurns != deviceTurns;
 }
 
+/// Test seam: would the guide-layer painter repaint when the page rebuilds
+/// with its state unchanged (same mode, the fresh-but-equal lists a build
+/// hands it)? Must stay false — see [_CompositionPainter.shouldRepaint].
+/// Different modes must still repaint.
+@visibleForTesting
+bool debugCompositionPainterRepaints(CompositionMode from, CompositionMode to) {
+  final before = _CompositionPainter(from, glowSegs: <_GlowSeg>[]);
+  final after = _CompositionPainter(to, glowSegs: <_GlowSeg>[]);
+  return after.shouldRepaint(before);
+}
+
 class _CompositionPainter extends CustomPainter {
   final CompositionMode mode;
 
@@ -2322,7 +2333,12 @@ class _CompositionPainter extends CustomPainter {
   @override
   bool shouldRepaint(_CompositionPainter old) =>
       old.mode != mode ||
-      old.glowSegs != glowSegs ||
+      // By contents, not identity: the page hands the painter a fresh list on
+      // every build, and an identity check made every setState (a pinch, a
+      // belt scroll, a chrome toggle) re-rasterise the full-screen guide
+      // layer with nothing in it changed. Per-tick easing repaints still
+      // arrive through [repaint]; this only gates rebuilds.
+      !listEquals(old.glowSegs, glowSegs) ||
       old.faceBoxes != faceBoxes ||
       old.topInset != topInset ||
       old.bottomInset != bottomInset ||

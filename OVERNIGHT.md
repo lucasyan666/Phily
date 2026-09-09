@@ -18,8 +18,12 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - [x] Gallery grid: request thumbnails at the cell's actual pixel size
       (`ThumbnailSize` ≈ cell px × devicePixelRatio) instead of a fixed 300 —
       fewer bytes decoded per cell; verify scroll smoothness unchanged. (pass #1)
-- [ ] `_CompositionPainter.shouldRepaint`: audit which fields actually change
+- [x] `_CompositionPainter.shouldRepaint`: audit which fields actually change
       per tick; make sure the gravity/level path never repaints the guide layer.
+      (pass #9: gravity is a ValueNotifier and never rebuilds the page — that
+      path was already clean. The rebuild path was not: `glowSegs` was a fresh
+      list per build compared by identity → every setState repainted the
+      guide. Now by contents, with a regression test.)
 - [ ] Viewer 1440px sharpen: use `precacheImage` before the `setState` swap so
       the sharpen never lands as a hitch; `cacheWidth` on `Image.memory`.
       (pass #5 read the path: the decode is already off the UI thread and
@@ -81,7 +85,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 ### Hygiene
 - [ ] `flutter analyze --fatal-infos` clean (currently only warnings/errors gated).
 - [ ] Dead code sweep after the redesign (unused private members, stale comments
-      mentioning removed chrome).
+      mentioning removed chrome). Known: `_glowSegMap` in `camera_page.dart` is
+      declared and read but never written (pass #9) — the painter's
+      edge-aligned-line glow has no producer. Keep or remove is a feature call.
 - [ ] `CLAUDE.md` kept current as pieces land.
 - [ ] `gallery_viewer.dart` is not `dart format` clean (a format pass churns
       ~210 lines) — do it alone, in its own commit, never mixed into a pass.
@@ -306,3 +312,27 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - **Verification:** `flutter analyze` 0 issues · `flutter test` 89/89 (2 new)
   · `flutter build ios --simulator` ✓. Diff: +18/−4 in `branded_loader.dart`.
 - **Commit:** `overnight: pass #8 — design-board — 2026-09-09T05:51:41+0100`
+
+### Pass #9 — performance — 2026-09-09T06:20:32+0100
+- **What:** `_CompositionPainter.shouldRepaint` compares `glowSegs` by
+  contents (`listEquals`) instead of identity. The camera page hands the
+  painter `_glowSegMap.values.toList()` — a fresh list — on every build, so
+  the identity check returned true on every `setState` and re-rasterised the
+  full-screen guide overlay with nothing in it changed. A `@visibleForTesting`
+  seam (`debugCompositionPainterRepaints`) plus `test/guide_repaint_test.dart`
+  lock "unchanged state → no repaint" for all 16 modes, and "mode change →
+  repaint".
+- **Why:** the guide overlay is the most expensive layer on the camera screen
+  and CLAUDE.md isolates it in its own `RepaintBoundary` specifically so
+  ~50 Hz gravity never touches it. The audit found that path clean (gravity
+  is a `ValueNotifier`), but the *rebuild* path leaked: a pinch-zoom, a belt
+  scroll or any chrome toggle is a `setState` per frame, and each one was
+  repainting the overlay. Per-tick easing (face brackets, glows) still
+  repaints through the `repaint` listenable, unchanged.
+- **Metric:** guide-overlay repaints per no-op page rebuild: 1 → 0 (asserted
+  for every mode). The map is in fact never populated anywhere, so in
+  practice every one of those repaints was wasted.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 91/91 (2 new)
+  · `flutter build ios --simulator` ✓. Diff: +17/−1 in
+  `camera_overlays.dart`, +1 import in `camera_page.dart`. No visual change.
+- **Commit:** `overnight: pass #9 — performance — 2026-09-09T06:20:32+0100`
