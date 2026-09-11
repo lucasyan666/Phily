@@ -1,6 +1,6 @@
 {
-  "pass": 29,
-  "updated": "2026-09-11T12:29:24+0100",
+  "pass": 30,
+  "updated": "2026-09-11T12:58:34+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "compatibility",
+  "next_type": "design-system",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 218,
+    "flutter_test_passed": 220,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -413,6 +413,20 @@
         "before": 1,
         "after": 0
       }
+    },
+    "guide_diagram_a11y": {
+      "modes_with_described_diagram": {
+        "before": "0/16",
+        "after": "16/16"
+      },
+      "diagram_semantics_nodes_per_card": {
+        "before": 0,
+        "after": 1
+      },
+      "covers": [
+        "bundled example photo",
+        "painted fallback scene"
+      ]
     }
   }
 }

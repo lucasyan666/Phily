@@ -315,65 +315,86 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
                                   ),
                                   boxShadow: kSoftShadow,
                                 ),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(
-                                    kRadiusMd,
-                                  ),
-                                  child: Stack(
-                                    fit: StackFit.expand,
-                                    children: [
-                                      // Real example photo when one is bundled
-                                      // (assets/guides/<mode>.jpg — see the README
-                                      // there); otherwise the painted scene.
-                                      Image.asset(
-                                        'assets/guides/${spec.mode.name}.jpg',
-                                        fit: BoxFit.cover,
-                                        errorBuilder: (_, _, _) => CustomPaint(
-                                          painter: _GuideScenePainter(
-                                            spec.mode,
+                                // One figure, not a stack of layers: the
+                                // framed diagram IS this card's teaching
+                                // content — a scene with the guide drawn over
+                                // it. Unlabelled, a screen reader got the prose
+                                // and nothing of the picture it describes.
+                                // `image: true` announces it as a figure.
+                                child: Semantics(
+                                  image: true,
+                                  label:
+                                      'Diagram: an example scene with the '
+                                      '${spec.label} guide drawn over it.',
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(
+                                      kRadiusMd,
+                                    ),
+                                    child: Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        // Real example photo when one is bundled
+                                        // (assets/guides/<mode>.jpg — see the README
+                                        // there); otherwise the painted scene.
+                                        Image.asset(
+                                          'assets/guides/${spec.mode.name}.jpg',
+                                          fit: BoxFit.cover,
+                                          // The diagram IS this card's teaching
+                                          // content — a photograph with the guide
+                                          // drawn over it. Unlabelled, a screen
+                                          // reader got the prose and nothing of
+                                          // the picture the prose describes.
+                                          semanticLabel:
+                                              'Example photograph with the '
+                                              '${spec.label} guide drawn over it.',
+                                          errorBuilder: (_, _, _) =>
+                                              CustomPaint(
+                                                painter: _GuideScenePainter(
+                                                  spec.mode,
+                                                ),
+                                              ),
+                                        ),
+                                        // Soft scrim so the white guide lines stay
+                                        // legible over any photograph.
+                                        DecoratedBox(
+                                          decoration: BoxDecoration(
+                                            gradient: LinearGradient(
+                                              begin: Alignment.topCenter,
+                                              end: Alignment.bottomCenter,
+                                              colors: [
+                                                Colors.black.withValues(
+                                                  alpha: 0.18,
+                                                ),
+                                                Colors.black.withValues(
+                                                  alpha: 0.30,
+                                                ),
+                                              ],
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                      // Soft scrim so the white guide lines stay
-                                      // legible over any photograph.
-                                      DecoratedBox(
-                                        decoration: BoxDecoration(
-                                          gradient: LinearGradient(
-                                            begin: Alignment.topCenter,
-                                            end: Alignment.bottomCenter,
-                                            colors: [
-                                              Colors.black.withValues(
-                                                alpha: 0.18,
-                                              ),
-                                              Colors.black.withValues(
-                                                alpha: 0.30,
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                      // Own layer: the reveal animates for
-                                      // ~1.1s at display rate directly over a
-                                      // decoded JPEG and a gradient scrim.
-                                      // Without this, every frame of the draw-on
-                                      // marks the photo's layer dirty too — the
-                                      // guide's whole point is the photograph
-                                      // underneath, so it must not be
-                                      // re-rasterised 60×/second to animate a
-                                      // line over it.
-                                      RepaintBoundary(
-                                        child: AnimatedBuilder(
-                                          animation: _draw,
-                                          builder: (_, _) => CustomPaint(
-                                            painter: _diagramPainter(
-                                              Curves.easeInOutCubic.transform(
-                                                _draw.value,
+                                        // Own layer: the reveal animates for
+                                        // ~1.1s at display rate directly over a
+                                        // decoded JPEG and a gradient scrim.
+                                        // Without this, every frame of the draw-on
+                                        // marks the photo's layer dirty too — the
+                                        // guide's whole point is the photograph
+                                        // underneath, so it must not be
+                                        // re-rasterised 60×/second to animate a
+                                        // line over it.
+                                        RepaintBoundary(
+                                          child: AnimatedBuilder(
+                                            animation: _draw,
+                                            builder: (_, _) => CustomPaint(
+                                              painter: _diagramPainter(
+                                                Curves.easeInOutCubic.transform(
+                                                  _draw.value,
+                                                ),
                                               ),
                                             ),
                                           ),
                                         ),
-                                      ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),

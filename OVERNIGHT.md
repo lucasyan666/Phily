@@ -128,6 +128,8 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       favourite / delete, camera grid toggle, guide "i"); favourite and grid
       toggle announce on/off. Pass #11 added the paywall: tier rows announce
       name + price + selection, legal links and the CTA are named buttons.
+      Pass #30 described the guide card's diagram — the card's actual
+      teaching content — to screen readers, for all 16 modes.
       Pass #16 merged the gallery's guide caption into one spoken sentence.
       Pass #15 named the level-line switch. Pass #12 added the camera's
       bottom chrome: the shutter (with its
@@ -979,3 +981,27 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - **Verification:** `flutter analyze` 0 issues · `flutter test` 218/218 (4
   new) · `flutter build ios --simulator` ✓. No behaviour change.
 - **Commit:** `overnight: pass #29 — performance — 2026-09-11T12:29:24+0100`
+
+### Pass #30 — compatibility — 2026-09-11T12:58:34+0100
+- **What:** the guide card's framed diagram is now announced to screen
+  readers as a figure, described per mode: "Diagram: an example scene with
+  the Fibonacci Spiral guide drawn over it." One `Semantics` around the whole
+  framed stack, so it covers the bundled photo *and* the painted fallback the
+  other fifteen modes still use.
+- **Why:** probing the card found the diagram exposed **nothing** — no label
+  on the photo, no semantics on either painter. The card's prose describes a
+  picture ("put the most important thing at the tight little eye of the
+  spiral"), so a screen-reader user was getting the half that refers to
+  something they could not perceive. The diagram *is* the teaching content.
+- **Metric:** guide modes whose diagram is described: 0/16 → 16/16. Diagram
+  semantics nodes: 0 → 1 per card (one figure, not a stack of layers).
+  Asserted for every mode, plus the route's barrier label and
+  dismissibility — both of which the sheet-to-dialog conversion changed and
+  nothing had checked.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 220/220 (2
+  new) · `flutter build ios --simulator` ✓. No visual change.
+- **Caught in review:** my first version used `hasFlag`, deprecated after
+  Flutter 3.32; analyze flagged it and it now uses `matchesSemantics`. Worth
+  noting because the suite passed *before* analyze ran — a green test run is
+  not evidence the code is current.
+- **Commit:** `overnight: pass #30 — compatibility — 2026-09-11T12:58:34+0100`
