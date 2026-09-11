@@ -94,6 +94,71 @@ void main() {
     );
   });
 
+  testWidgets('a tall card scrolls rather than clipping', (tester) async {
+    // Cards built on showGildedCard hold preference copy that grows with the
+    // text size. Pass #31 found the paywall clipping 233pt off an SE because
+    // its content was a fixed Column; pass #32 found the same in the
+    // level-line card at AX5 (180pt on an SE, 239pt in landscape). The
+    // pattern is the fix: wrap the content, let it scroll when it must.
+    final errors = <String>[];
+    final previous = FlutterError.onError;
+    FlutterError.onError = (d) => errors.add(d.exception.toString());
+    tester.view.physicalSize = const Size(375 * 3, 667 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(() {
+      tester.view.reset();
+      FlutterError.onError = previous;
+    });
+
+    late BuildContext ctx;
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (c, child) => MediaQuery(
+          data: MediaQuery.of(
+            c,
+          ).copyWith(textScaler: const TextScaler.linear(3.1)),
+          child: child!,
+        ),
+        home: Scaffold(
+          body: Builder(
+            builder: (c) {
+              ctx = c;
+              return const SizedBox.expand();
+            },
+          ),
+        ),
+      ),
+    );
+    showGildedCard<void>(
+      context: ctx,
+      builder: (sheetCtx) => Center(
+        child: Container(
+          margin: EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: MediaQuery.of(sheetCtx).padding.vertical + 24,
+          ),
+          constraints: const BoxConstraints(maxWidth: 460),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(
+                8,
+                (i) => const Text(
+                  'Keep it on screen at all times. Off, it appears only while '
+                  'you are levelling the shot.',
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(errors, isEmpty, reason: errors.toSet().join(' | '));
+    expect(find.byType(Scrollable), findsWidgets);
+  });
+
   testWidgets('tapping the barrier dismisses it', (tester) async {
     await _open(tester);
     await tester.pumpAndSettle();

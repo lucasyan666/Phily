@@ -177,6 +177,16 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 ## Shipped from the backlog
 - Paywall breakpoints: was never covered (StoreKit guardrail kept passes out
   of it). Pass #31 found it unusable on an iPhone SE and fixed it.
+- Level-line card: same defect, found by following pass #31's thread rather
+  than moving on. Fixed in pass #32.
+
+## Known pattern: cards that clip
+Two modal cards held a fixed `Column` with no scroll view, so any phone
+shorter than their content silently clipped it. Both are fixed and
+`test/gilded_card_test.dart` now guards the shared pattern. **Any new card
+built on `showGildedCard` needs a `SingleChildScrollView`** — the copy inside
+these cards grows with the text size, so "it fits on my phone" is not
+evidence.
 
 ## Proposals (not done — needs a decision)
 - 1b level glyph in the rail: retires the centre-frame level line in portrait.
@@ -1039,3 +1049,32 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   new) · `flutter build ios --simulator` ✓. StoreKit logic untouched —
   layout and semantics only.
 - **Commit:** `overnight: pass #31 — compatibility — 2026-09-11T13:30:14+0100`
+
+### Pass #32 — design-board → second clipping bug — 2026-09-11T14:00:19+0100
+- **What:** the level-line preferences card clipped its own explanation at
+  the largest accessibility text size — **180pt off an iPhone SE, 239pt in
+  landscape**. Same root cause as the paywall in pass #31: a fixed `Column`
+  with no scroll view. Now wrapped, and the card takes proper vertical safe-
+  area margin.
+- **Why this pass, instead of polish:** pass #31 found a screen that had
+  never been layout-tested. The right next move was to ask *which other
+  screens have never been measured*, not to move on to something prettier.
+  The level-line card qualified — and I had converted it to a centred card
+  only three passes earlier, so the risk was freshly introduced.
+- **Metric:** level-line card configurations without overflow: **2/4 → 4/4**
+  (SE and landscape, 1.0× and AX5). Modal cards holding unscrollable fixed
+  content: 2 → 0.
+- **Guarding the pattern, not just the instance:** `gilded_card_test.dart`
+  now asserts a tall card scrolls rather than clipping. Both bugs were the
+  same shape, so the test targets the shared `showGildedCard` pattern — the
+  third card built on it inherits the guard.
+- **Two dead ends, recorded honestly:** I extracted the card into its own
+  method to make it directly testable, then realised it still depends on
+  camera-page state (`_alwaysShowLevel`, the toggle callback), so the
+  extraction bought nothing and I reverted it. In doing so I unbalanced the
+  brackets and chose to `git checkout` back to a clean baseline and re-apply
+  the one real change, rather than patching my way forward through a broken
+  parse.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 235/235 (1
+  new) · `flutter build ios --simulator` ✓.
+- **Commit:** `overnight: pass #32 — compatibility — 2026-09-11T14:00:19+0100`
