@@ -188,17 +188,6 @@ built on `showGildedCard` needs a `SingleChildScrollView`** — the copy inside
 these cards grows with the text size, so "it fits on my phone" is not
 evidence.
 
-## Next up (scoped, not started)
-- **Dock the guide card's dismiss chip.** "GOT IT" is the LAST item inside
-  the card's `SingleChildScrollView`, so it sits below the fold — 216pt down
-  on an SE at the default text size, 3.8k at AX5. It is the card's only
-  *visible* way out (the barrier tap works but is not discoverable). The fix
-  is to move it out of the scroll view into a `Column` with the scroll view
-  as a `Flexible` sibling, so the copy scrolls and the chip stays docked at
-  the foot. I attempted this twice in pass #33 and both times unbalanced the
-  brackets in the deeply-nested tree; reverted rather than ship a broken
-  parse. **Worth its own pass**, edited by hand rather than by script.
-
 ## Proposals (not done — needs a decision)
 - 1b level glyph in the rail: retires the centre-frame level line in portrait.
 - Camera bottom chrome vs the home indicator (pass #6 audit). The bottom
@@ -1115,3 +1104,26 @@ evidence.
   corrected the assertion to the measured value rather than the value I
   expected.
 - **Commit:** `overnight: pass #33 — design-board — 2026-09-11T14:30:18+0100`
+
+### Pass #34 — design-board — 2026-09-11T14:58:35+0100
+- **What:** the guide card's "GOT IT" chip is docked below the scrolling
+  copy instead of being the last item *inside* the scroll view. The copy now
+  lives in a `Flexible` `SingleChildScrollView`; the chip sits beneath it in
+  the same `Column`, always on screen.
+- **Why:** it is the card's only *visible* way out — barrier-tap works but is
+  not discoverable — and it was below the fold on every phone: **216pt down
+  on an SE at the default text size, 4444pt at AX5**. A user who did not
+  think to scroll, or to tap outside, had no obvious exit from a reference
+  card.
+- **Metric:** dismiss chip on screen without scrolling: **0/4 → 4/4**
+  configurations (SE and landscape, 1.0× and AX5). At AX5 on an SE it moved
+  from 4444pt down to 562pt — inside a 667pt screen.
+- **This is the item pass #33 could not land.** What changed was method, not
+  luck: I read the exact line boundaries first, then made two hand-written
+  `Edit` calls instead of generating the restructure by script. The editor's
+  own diagnostics confirmed the intermediate broken state and then the clean
+  one — feedback the scripted attempts never surfaced until `analyze` ran on
+  a mangled file. Worth remembering for deeply-nested widget trees.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 246/246 (8
+  new) · `flutter build ios --simulator` ✓.
+- **Commit:** `overnight: pass #34 — design-board — 2026-09-11T14:58:35+0100`

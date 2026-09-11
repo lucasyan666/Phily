@@ -228,214 +228,235 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
                     right: 0,
                     child: GildedHairline(height: 1.2),
                   ),
-                  SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(24, 18, 24, 20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        // Eyebrow: GUIDE + recommended hold. A Wrap, not a Row:
-                        // one line with the hold pushed right at normal sizes, and
-                        // at accessibility text sizes the hold drops to a second
-                        // line instead of overflowing (127px on an SE at AX5).
-                        Wrap(
-                          alignment: WrapAlignment.spaceBetween,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          runSpacing: 4,
-                          children: [
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.auto_awesome_rounded,
-                                  color: kGold,
-                                  size: 12,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'GUIDE',
-                                  style: brandLabel(
-                                    size: 9,
-                                    weight: FontWeight.w600,
-                                    color: kGold.withValues(alpha: 0.85),
-                                    letterSpacing: 2.8,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            if (orient != null)
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
+                  // The copy scrolls; the dismiss chip does not. "GOT IT" used
+                  // to be the last item INSIDE the scroll view, which put it
+                  // 216pt below the fold on an SE at the default text size —
+                  // the card's only *visible* way out, hidden. Now the
+                  // scrolling column takes whatever height is left and the
+                  // chip stays docked at the foot, always reachable.
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(24, 18, 24, 4),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              // Eyebrow: GUIDE + recommended hold. A Wrap, not a Row:
+                              // one line with the hold pushed right at normal sizes, and
+                              // at accessibility text sizes the hold drops to a second
+                              // line instead of overflowing (127px on an SE at AX5).
+                              Wrap(
+                                alignment: WrapAlignment.spaceBetween,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                runSpacing: 4,
                                 children: [
-                                  Icon(
-                                    orient == 'Portrait'
-                                        ? Icons.stay_current_portrait_rounded
-                                        : orient == 'Landscape'
-                                        ? Icons.stay_current_landscape_rounded
-                                        : Icons.screen_rotation_rounded,
-                                    color: kGold.withValues(alpha: 0.7),
-                                    size: 11,
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.auto_awesome_rounded,
+                                        color: kGold,
+                                        size: 12,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'GUIDE',
+                                        style: brandLabel(
+                                          size: 9,
+                                          weight: FontWeight.w600,
+                                          color: kGold.withValues(alpha: 0.85),
+                                          letterSpacing: 2.8,
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    orient.toUpperCase(),
-                                    style: brandLabel(
-                                      size: 9,
-                                      weight: FontWeight.w600,
-                                      color: kGold.withValues(alpha: 0.7),
-                                      letterSpacing: 1.8,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        // Mode name in the editorial serif.
-                        Text(
-                          spec.label,
-                          style: brandDisplay(
-                            size: 26,
-                            weight: FontWeight.w500,
-                            letterSpacing: 0.2,
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        // The living diagram — a stylised scene (painted, not
-                        // photographed: copyright-free by construction) under the
-                        // mode's own overlay painter, framed like a print in a
-                        // fine gold mat.
-                        SizedBox(
-                          // Proportional, not a flat 200pt: on a short phone
-                          // that fixed height was ~30% of the card, pushing
-                          // the copy — and the dismiss chip — further below
-                          // the fold. Clamped so it still reads as a framed
-                          // print on a tall screen and never collapses on a
-                          // small one.
-                          height: _diagramHeight(context),
-                          child: Center(
-                            child: AspectRatio(
-                              aspectRatio: landscapeDiagram ? 4 / 3 : 3 / 4,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(
-                                    kRadiusMd,
-                                  ),
-                                  border: Border.all(
-                                    color: kGold.withValues(alpha: 0.35),
-                                    width: 0.8,
-                                  ),
-                                  boxShadow: kSoftShadow,
-                                ),
-                                // One figure, not a stack of layers: the
-                                // framed diagram IS this card's teaching
-                                // content — a scene with the guide drawn over
-                                // it. Unlabelled, a screen reader got the prose
-                                // and nothing of the picture it describes.
-                                // `image: true` announces it as a figure.
-                                child: Semantics(
-                                  image: true,
-                                  label:
-                                      'Diagram: an example scene with the '
-                                      '${spec.label} guide drawn over it.',
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(
-                                      kRadiusMd,
-                                    ),
-                                    child: Stack(
-                                      fit: StackFit.expand,
+                                  if (orient != null)
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        // Real example photo when one is bundled
-                                        // (assets/guides/<mode>.jpg — see the README
-                                        // there); otherwise the painted scene.
-                                        Image.asset(
-                                          'assets/guides/${spec.mode.name}.jpg',
-                                          fit: BoxFit.cover,
-                                          // The diagram IS this card's teaching
-                                          // content — a photograph with the guide
-                                          // drawn over it. Unlabelled, a screen
-                                          // reader got the prose and nothing of
-                                          // the picture the prose describes.
-                                          semanticLabel:
-                                              'Example photograph with the '
-                                              '${spec.label} guide drawn over it.',
-                                          errorBuilder: (_, _, _) =>
-                                              CustomPaint(
-                                                painter: _GuideScenePainter(
-                                                  spec.mode,
-                                                ),
-                                              ),
+                                        Icon(
+                                          orient == 'Portrait'
+                                              ? Icons
+                                                    .stay_current_portrait_rounded
+                                              : orient == 'Landscape'
+                                              ? Icons
+                                                    .stay_current_landscape_rounded
+                                              : Icons.screen_rotation_rounded,
+                                          color: kGold.withValues(alpha: 0.7),
+                                          size: 11,
                                         ),
-                                        // Soft scrim so the white guide lines stay
-                                        // legible over any photograph.
-                                        DecoratedBox(
-                                          decoration: BoxDecoration(
-                                            gradient: LinearGradient(
-                                              begin: Alignment.topCenter,
-                                              end: Alignment.bottomCenter,
-                                              colors: [
-                                                Colors.black.withValues(
-                                                  alpha: 0.18,
-                                                ),
-                                                Colors.black.withValues(
-                                                  alpha: 0.30,
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                        // Own layer: the reveal animates for
-                                        // ~1.1s at display rate directly over a
-                                        // decoded JPEG and a gradient scrim.
-                                        // Without this, every frame of the draw-on
-                                        // marks the photo's layer dirty too — the
-                                        // guide's whole point is the photograph
-                                        // underneath, so it must not be
-                                        // re-rasterised 60×/second to animate a
-                                        // line over it.
-                                        RepaintBoundary(
-                                          child: AnimatedBuilder(
-                                            animation: _draw,
-                                            builder: (_, _) => CustomPaint(
-                                              painter: _diagramPainter(
-                                                Curves.easeInOutCubic.transform(
-                                                  _draw.value,
-                                                ),
-                                              ),
-                                            ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          orient.toUpperCase(),
+                                          style: brandLabel(
+                                            size: 9,
+                                            weight: FontWeight.w600,
+                                            color: kGold.withValues(alpha: 0.7),
+                                            letterSpacing: 1.8,
                                           ),
                                         ),
                                       ],
                                     ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              // Mode name in the editorial serif.
+                              Text(
+                                spec.label,
+                                style: brandDisplay(
+                                  size: 26,
+                                  weight: FontWeight.w500,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              // The living diagram — a stylised scene (painted, not
+                              // photographed: copyright-free by construction) under the
+                              // mode's own overlay painter, framed like a print in a
+                              // fine gold mat.
+                              SizedBox(
+                                // Proportional, not a flat 200pt: on a short phone
+                                // that fixed height was ~30% of the card, pushing
+                                // the copy — and the dismiss chip — further below
+                                // the fold. Clamped so it still reads as a framed
+                                // print on a tall screen and never collapses on a
+                                // small one.
+                                height: _diagramHeight(context),
+                                child: Center(
+                                  child: AspectRatio(
+                                    aspectRatio: landscapeDiagram
+                                        ? 4 / 3
+                                        : 3 / 4,
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(
+                                          kRadiusMd,
+                                        ),
+                                        border: Border.all(
+                                          color: kGold.withValues(alpha: 0.35),
+                                          width: 0.8,
+                                        ),
+                                        boxShadow: kSoftShadow,
+                                      ),
+                                      // One figure, not a stack of layers: the
+                                      // framed diagram IS this card's teaching
+                                      // content — a scene with the guide drawn over
+                                      // it. Unlabelled, a screen reader got the prose
+                                      // and nothing of the picture it describes.
+                                      // `image: true` announces it as a figure.
+                                      child: Semantics(
+                                        image: true,
+                                        label:
+                                            'Diagram: an example scene with the '
+                                            '${spec.label} guide drawn over it.',
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(
+                                            kRadiusMd,
+                                          ),
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              // Real example photo when one is bundled
+                                              // (assets/guides/<mode>.jpg — see the README
+                                              // there); otherwise the painted scene.
+                                              Image.asset(
+                                                'assets/guides/${spec.mode.name}.jpg',
+                                                fit: BoxFit.cover,
+                                                // The diagram IS this card's teaching
+                                                // content — a photograph with the guide
+                                                // drawn over it. Unlabelled, a screen
+                                                // reader got the prose and nothing of
+                                                // the picture the prose describes.
+                                                semanticLabel:
+                                                    'Example photograph with the '
+                                                    '${spec.label} guide drawn over it.',
+                                                errorBuilder: (_, _, _) =>
+                                                    CustomPaint(
+                                                      painter:
+                                                          _GuideScenePainter(
+                                                            spec.mode,
+                                                          ),
+                                                    ),
+                                              ),
+                                              // Soft scrim so the white guide lines stay
+                                              // legible over any photograph.
+                                              DecoratedBox(
+                                                decoration: BoxDecoration(
+                                                  gradient: LinearGradient(
+                                                    begin: Alignment.topCenter,
+                                                    end: Alignment.bottomCenter,
+                                                    colors: [
+                                                      Colors.black.withValues(
+                                                        alpha: 0.18,
+                                                      ),
+                                                      Colors.black.withValues(
+                                                        alpha: 0.30,
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                              // Own layer: the reveal animates for
+                                              // ~1.1s at display rate directly over a
+                                              // decoded JPEG and a gradient scrim.
+                                              // Without this, every frame of the draw-on
+                                              // marks the photo's layer dirty too — the
+                                              // guide's whole point is the photograph
+                                              // underneath, so it must not be
+                                              // re-rasterised 60×/second to animate a
+                                              // line over it.
+                                              RepaintBoundary(
+                                                child: AnimatedBuilder(
+                                                  animation: _draw,
+                                                  builder: (_, _) => CustomPaint(
+                                                    painter: _diagramPainter(
+                                                      Curves.easeInOutCubic
+                                                          .transform(
+                                                            _draw.value,
+                                                          ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
+                              const SizedBox(height: 16),
+                              if (spec.tip != null) ...[
+                                _section('BEST FOR', spec.tip!),
+                                const SizedBox(height: 14),
+                              ],
+                              // How-to leads: a user opening this sheet wants to shoot,
+                              // not to study. The principle follows for those who want it.
+                              if (spec.how != null) ...[
+                                _section('HOW TO USE IT', spec.how!),
+                                const SizedBox(height: 14),
+                              ],
+                              if (spec.what != null)
+                                _section('WHAT IT IS', spec.what!),
+                            ],
                           ),
                         ),
-                        const SizedBox(height: 16),
-                        if (spec.tip != null) ...[
-                          _section('BEST FOR', spec.tip!),
-                          const SizedBox(height: 14),
-                        ],
-                        // How-to leads: a user opening this sheet wants to shoot,
-                        // not to study. The principle follows for those who want it.
-                        if (spec.how != null) ...[
-                          _section('HOW TO USE IT', spec.how!),
-                          const SizedBox(height: 14),
-                        ],
-                        if (spec.what != null)
-                          _section('WHAT IT IS', spec.what!),
-                        const SizedBox(height: 20),
-                        // Dismiss — the gallery's gilded filter chip (PopTap, 40pt,
-                        // radius 20), so the sheet's one control is the same object
-                        // as the rest of the app's chrome. The 2pt vertical pad
-                        // lifts the tap target to 44pt without changing the chip.
-                        // Shrink-wrapped explicitly: a Container with `alignment`
-                        // inside a bounded Center expands to the full width, and
-                        // minHeight (not height) lets large type grow the chip
-                        // instead of spilling out of it.
-                        Center(
+                      ),
+                      // Dismiss — the gallery's gilded filter chip (PopTap, 40pt,
+                      // radius 20), so the sheet's one control is the same object
+                      // as the rest of the app's chrome. The 2pt vertical pad
+                      // lifts the tap target to 44pt without changing the chip.
+                      // Shrink-wrapped explicitly: a Container with `alignment`
+                      // inside a bounded Center expands to the full width, and
+                      // minHeight (not height) lets large type grow the chip
+                      // instead of spilling out of it.
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
+                        child: Center(
                           child: PopTap(
                             onTap: () => Navigator.of(context).pop(),
                             child: Padding(
@@ -468,8 +489,8 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
                             ),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ],
               ),

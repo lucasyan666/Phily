@@ -535,6 +535,49 @@ void main() {
       });
     }
 
+    for (final d in [_devices.first, _devices.last]) {
+      for (final scale in _textScales) {
+        testWidgets('dismiss stays on screen: ${d.name} at $scale× text', (
+          tester,
+        ) async {
+          // "GOT IT" used to be the last item INSIDE the card's scroll view,
+          // so it sat below the fold — 216pt down on an SE at 1.0×, 4444pt at
+          // AX5. It is the card's only *visible* way out (barrier-tap works
+          // but is not discoverable), so it is now docked outside the scroll.
+          late BuildContext ctx;
+          await _pumpOn(
+            tester,
+            d,
+            scale,
+            Scaffold(
+              body: Builder(
+                builder: (c) {
+                  ctx = c;
+                  return const SizedBox.expand();
+                },
+              ),
+            ),
+          );
+          showCompositionGuide(ctx, CompositionMode.fibonacciSpiral);
+          await tester.pumpAndSettle();
+
+          final chip = tester.getRect(find.text('GOT IT'));
+          expect(
+            chip.top,
+            greaterThanOrEqualTo(0),
+            reason: 'dismiss above the top edge',
+          );
+          expect(
+            chip.bottom,
+            lessThanOrEqualTo(d.size.height),
+            reason:
+                'dismiss ${chip.bottom}pt down a ${d.size.height}pt '
+                'screen — below the fold, without scrolling',
+          );
+        });
+      }
+    }
+
     testWidgets('a tall phone shows nearly the whole card at once', (
       tester,
     ) async {
