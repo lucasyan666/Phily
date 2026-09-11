@@ -15,6 +15,8 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 
 ## Backlog — pull from the top
 ### Speed (measurable)
+- [x] Guide sheet's spiral reveal in its own `RepaintBoundary` — the
+      draw-on animates ~66 frames directly over a decoded JPEG. (pass #25)
 - [x] Breathing "Perfect"/"Level" pill: hoist the pill out of its 60fps
       animation so only the rim/glow rebuild. (pass #21)
 - [x] Gallery grid: request thumbnails at the cell's actual pixel size
@@ -826,3 +828,29 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   backlog under "Camera stability" with the still-moment shutter first,
   because it needs no new sensor and no plugin change.
 - **Commit:** `overnight: pass #24 — design-board — 2026-09-09T15:40:24+0100`
+
+### Pass #25 — performance — 2026-09-11T10:34:05+0100
+- **What:** the composition guide's draw-on animation gets a
+  `RepaintBoundary`. Its `AnimatedBuilder` was a bare sibling of the example
+  photo and the scrim inside one `Stack`, so every frame of the reveal marked
+  the photo's layer dirty.
+- **Why:** this audits work shipped earlier today (the spiral reveal Lucas
+  asked for). The reveal runs ~1.1s at display rate over a decoded JPEG —
+  so the photograph, which is the entire point of the card, was being
+  re-rasterised ~66 times in order to animate one line across it. Identical
+  in shape to the defect pass #17 fixed in the gallery; I reintroduced it in
+  new code, which is the argument for auditing your own recent work rather
+  than only old code.
+- **Metric:** repaints of the layer beneath, over 15 driven frames:
+  **15 → 0**, measured by counting real `CustomPainter.paint` calls in
+  `test/guide_reveal_perf_test.dart`. As in pass #17 the test ships with a
+  control case asserting the *unboundaried* arrangement does repaint, so the
+  main assertion cannot silently go vacuous.
+- **Also checked:** the animated painter sits inside the sheet's
+  `BackdropFilter` subtree. A backdrop blur samples what is *behind* it, so
+  it does not re-run for content painted inside — but without the boundary
+  the animation was dirtying that subtree anyway. The boundary settles both.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 209/209 (2
+  new) · `flutter build ios --simulator` ✓. Diff: +10/−1 in
+  `composition_guide.dart`. No visual change.
+- **Commit:** `overnight: pass #25 — performance — 2026-09-11T10:34:05+0100`

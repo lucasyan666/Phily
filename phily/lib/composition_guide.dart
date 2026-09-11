@@ -364,12 +364,23 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
                                           ),
                                         ),
                                       ),
-                                      AnimatedBuilder(
-                                        animation: _draw,
-                                        builder: (_, _) => CustomPaint(
-                                          painter: _diagramPainter(
-                                            Curves.easeInOutCubic.transform(
-                                              _draw.value,
+                                      // Own layer: the reveal animates for
+                                      // ~1.1s at display rate directly over a
+                                      // decoded JPEG and a gradient scrim.
+                                      // Without this, every frame of the draw-on
+                                      // marks the photo's layer dirty too — the
+                                      // guide's whole point is the photograph
+                                      // underneath, so it must not be
+                                      // re-rasterised 60×/second to animate a
+                                      // line over it.
+                                      RepaintBoundary(
+                                        child: AnimatedBuilder(
+                                          animation: _draw,
+                                          builder: (_, _) => CustomPaint(
+                                            painter: _diagramPainter(
+                                              Curves.easeInOutCubic.transform(
+                                                _draw.value,
+                                              ),
                                             ),
                                           ),
                                         ),

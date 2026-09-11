@@ -1,6 +1,6 @@
 {
-  "pass": 24,
-  "updated": "2026-09-09T15:40:24+0100",
+  "pass": 25,
+  "updated": "2026-09-11T10:34:05+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "performance",
+  "next_type": "compatibility",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 207,
+    "flutter_test_passed": 209,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -352,6 +352,14 @@
         "after": 0.9
       },
       "reported_by": "Lucas \u2014 flat/birds-eye centre alignment hard to see"
+    },
+    "guide_reveal_repaint_isolation": {
+      "photo_repaints_over_15_frames": {
+        "before": 15,
+        "after": 0
+      },
+      "measured": "behavioural test counting CustomPainter.paint calls",
+      "note": "audit of same-session work; same defect shape as pass #17"
     }
   }
 }
