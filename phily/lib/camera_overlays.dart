@@ -1070,6 +1070,17 @@ class _CompositionPainter extends CustomPainter {
   /// validating eye tracking.
   final List<Offset> eyePoints;
 
+  /// Draw-on progress for the guide sheet's diagram, 0..1. At 1.0 (the live
+  /// viewfinder, and the settled sheet) everything draws normally.
+  ///
+  /// Below 1.0 the Fibonacci Spiral grows from its eye outward: the arc is
+  /// traced by arc-length from the tight centre out to the widest sweep, and
+  /// each golden-section divider fades in as the arc passes it. Growing from
+  /// the eye — rather than unspooling from the outside — is what makes the
+  /// shape read as *the spiral it is*, since the eye is where the composition
+  /// resolves.
+  final double reveal;
+
   /// How strongly to draw the guide. 1.0 is the live viewfinder's weight —
   /// deliberately quiet, because over a moving preview the guide is a hint and
   /// the subject is the point (board 1b: "Guide (persistent, quiet)").
@@ -1124,6 +1135,7 @@ class _CompositionPainter extends CustomPainter {
     this.horizon,
     this.deviceTurns = 0,
     this.emphasis = 1.0,
+    this.reveal = 1.0,
     List<Offset>? eyePoints,
     super.repaint,
   }) : glowSegs = glowSegs ?? const [],
@@ -1906,6 +1918,9 @@ class _CompositionPainter extends CustomPainter {
     int dir = 0;
     final path = Path();
     bool isFirst = true;
+    // Collected rather than drawn inline: the reveal fades each divider in as
+    // the growing arc reaches it, so the shape assembles as one motion.
+    final List<(Offset, Offset)> dividers = [];
 
     // Cut squares, drawing the golden-section dividing line for each (the lines
     // overlaid in the reference) plus a continuous quarter-arc through it. 12
@@ -1920,11 +1935,10 @@ class _CompositionPainter extends CustomPainter {
         // Cut Right Square — divider is its left edge (vertical, full height).
         center = Offset(rect.right - sqSize, rect.top);
         startAngle = 0;
-        canvas.drawLine(
+        dividers.add((
           Offset(rect.right - sqSize, rect.top),
           Offset(rect.right - sqSize, rect.bottom),
-          p,
-        );
+        ));
         rect = Rect.fromLTRB(
           rect.left,
           rect.top,
@@ -1935,11 +1949,10 @@ class _CompositionPainter extends CustomPainter {
         // Cut Bottom Square — divider is its top edge (horizontal, full width).
         center = Offset(rect.right, rect.bottom - sqSize);
         startAngle = math.pi / 2;
-        canvas.drawLine(
+        dividers.add((
           Offset(rect.left, rect.bottom - sqSize),
           Offset(rect.right, rect.bottom - sqSize),
-          p,
-        );
+        ));
         rect = Rect.fromLTRB(
           rect.left,
           rect.top,
@@ -1950,11 +1963,10 @@ class _CompositionPainter extends CustomPainter {
         // Cut Left Square — divider is its right edge (vertical, full height).
         center = Offset(rect.left + sqSize, rect.bottom);
         startAngle = math.pi;
-        canvas.drawLine(
+        dividers.add((
           Offset(rect.left + sqSize, rect.top),
           Offset(rect.left + sqSize, rect.bottom),
-          p,
-        );
+        ));
         rect = Rect.fromLTRB(
           rect.left + sqSize,
           rect.top,
@@ -1965,11 +1977,10 @@ class _CompositionPainter extends CustomPainter {
         // Cut Top Square — divider is its bottom edge (horizontal, full width).
         center = Offset(rect.left, rect.top + sqSize);
         startAngle = -math.pi / 2;
-        canvas.drawLine(
+        dividers.add((
           Offset(rect.left, rect.top + sqSize),
           Offset(rect.right, rect.top + sqSize),
-          p,
-        );
+        ));
         rect = Rect.fromLTRB(
           rect.left,
           rect.top + sqSize,
@@ -1984,7 +1995,43 @@ class _CompositionPainter extends CustomPainter {
       dir = (dir + 1) % 4;
     }
 
-    canvas.drawPath(path, p);
+    // ── Reveal ──
+    // The path is built OUTSIDE-IN (largest square first), so growing from the
+    // eye means tracing it backwards: take the last `t` of its arc length.
+    final double t = reveal.clamp(0.0, 1.0);
+    if (t >= 0.999) {
+      for (final (a, b) in dividers) {
+        canvas.drawLine(a, b, p);
+      }
+      canvas.drawPath(path, p);
+    } else if (t > 0.0) {
+      // Dividers fade in with the arc that passes them. They are collected
+      // outside-in too, so the LAST divider belongs to the tightest turn.
+      for (int i = 0; i < dividers.length; i++) {
+        // 0 at the eye end → 1 at the outermost divider.
+        final double at = dividers.length == 1
+            ? 0.0
+            : 1.0 - (i / (dividers.length - 1));
+        // Each fades over a short window as the arc sweeps past it.
+        final double f = ((t - at) / 0.18).clamp(0.0, 1.0);
+        if (f <= 0.0) continue;
+        canvas.drawLine(
+          dividers[i].$1,
+          dividers[i].$2,
+          Paint()
+            ..color = p.color.withValues(alpha: p.color.a * f)
+            ..strokeWidth = p.strokeWidth
+            ..style = PaintingStyle.stroke
+            ..strokeCap = p.strokeCap
+            ..strokeJoin = p.strokeJoin
+            ..isAntiAlias = true,
+        );
+      }
+      for (final metric in path.computeMetrics()) {
+        final double len = metric.length;
+        canvas.drawPath(metric.extractPath(len * (1.0 - t), len), p);
+      }
+    }
     canvas.restore();
   }
 
@@ -2423,5 +2470,7 @@ class _CompositionPainter extends CustomPainter {
       old.vFlipped != vFlipped ||
       old.aspect != aspect ||
       old.deviceTurns != deviceTurns ||
+      old.reveal != reveal ||
+      old.emphasis != emphasis ||
       old.eyePoints != eyePoints;
 }
