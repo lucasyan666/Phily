@@ -56,7 +56,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       pass #14 adds the gallery's empty state and pass #16 the guide caption,
       both via `@visibleForTesting` seams.
       Pass #22 adds the viewer chrome (guide pill, date chip) and the grid's
-      pinned day header, and found a real overflow in the header.
+      pinned day header, and found a real overflow in the header. Pass #26
+      adds the guide *card* geometry (centred, capped, on-screen) after it
+      changed from a docked sheet to a dialog.
       Still open: the populated grid itself and the camera chrome. Both need
       channel mocks — pass #22 scoped that: PhotoManager alone would mean
       stubbing ~12 methods and matching their internal response shapes,
@@ -854,3 +856,32 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   new) · `flutter build ios --simulator` ✓. Diff: +10/−1 in
   `composition_guide.dart`. No visual change.
 - **Commit:** `overnight: pass #25 — performance — 2026-09-11T10:34:05+0100`
+
+### Pass #26 — compatibility — 2026-09-11T11:02:33+0100
+- **What:** two layout defects in the guide card, both introduced earlier the
+  same day when it changed from a bottom sheet to a centred fade-in dialog
+  (Lucas's request). Capped the card at 460pt wide, and fixed its vertical
+  inset. Added breakpoint assertions for the geometry that change created.
+- **Why:** the conversion was tested only by the *existing* guide tests,
+  which assert height, the dismiss chip and overflow — all of which kept
+  passing, because none of them describe a centred card. The new geometry
+  was completely uncovered, so its defects were invisible.
+- **Metric, measured on a 852×393 landscape phone:**
+  - Card width **816 → 460pt**. Uncapped it ran nearly edge-to-edge: prose
+    at line lengths no one reads, and it swallowed the frame the card exists
+    to explain. Frame visible either side: **18 → 196pt**.
+  - Vertical inset used `padding.vertical`, which *sums* top and bottom — a
+    Dynamic Island phone lost ~93pt of height to an inset meant to clear
+    ~59. Now `max(top, bottom)`.
+  - Portrait geometry unchanged (375×667 measures identically before/after).
+- **New assertions:** across all 16 modes × 4 text scales × 2 device shapes,
+  the card must sit inside the screen, be ≤460pt wide, and be horizontally
+  centred within half a point.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 209/209 ·
+  `flutter build ios --simulator` ✓. Diff: +12/−3 `composition_guide.dart`,
+  test +27.
+- **Pattern worth noting:** this is the second consecutive pass (with #25)
+  spent auditing same-session work rather than the backlog, and both found
+  real defects. Shipping a change and testing only what the *old* design
+  asserted leaves the new design's failure modes unguarded.
+- **Commit:** `overnight: pass #26 — compatibility — 2026-09-11T11:02:33+0100`

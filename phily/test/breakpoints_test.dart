@@ -527,6 +527,34 @@ void main() {
               findsOneWidget,
               reason: '${spec.mode.name}: title',
             );
+            // Centred card (not a docked sheet since the fade-in change): it
+            // must stay inside the screen, stay a readable column rather than
+            // stretching edge-to-edge, and leave the frame visible around it.
+            final card = tester.getRect(find.byType(BackdropFilter).first);
+            expect(
+              card.left,
+              greaterThanOrEqualTo(0),
+              reason: '${spec.mode.name}: card off the left edge',
+            );
+            expect(
+              card.right,
+              lessThanOrEqualTo(d.size.width),
+              reason: '${spec.mode.name}: card off the right edge',
+            );
+            expect(
+              card.width,
+              lessThanOrEqualTo(460.5),
+              reason:
+                  '${spec.mode.name}: card ${card.width}pt wide — a '
+                  'reference card is a column of prose, not a full-bleed bar',
+            );
+            // Horizontally centred within half a point.
+            expect(
+              (card.center.dx - d.size.width / 2).abs(),
+              lessThan(0.5),
+              reason: '${spec.mode.name}: card not centred',
+            );
+
             // The sheet never exceeds its 86% cap and the dismiss chip exists.
             final sheet = tester.getRect(find.byType(SingleChildScrollView));
             expect(

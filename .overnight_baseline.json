@@ -1,6 +1,6 @@
 {
-  "pass": 25,
-  "updated": "2026-09-11T10:34:05+0100",
+  "pass": 26,
+  "updated": "2026-09-11T11:02:33+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,7 +8,7 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "compatibility",
+  "next_type": "design-system",
   "gates": {
     "flutter_analyze_issues": 0,
     "flutter_test_passed": 209,
@@ -360,6 +360,21 @@
       },
       "measured": "behavioural test counting CustomPainter.paint calls",
       "note": "audit of same-session work; same defect shape as pass #17"
+    },
+    "guide_card_geometry": {
+      "landscape_card_width_pt": {
+        "before": 816,
+        "after": 460
+      },
+      "frame_visible_each_side_pt": {
+        "before": 18,
+        "after": 196
+      },
+      "vertical_inset": {
+        "before": "padding.vertical (sums top+bottom)",
+        "after": "max(top, bottom)"
+      },
+      "portrait_unchanged": true
     }
   }
 }

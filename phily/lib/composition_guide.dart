@@ -108,6 +108,11 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
   /// [_CompositionPainter.emphasis].
   static const double _kSheetEmphasis = 2.6;
 
+  /// Widest the card may get. A reference card is a column of prose; on a
+  /// phone held landscape an uncapped card ran 816pt wide — line lengths no
+  /// one reads comfortably, and it swallowed the frame it is explaining.
+  static const double _kCardMaxW = 460;
+
   /// The mode's overlay painter with staged state, so the diagram shows the
   /// guide mid-use rather than bare lines.
   CustomPainter _diagramPainter(double reveal) {
@@ -193,11 +198,16 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
         spec.orientation == CompoOrientation.landscape;
     // Centred card, not a docked sheet: rounded on all four corners and inset
     // from the edges so the shot stays visible around it.
+    //
+    // The vertical inset takes the LARGER of the two safe areas, not their
+    // sum: `padding.vertical` adds top and bottom together, so a Dynamic
+    // Island phone was losing ~93pt of height to an inset meant to clear ~59.
+    final EdgeInsets safe = MediaQuery.of(context).padding;
     return Center(
       child: Padding(
         padding: EdgeInsets.symmetric(
           horizontal: 18,
-          vertical: MediaQuery.of(context).padding.vertical + 24,
+          vertical: math.max(safe.top, safe.bottom) + 24,
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(kRadiusLg + 8),
@@ -205,7 +215,10 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
             // Same deep frost as the paywall — a modal can afford true blur.
             filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
             child: Container(
-              constraints: BoxConstraints(maxHeight: maxH),
+              constraints: BoxConstraints(
+                maxHeight: maxH,
+                maxWidth: _kCardMaxW,
+              ),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
