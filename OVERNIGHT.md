@@ -81,6 +81,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       instead of logging. A log only helps someone watching a console; the
       tests hold on every run.)
 ### Design-system consistency
+- [x] One arrival gesture for reference surfaces → `showGildedCard` in
+      `theme.dart`. The guide button's tap and long-press opened two
+      different modal gestures. (pass #27)
 - [x] Gold aura behind brand moments → `GoldAura` in `theme.dart`. Was
       hand-written 3× with `kGold` spelled as raw hex, already drifted in
       alpha (0x2E vs 0x33). (pass #23)
@@ -885,3 +888,29 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   real defects. Shipping a change and testing only what the *old* design
   asserted leaves the new design's failure modes unguarded.
 - **Commit:** `overnight: pass #26 — compatibility — 2026-09-11T11:02:33+0100`
+
+### Pass #27 — design-system — 2026-09-11T11:32:26+0100
+- **What:** `showGildedCard` in `theme.dart` — the app's one arrival gesture
+  for *reference* surfaces: barrier, fade, a 0.96→1.0 settle, Reduce Motion
+  aware. The composition guide and the level-line preferences both use it.
+- **Why:** today's guide change (Lucas's request) left a visible seam. The
+  guide button opens the guide on **tap** and the level-line preferences on
+  **long-press** — after the change, tap faded in centred while long-press
+  slid up from the bottom edge. One control, two modal gestures, which is
+  exactly the kind of drift CLAUDE.md's "single definition of the app's
+  gold/glass language" rule exists to prevent.
+- **Metric:** modal presentations for reference surfaces: 2 → 1. Hand-rolled
+  `showGeneralDialog` configurations: 1 → 0 (the guide's 32-line inline
+  transition became a 5-line call). The level-line sheet was *already* a
+  `GlassSurface` with all four corners rounded — the sheet slot was only ever
+  a docking position for it — so the conversion removed code rather than
+  adding it.
+- **Deliberately NOT converted:** the paywall and the debug menu. A purchase
+  flow is a destination, a debug menu is a list of actions; a docked sheet is
+  the right shape for both. The new tests assert the shared *behaviour*
+  rather than that every modal matches, so this distinction is protected
+  instead of being quietly erased by a later "consistency" pass.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 212/212 (3
+  new: the fade-and-settle arrival, Reduce Motion appearing with no
+  transition at all, barrier dismissal) · `flutter build ios --simulator` ✓.
+- **Commit:** `overnight: pass #27 — design-system — 2026-09-11T11:32:26+0100`

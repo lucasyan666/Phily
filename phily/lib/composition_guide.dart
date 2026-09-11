@@ -14,39 +14,14 @@ part of 'camera_page.dart';
 Future<void> showCompositionGuide(BuildContext context, CompositionMode mode) {
   if (mode == CompositionMode.none) return Future.value();
   hapticTap();
-  // Fades up in place rather than sliding in from the bottom edge. The guide
-  // is a reference card about the frame you are already looking at, so it
-  // should arrive *over* the shot, not travel across it — a slide-up drags the
-  // eye down and away from the composition being explained.
-  final bool still = reduceMotionOf(context);
-  return showGeneralDialog<void>(
+  // The app's shared reference-card presentation: fades up in place rather
+  // than sliding in from the bottom edge. See [showGildedCard] — the
+  // level-line preferences, opened by long-pressing the same button, use it
+  // too, so one control never produces two different modal gestures.
+  return showGildedCard<void>(
     context: context,
-    barrierDismissible: true,
     barrierLabel: 'Dismiss guide',
-    barrierColor: Colors.black.withValues(alpha: 0.56),
-    transitionDuration: still
-        ? Duration.zero
-        : const Duration(milliseconds: 260),
-    pageBuilder: (_, _, _) =>
-        _CompositionGuideSheet(spec: kCompositionByMode[mode]!),
-    transitionBuilder: (context, anim, _, child) {
-      final curved = CurvedAnimation(
-        parent: anim,
-        curve: Curves.easeOutCubic,
-        reverseCurve: Curves.easeInCubic,
-      );
-      return FadeTransition(
-        opacity: curved,
-        // A whisper of scale so it *settles* into place instead of blinking
-        // on — the app's one arrival gesture, same easing as the belt.
-        child: still
-            ? child
-            : ScaleTransition(
-                scale: Tween<double>(begin: 0.96, end: 1.0).animate(curved),
-                child: child,
-              ),
-      );
-    },
+    builder: (_) => _CompositionGuideSheet(spec: kCompositionByMode[mode]!),
   );
 }
 

@@ -526,12 +526,17 @@ class _CameraPageState extends State<CameraPage>
   /// per-shot control.
   void _showLevelLineSettings() {
     hapticTap();
-    showModalBottomSheet(
+    // Same arrival as the guide sheet, which the SAME button opens on tap —
+    // one control must not produce two different modal gestures. It was
+    // already a GlassSurface card with all four corners rounded, so the sheet
+    // slot was only ever a docking position for it. See [showGildedCard].
+    showGildedCard<void>(
       context: context,
-      backgroundColor: Colors.transparent,
-      builder: (sheetCtx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      barrierLabel: 'Dismiss level line settings',
+      builder: (sheetCtx) => Center(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 24),
+          constraints: const BoxConstraints(maxWidth: 460),
           child: GlassSurface(
             borderRadius: BorderRadius.circular(kRadiusLg),
             padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),

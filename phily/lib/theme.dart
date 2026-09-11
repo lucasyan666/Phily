@@ -748,6 +748,53 @@ class GoldAura extends StatelessWidget {
   );
 }
 
+/// Present [child] as a centred card that fades up in place.
+///
+/// The app's one modal gesture for *reference* surfaces — the composition
+/// guide, the level-line preferences. Both are cards about the frame you are
+/// already looking at, so they arrive **over** the shot rather than travelling
+/// across it: a slide-up drags the eye down and away from the thing being
+/// explained.
+///
+/// Deliberately NOT used by the paywall, which is a destination rather than a
+/// reference, or by the debug menu, which is a list of actions — a docked
+/// sheet is the right shape for both.
+///
+/// Honours Reduce Motion: the card appears with no transition at all.
+Future<T?> showGildedCard<T>({
+  required BuildContext context,
+  required WidgetBuilder builder,
+  String barrierLabel = 'Dismiss',
+}) {
+  final bool still = reduceMotionOf(context);
+  return showGeneralDialog<T>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: barrierLabel,
+    barrierColor: Colors.black.withValues(alpha: 0.56),
+    transitionDuration: still ? Duration.zero : kDurMed,
+    pageBuilder: (ctx, _, _) => builder(ctx),
+    transitionBuilder: (context, anim, _, child) {
+      final curved = CurvedAnimation(
+        parent: anim,
+        curve: kEaseOut,
+        reverseCurve: Curves.easeInCubic,
+      );
+      return FadeTransition(
+        opacity: curved,
+        // A whisper of scale so it *settles* into place rather than blinking
+        // on — the same arrival the rest of the app's chrome uses.
+        child: still
+            ? child
+            : ScaleTransition(
+                scale: Tween<double>(begin: 0.96, end: 1.0).animate(curved),
+                child: child,
+              ),
+      );
+    },
+  );
+}
+
 // ── Hint pill ────────────────────────────────────────────────────────────────
 
 /// The app's one text bubble: glyph · hairline · message on gradient-faked
