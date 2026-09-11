@@ -111,6 +111,9 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
       "lifted" selection scale, which a 114% bubble would fight). Those three
       carry the button trait via `Semantics` instead. Nothing left to convert.
 ### Design boards not yet built
+- [x] Guide diagrams draw on as the card settles — spiral traces from its
+      eye, the other fifteen fade up together. (pass #28; spiral itself
+      shipped earlier the same day at Lucas's request)
 - [ ] 1f after-the-shutter card ("RULE OF THIRDS · LANDED" over the photo,
       3 uses per mode, swipe down) — self-contained, reuses `ShotGuide`.
 - [ ] 1e grouped all-16 sheet (Balance · Lines & Motion · Shape · Frame) with
@@ -914,3 +917,32 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   new: the fade-and-settle arrival, Reduce Motion appearing with no
   transition at all, barrier dismissal) · `flutter build ios --simulator` ✓.
 - **Commit:** `overnight: pass #27 — design-system — 2026-09-11T11:32:26+0100`
+
+### Pass #28 — design-board — 2026-09-11T12:00:47+0100
+- **What:** the other fifteen guide modes now draw on with the card. The
+  spiral's `reveal` was being *passed* to every mode's painter and read by
+  exactly one, so opening any other guide snapped its diagram in while the
+  spiral drew itself. Non-spiral modes now fade up together, under one
+  `saveLayer` that carries lines and power points as a single object.
+- **Why:** the draw-on is a board gesture, not a spiral feature. Fifteen
+  guides receiving an animation parameter and ignoring it is an unfinished
+  edge, and the inconsistency is visible the moment a user opens two
+  different guides in a row.
+- **The judgement call:** I did *not* give each mode a bespoke stroke order.
+  The spiral is one continuous line, so tracing it from the eye outward is
+  true to the shape. A thirds grid is four straight lines with no natural
+  start point — animating them in some order would invent a reading
+  direction the composition does not have. One honest gesture per kind of
+  shape, rather than one animation forced onto both.
+- **Metric:** guide modes that animate on: 1/16 → 16/16. Modes given a
+  fabricated stroke order: 0.
+- **Canvas safety:** CLAUDE.md warns that an unbalanced `save`/`restore` in
+  an overlay painter "silently corrupts everything drawn afterward and
+  neither the analyzer nor the tests will catch it". This pass adds a
+  *conditional* `saveLayer`, which is exactly that hazard, so
+  `test/guide_reveal_modes_test.dart` asserts net save depth is 0 for all 17
+  modes × 7 reveal values (119 combinations). I then deliberately deleted the
+  matching `restore()` and confirmed the test fails — it is not vacuous.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 214/214 (2
+  new) · `flutter build ios --simulator` ✓.
+- **Commit:** `overnight: pass #28 — design-board — 2026-09-11T12:00:47+0100`

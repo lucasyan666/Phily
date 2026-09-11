@@ -1000,6 +1000,17 @@ class _LevelDialPainter extends CustomPainter {
       old.deviceTurns != deviceTurns;
 }
 
+/// Test seam: paint one composition's guide at a given draw-on [reveal], so
+/// the save/restore balance of the reveal's conditional `saveLayer` can be
+/// checked for every mode. See `test/guide_reveal_modes_test.dart`.
+@visibleForTesting
+void debugPaintComposition(
+  Canvas canvas,
+  Size size,
+  CompositionMode mode,
+  double reveal,
+) => _CompositionPainter(mode, reveal: reveal).paint(canvas, size);
+
 /// Test seam: would the guide-layer painter repaint when the page rebuilds
 /// with its state unchanged (same mode, the fresh-but-equal lists a build
 /// hands it)? Must stay false — see [_CompositionPainter.shouldRepaint].
@@ -1217,6 +1228,23 @@ class _CompositionPainter extends CustomPainter {
       canvas.translate(0, topInset);
       canvas.clipRect(Rect.fromLTWH(0, 0, grid.width, grid.height));
     }
+    // The guide sheet draws its diagram on as the card settles. The spiral
+    // traces itself from the eye outward (it is a single continuous line, so
+    // it *can*); every other mode is a set of straight lines with no natural
+    // start point, so forcing a stroke order on them would invent a reading
+    // direction the composition does not have. They fade up together instead —
+    // one gesture, honestly applied to two different kinds of shape.
+    final bool fadeIn =
+        reveal < 0.999 && mode != CompositionMode.fibonacciSpiral;
+    if (fadeIn) {
+      canvas.saveLayer(
+        Rect.fromLTWH(0, 0, grid.width, grid.height),
+        Paint()
+          ..color = Colors.white.withValues(
+            alpha: Curves.easeOut.transform(reveal.clamp(0.0, 1.0)),
+          ),
+      );
+    }
     switch (mode) {
       case CompositionMode.none:
         break;
@@ -1345,6 +1373,9 @@ class _CompositionPainter extends CustomPainter {
         }
       }
     }
+    // Close the draw-on fade layer (guide lines + power points together, so
+    // the grid and its dots arrive as one object rather than in two stages).
+    if (fadeIn) canvas.restore();
     canvas.restore();
 
     // ── Horizon Grid: a golden guide line marking the ideal horizon placement,

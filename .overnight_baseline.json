@@ -1,6 +1,6 @@
 {
-  "pass": 27,
-  "updated": "2026-09-11T11:32:26+0100",
+  "pass": 28,
+  "updated": "2026-09-11T12:00:47+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-board",
+  "next_type": "performance",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 212,
+    "flutter_test_passed": 214,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -389,6 +389,15 @@
         "paywall (a destination)",
         "debug menu (a list of actions)"
       ]
+    },
+    "guide_draw_on_coverage": {
+      "modes_animating": {
+        "before": "1/16",
+        "after": "16/16"
+      },
+      "modes_given_fabricated_stroke_order": 0,
+      "canvas_balance_combinations_tested": 119,
+      "negative_test": "restore() deleted on purpose; the test failed as required"
     }
   }
 }
