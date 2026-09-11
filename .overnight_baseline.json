@@ -1,6 +1,6 @@
 {
-  "pass": 35,
-  "updated": "2026-09-11T15:31:06+0100",
+  "pass": 36,
+  "updated": "2026-09-11T16:00:52+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,12 +8,12 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "compatibility",
+  "next_type": "design-system",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 246,
+    "flutter_test_passed": 263,
     "flutter_test_failed": 0,
-    "flutter_build_ios_simulator": "ok (unchanged tree)"
+    "flutter_build_ios_simulator": "ok"
   },
   "metrics": {
     "gallery_grid_thumb_request_px": {
@@ -500,7 +500,24 @@
       "controller_value_assignment_leaves_it_running": false,
       "stale_settle_beat_can_restart_a_complete_draw": false,
       "method": "each fix removed; test still passed \u2192 the defect was imaginary"
+    },
+    "gallery_filter_row": {
+      "configs_clean": {
+        "before": "8/12",
+        "after": "12/12"
+      },
+      "worst_overflow_px": {
+        "before": 132,
+        "after": 0,
+        "at": "375pt @AX5"
+      },
+      "rows_at_default_text": {
+        "before_fix": 1,
+        "after_wrap_regression": 2,
+        "final": 1
+      },
+      "note": "Wrap gave chips unbounded width; IntrinsicWidth restored Row-like sizing"
     }
   },
-  "last_pass_outcome": "no change \u2014 three suspected defects all disproved"
+  "last_pass_outcome": "shipped"
 }

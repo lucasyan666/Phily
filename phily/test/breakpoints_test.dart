@@ -495,6 +495,70 @@ void main() {
     }
   });
 
+  group('gallery filter row', () {
+    // ALL / ◆ BY PHILY, docked at the foot of the grid. Two fixed-height
+    // chips in an unconstrained Row — the shape that overflowed the paywall.
+    for (final d in _devices) {
+      for (final scale in _textScales) {
+        testWidgets('fits ${d.name} at $scale× text', (tester) async {
+          await _pumpOn(
+            tester,
+            d,
+            scale,
+            Scaffold(
+              backgroundColor: Colors.black,
+              body: Align(
+                alignment: Alignment.bottomCenter,
+                child: debugFilterRow(),
+              ),
+            ),
+          );
+          expect(tester.takeException(), isNull, reason: 'overflow');
+
+          // Both labels fit inside their chips at every text size.
+          for (final label in ['ALL', '◆ BY PHILY']) {
+            final para = tester.renderObject<RenderParagraph>(find.text(label));
+            expect(
+              para.textSize.height,
+              lessThanOrEqualTo(para.size.height + 0.5),
+              reason: '$label clipped in its chip',
+            );
+          }
+        });
+      }
+    }
+
+    testWidgets('the chips sit on one line at ordinary text sizes', (
+      tester,
+    ) async {
+      // A Wrap gives an unconstrained child the whole row, so without an
+      // intrinsic width the two chips stretched full-width and stacked at
+      // EVERY size — a regression introduced while fixing the AX5 overflow.
+      await _pumpOn(
+        tester,
+        _devices.first,
+        1.0,
+        Scaffold(
+          body: Align(
+            alignment: Alignment.bottomCenter,
+            child: debugFilterRow(),
+          ),
+        ),
+      );
+      final tops = <double>{};
+      final chips = find.byType(PopTap);
+      for (var i = 0; i < chips.evaluate().length; i++) {
+        tops.add(tester.getRect(chips.at(i)).top);
+      }
+      expect(tops.length, 1, reason: 'chips wrapped at the default text size');
+      expect(
+        tester.getSize(find.byType(Wrap)).height,
+        lessThan(60),
+        reason: 'filter row is two rows tall when it should be one',
+      );
+    });
+  });
+
   group('guide card height budget', () {
     // The framed diagram used a flat 200pt on every phone, which on a short
     // one was ~30% of the card — squeezing the copy and pushing the dismiss

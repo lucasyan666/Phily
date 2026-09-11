@@ -187,6 +187,20 @@ class _SectionHeaderBar extends StatelessWidget {
 }
 
 /// Calm empty state when the library (or the Phily filter) has nothing yet.
+/// Test seam: the ALL / BY PHILY filter row, docked at the foot of the grid.
+/// Two chips in an unconstrained Row, each a fixed 40pt tall — the shape that
+/// overflowed the paywall (pass #31). See `test/breakpoints_test.dart`.
+@visibleForTesting
+Widget debugFilterRow({bool byPhily = false}) => Wrap(
+  alignment: WrapAlignment.center,
+  spacing: 10,
+  runSpacing: 8,
+  children: [
+    _FilterChip(label: 'ALL', active: !byPhily, onTap: () {}),
+    _FilterChip(label: '◆ BY PHILY', active: byPhily, gold: true, onTap: () {}),
+  ],
+);
+
 /// Test seam: the empty state is private, but it is the first thing a new user
 /// sees and it has to survive every phone and text size. See
 /// `test/breakpoints_test.dart`.
@@ -450,28 +464,37 @@ class _FilterChip extends StatelessWidget {
     final Color ink = gold ? kGold : kPaper;
     return PopTap(
       onTap: onTap,
-      child: AnimatedContainer(
-        duration: motionOf(context, kDurFast),
-        curve: Curves.easeOut,
-        height: 40,
-        padding: const EdgeInsets.symmetric(horizontal: 18),
-        alignment: Alignment.center,
-        decoration: active
-            ? glassChipDecoration(radius: 20, active: gold)
-            : BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: ink.withValues(alpha: gold ? 0.5 : 0.22),
-                  width: gold ? 1.0 : 0.8,
+      // IntrinsicWidth: inside a Wrap the chip has unbounded width, so an
+      // AnimatedContainer with no width of its own stretched to the full row
+      // and forced the two chips onto separate lines at EVERY text size. A
+      // Row used to constrain them; a Wrap does not.
+      child: IntrinsicWidth(
+        child: AnimatedContainer(
+          duration: motionOf(context, kDurFast),
+          curve: Curves.easeOut,
+          // minHeight, not height: the label is tracked small-caps that grows
+          // with the text size, and a fixed 40pt box clipped it at AX5. At
+          // ordinary sizes this is exactly 40pt, as before.
+          constraints: const BoxConstraints(minHeight: 40),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+          alignment: Alignment.center,
+          decoration: active
+              ? glassChipDecoration(radius: 20, active: gold)
+              : BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: ink.withValues(alpha: gold ? 0.5 : 0.22),
+                    width: gold ? 1.0 : 0.8,
+                  ),
                 ),
-              ),
-        child: Text(
-          label,
-          style: brandLabel(
-            size: 10,
-            weight: FontWeight.w500,
-            color: active ? ink : ink.withValues(alpha: 0.75),
-            letterSpacing: 1.4,
+          child: Text(
+            label,
+            style: brandLabel(
+              size: 10,
+              weight: FontWeight.w500,
+              color: active ? ink : ink.withValues(alpha: 0.75),
+              letterSpacing: 1.4,
+            ),
           ),
         ),
       ),
@@ -969,15 +992,19 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
               left: 0,
               right: 0,
               bottom: MediaQuery.of(context).padding.bottom + 19,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+              // A Wrap, not a Row: at accessibility text sizes the two chips
+              // plus their gap ran 132pt past a 375pt screen. They drop to a
+              // second line instead of being cut off.
+              child: Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 10,
+                runSpacing: 8,
                 children: [
                   _FilterChip(
                     label: 'ALL',
                     active: !_byPhily,
                     onTap: () => _setByPhily(false),
                   ),
-                  const SizedBox(width: 10),
                   _FilterChip(
                     label: '◆ BY PHILY',
                     active: _byPhily,

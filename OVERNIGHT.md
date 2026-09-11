@@ -1160,3 +1160,29 @@ evidence.
   file to `/tmp` first is the cheaper habit.
 - **Verification:** tree identical to `39e1826` · `flutter analyze` 0 issues
   · `flutter test` 246/246.
+
+### Pass #36 — compatibility — 2026-09-11T16:00:52+0100
+- **What:** the gallery's ALL / ◆ BY PHILY filter row, docked at the foot of
+  the grid. Two fixed-height chips in an unconstrained `Row` — the same shape
+  that broke the paywall in pass #31.
+- **Measured first, then changed.** Pass #35 burned a whole pass on
+  hypotheses that turned out false, so this one opened with a probe: the row
+  overflowed **132pt on a 375pt screen at AX5** (114pt at 393pt), and both
+  labels clipped vertically inside their 40pt chips. Only then did I touch
+  anything.
+- **Fixed:** `Row` → `Wrap` (the chips drop to a second line instead of being
+  cut off) and `height: 40` → `minHeight: 40` with vertical padding (the
+  tracked small-caps grows with the text size).
+- **I introduced a regression and caught it.** `Wrap` hands an unconstrained
+  child the whole row, so each chip stretched full-width and the two stacked
+  on **two lines at every text size, including 1.0×** — visibly worse than
+  the bug I was fixing. The overflow count said "clean"; measuring the actual
+  layout said otherwise. `IntrinsicWidth` restores the sizing a `Row` used to
+  impose. There is now a test asserting the chips share one line at ordinary
+  sizes, so this specific regression cannot come back quietly.
+- **Metric:** filter row configurations without overflow or clipping:
+  **8/12 → 12/12** (3 widths × 4 text scales). Rows occupied at 1.0×: 2 → 1
+  (40pt tall, as designed). At AX5 it wraps to 2 rows, which is the intent.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 263/263 (17
+  new) · `flutter build ios --simulator` ✓.
+- **Commit:** `overnight: pass #36 — compatibility — 2026-09-11T16:00:52+0100`
