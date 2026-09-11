@@ -1186,3 +1186,31 @@ evidence.
 - **Verification:** `flutter analyze` 0 issues · `flutter test` 263/263 (17
   new) · `flutter build ios --simulator` ✓.
 - **Commit:** `overnight: pass #36 — compatibility — 2026-09-11T16:00:52+0100`
+
+### Pass #37 — design-system — 2026-09-11T22:22:06+0100
+- **What:** the paywall's primary CTA — the button a user taps to pay — was
+  a fixed 52pt box. At AX5 its label needs 138pt, so it was **clipped by
+  86pt**. Now `minHeight: 52` with padding and centred text: exactly 52pt at
+  ordinary sizes, growing only when the type demands it.
+- **Measured first.** Swept every remaining fixed-height box holding text
+  across `lib/screens` and `theme.dart`; the CTA was the only real hit (the
+  gallery spinner is a fixed-size indicator, not text).
+- **The fix needed a second change to work.** Removing the fixed height threw
+  `BoxConstraints forces an infinite height` — the button's `Stack` used
+  `StackFit.expand`, so *no* child could size it and the shimmer (a
+  full-bleed `DecoratedBox`) certainly could not. Restructured: the label is
+  now the Stack's first, unpositioned child, so it sizes the button, and the
+  shimmer is `Positioned.fill` around it. Same visual, correct layout
+  ownership.
+- **Metric:** CTA label clipped: **86pt at AX5 → 0**, across 1.0×/1.3×/2.0×/
+  3.1×. Button height at ordinary sizes: 52pt, unchanged.
+- **Negative test done properly:** restored `height: 52`, re-ran, watched the
+  new test fail with `"Continue" is clipped inside the purchase button`, then
+  restored from a `/tmp` copy rather than `git checkout` — the habit pass #35
+  cost me twice to learn.
+- **Not a regression:** the full suite reported 49:56 during this pass. Re-run
+  alone it is 8s. That was contention from running `flutter test` and
+  `flutter build ios` concurrently in the background, not a slowdown.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 267/267 (4
+  new) · `flutter build ios --simulator` ✓.
+- **Commit:** `overnight: pass #37 — design-system — 2026-09-11T22:22:06+0100`

@@ -6,6 +6,7 @@
 // Three rows were also unconstrained (tier name, price column, header
 // wordmark, promo badge), overflowing horizontally at every size.
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:phily/screens/paywall.dart';
@@ -67,6 +68,59 @@ void main() {
         );
       });
     }
+  }
+
+  for (final scale in _scales) {
+    testWidgets('the CTA label fits its button at ${scale}x text', (
+      tester,
+    ) async {
+      // The primary button was a fixed 52pt box. At AX5 its label needed
+      // 138pt and was clipped by 86pt — on the control a user taps to pay.
+      tester.view.physicalSize = const Size(375 * 3, 667 * 3);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.reset);
+
+      late BuildContext ctx;
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (c, child) => MediaQuery(
+            data: MediaQuery.of(
+              c,
+            ).copyWith(textScaler: TextScaler.linear(scale)),
+            child: child!,
+          ),
+          home: Scaffold(
+            body: Builder(
+              builder: (c) {
+                ctx = c;
+                return const SizedBox.expand();
+              },
+            ),
+          ),
+        ),
+      );
+      showPhilyProPaywall(ctx);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      for (final widget in tester.widgetList<Text>(find.byType(Text))) {
+        final label = widget.data;
+        if (label == null) continue;
+        if (!label.contains('Continue') &&
+            !label.contains('Start') &&
+            !label.contains('Unlock')) {
+          continue;
+        }
+        final paragraph = tester.renderObject<RenderParagraph>(
+          find.text(label).first,
+        );
+        expect(
+          paragraph.textSize.height,
+          lessThanOrEqualTo(paragraph.size.height + 0.5),
+          reason: '"$label" is clipped inside the purchase button',
+        );
+      }
+    });
   }
 
   testWidgets('the purchase buttons are always reachable', (tester) async {

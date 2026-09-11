@@ -633,7 +633,15 @@ class _PrimaryButtonState extends State<_PrimaryButton>
           duration: motionOf(context, kDurFast),
           curve: kEaseOut,
           child: Container(
-            height: 52,
+            // minHeight, not height: at accessibility text sizes the label
+            // wraps and a fixed 52pt box clipped it by 86pt — on the button a
+            // user taps to pay. Exactly 52pt at ordinary sizes, as before.
+            //
+            // The Stack below holds a full-bleed shimmer, which cannot size
+            // itself, so the label is the Stack's sizing child (see
+            // `StackFit.loose` + the label first in the children list) — that
+            // is what gives this Container a finite height to grow with.
+            constraints: const BoxConstraints(minHeight: 52),
             clipBehavior: Clip.antiAlias,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(kRadiusMd),
@@ -661,44 +669,62 @@ class _PrimaryButtonState extends State<_PrimaryButton>
                   : null,
             ),
             child: Stack(
-              fit: StackFit.expand,
               children: [
+                // The label is FIRST and unpositioned, so it is the Stack's
+                // sizing child — that is what lets the button grow with the
+                // text instead of clipping it. The shimmer is Positioned.fill
+                // around it (a full-bleed child cannot size a Stack).
+                Center(
+                  child: Padding(
+                    // Breathing room for a label that wraps to two or three
+                    // lines at accessibility text sizes, so it never runs into
+                    // the gilt edge.
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
+                    child: Text(
+                      widget.label,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.black,
+                        fontSize: 15.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ),
+                ),
                 // Light sweep: a soft white band gliding across the metal.
                 if (enabled)
-                  AnimatedBuilder(
-                    animation: _sweep,
-                    builder: (_, _) => FractionalTranslation(
-                      translation: Offset(
-                        -1.0 + 2.0 * Curves.easeInOut.transform(_sweep.value),
-                        0,
-                      ),
-                      child: const DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.centerLeft,
-                            end: Alignment.centerRight,
-                            colors: [
-                              Color(0x00FFFFFF),
-                              Color(0x59FFFFFF),
-                              Color(0x00FFFFFF),
-                            ],
-                            stops: [0.35, 0.5, 0.65],
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: AnimatedBuilder(
+                        animation: _sweep,
+                        builder: (_, _) => FractionalTranslation(
+                          translation: Offset(
+                            -1.0 +
+                                2.0 * Curves.easeInOut.transform(_sweep.value),
+                            0,
+                          ),
+                          child: const DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.centerLeft,
+                                end: Alignment.centerRight,
+                                colors: [
+                                  Color(0x00FFFFFF),
+                                  Color(0x59FFFFFF),
+                                  Color(0x00FFFFFF),
+                                ],
+                                stops: [0.35, 0.5, 0.65],
+                              ),
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                Center(
-                  child: Text(
-                    widget.label,
-                    style: const TextStyle(
-                      color: Colors.black,
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.2,
-                    ),
-                  ),
-                ),
               ],
             ),
           ),

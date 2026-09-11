@@ -1,6 +1,6 @@
 {
-  "pass": 36,
-  "updated": "2026-09-11T16:00:52+0100",
+  "pass": 37,
+  "updated": "2026-09-11T22:22:06+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-system",
+  "next_type": "design-board",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 263,
+    "flutter_test_passed": 267,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -517,6 +517,18 @@
         "final": 1
       },
       "note": "Wrap gave chips unbounded width; IntrinsicWidth restored Row-like sizing"
+    },
+    "paywall_cta_label": {
+      "clipped_px_at_ax5": {
+        "before": 86,
+        "after": 0
+      },
+      "button_height_at_1x": {
+        "before": 52,
+        "after": 52
+      },
+      "secondary_fix": "Stack used StackFit.expand so nothing could size it; label is now the sizing child, shimmer Positioned.fill",
+      "negative_test": "reintroduced height:52 \u2192 new test failed as required"
     }
   },
   "last_pass_outcome": "shipped"
