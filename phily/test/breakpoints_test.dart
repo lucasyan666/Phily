@@ -495,6 +495,79 @@ void main() {
     }
   });
 
+  group('guide card height budget', () {
+    // The framed diagram used a flat 200pt on every phone, which on a short
+    // one was ~30% of the card — squeezing the copy and pushing the dismiss
+    // chip further below the fold. It is now a share of the screen.
+    for (final d in [_devices.first, _devices[2]]) {
+      testWidgets('the diagram is a share of ${d.name}, not a flat 200pt', (
+        tester,
+      ) async {
+        late BuildContext ctx;
+        await _pumpOn(
+          tester,
+          d,
+          1.0,
+          Scaffold(
+            body: Builder(
+              builder: (c) {
+                ctx = c;
+                return const SizedBox.expand();
+              },
+            ),
+          ),
+        );
+        showCompositionGuide(ctx, CompositionMode.fibonacciSpiral);
+        await tester.pumpAndSettle();
+
+        // The diagram's own SizedBox, found via the framed AspectRatio inside.
+        final frame = tester.getRect(find.byType(AspectRatio).first);
+        expect(
+          frame.height,
+          lessThanOrEqualTo(d.size.height * 0.25),
+          reason: 'diagram takes more than a quarter of the screen',
+        );
+        expect(
+          frame.height,
+          greaterThanOrEqualTo(140 - 0.5),
+          reason: 'diagram collapsed too small to read',
+        );
+      });
+    }
+
+    testWidgets('a tall phone shows nearly the whole card at once', (
+      tester,
+    ) async {
+      late BuildContext ctx;
+      await _pumpOn(
+        tester,
+        _devices[2], // Pro Max
+        1.0,
+        Scaffold(
+          body: Builder(
+            builder: (c) {
+              ctx = c;
+              return const SizedBox.expand();
+            },
+          ),
+        ),
+      );
+      showCompositionGuide(ctx, CompositionMode.fibonacciSpiral);
+      await tester.pumpAndSettle();
+      // 216pt of scroll on an SE, and with real safe-area insets a Pro Max
+      // is down to 12pt — effectively the whole card in view. Before the
+      // diagram became proportional this was 256pt and 60pt respectively.
+      expect(
+        tester
+            .state<ScrollableState>(find.byType(Scrollable).last)
+            .position
+            .maxScrollExtent,
+        lessThan(40),
+        reason: 'the card should very nearly fit a Pro Max outright',
+      );
+    });
+  });
+
   group('composition guide sheet', () {
     // Worst cases only: the narrowest phone and the shortest orientation.
     final tight = [_devices.first, _devices.last];

@@ -83,6 +83,12 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
   /// [_CompositionPainter.emphasis].
   static const double _kSheetEmphasis = 2.6;
 
+  /// Height for the framed diagram: a share of the screen rather than a flat
+  /// 200pt, so a short phone spends less of its card on the picture and more
+  /// on the words it has to fit.
+  static double _diagramHeight(BuildContext context) =>
+      (MediaQuery.of(context).size.height * 0.24).clamp(140.0, 220.0);
+
   /// Widest the card may get. A reference card is a column of prose; on a
   /// phone held landscape an uncapped card ran 816pt wide — line lengths no
   /// one reads comfortably, and it swallowed the frame it is explaining.
@@ -300,7 +306,13 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
                         // mode's own overlay painter, framed like a print in a
                         // fine gold mat.
                         SizedBox(
-                          height: 200,
+                          // Proportional, not a flat 200pt: on a short phone
+                          // that fixed height was ~30% of the card, pushing
+                          // the copy — and the dismiss chip — further below
+                          // the fold. Clamped so it still reads as a framed
+                          // print on a tall screen and never collapses on a
+                          // small one.
+                          height: _diagramHeight(context),
                           child: Center(
                             child: AspectRatio(
                               aspectRatio: landscapeDiagram ? 4 / 3 : 3 / 4,

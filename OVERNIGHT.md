@@ -188,6 +188,17 @@ built on `showGildedCard` needs a `SingleChildScrollView`** — the copy inside
 these cards grows with the text size, so "it fits on my phone" is not
 evidence.
 
+## Next up (scoped, not started)
+- **Dock the guide card's dismiss chip.** "GOT IT" is the LAST item inside
+  the card's `SingleChildScrollView`, so it sits below the fold — 216pt down
+  on an SE at the default text size, 3.8k at AX5. It is the card's only
+  *visible* way out (the barrier tap works but is not discoverable). The fix
+  is to move it out of the scroll view into a `Column` with the scroll view
+  as a `Flexible` sibling, so the copy scrolls and the chip stays docked at
+  the foot. I attempted this twice in pass #33 and both times unbalanced the
+  brackets in the deeply-nested tree; reverted rather than ship a broken
+  parse. **Worth its own pass**, edited by hand rather than by script.
+
 ## Proposals (not done — needs a decision)
 - 1b level glyph in the rail: retires the centre-frame level line in portrait.
 - Camera bottom chrome vs the home indicator (pass #6 audit). The bottom
@@ -1078,3 +1089,29 @@ evidence.
 - **Verification:** `flutter analyze` 0 issues · `flutter test` 235/235 (1
   new) · `flutter build ios --simulator` ✓.
 - **Commit:** `overnight: pass #32 — compatibility — 2026-09-11T14:00:19+0100`
+
+### Pass #33 — design-board — 2026-09-11T14:30:18+0100
+- **What:** the guide card's framed diagram is now a share of the screen
+  (24%, clamped 140–220pt) instead of a flat 200pt on every phone.
+- **Why:** 200pt is ~30% of an iPhone SE's height. The card is a *reference*
+  — words about a picture — and on a short phone the picture was crowding
+  out the words it explains. On a tall phone 200pt was, conversely, a little
+  mean. Proportional serves both.
+- **Metric:** card scroll extent at the default text size: **SE 256 → 216pt**
+  (−16%), **Pro Max 60 → 12pt** — the tall phone now shows effectively the
+  whole card at once. Diagram height: SE 200 → 160pt, Pro Max 200 → 220pt.
+  Asserted: the diagram never exceeds a quarter of the screen and never
+  collapses below 140pt.
+- **Found but NOT fixed — logged under "Next up":** the dismiss chip sits
+  below the fold because it is the last item *inside* the scroll view. That
+  is a worse problem than the one I fixed, and the honest outcome of this
+  pass is that I could not land it cleanly: two attempts to restructure the
+  nested tree by script both broke the parse, and I reverted both rather than
+  patch forward. Scoped for a dedicated pass, done by hand.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 238/238 (3
+  new) · `flutter build ios --simulator` ✓.
+- **Note on the test:** my first assertion said a Pro Max would scroll 0pt,
+  from a probe run *without* safe-area insets. With real insets it is 12pt. I
+  corrected the assertion to the measured value rather than the value I
+  expected.
+- **Commit:** `overnight: pass #33 — design-board — 2026-09-11T14:30:18+0100`
