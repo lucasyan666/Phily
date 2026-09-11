@@ -1,6 +1,6 @@
 {
-  "pass": 34,
-  "updated": "2026-09-11T14:58:35+0100",
+  "pass": 35,
+  "updated": "2026-09-11T15:31:06+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,12 +8,12 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "performance",
+  "next_type": "compatibility",
   "gates": {
     "flutter_analyze_issues": 0,
     "flutter_test_passed": 246,
     "flutter_test_failed": 0,
-    "flutter_build_ios_simulator": "ok"
+    "flutter_build_ios_simulator": "ok (unchanged tree)"
   },
   "metrics": {
     "gallery_grid_thumb_request_px": {
@@ -494,6 +494,13 @@
         "screen_height": 667
       },
       "note": "the item pass #33 failed to land; succeeded via hand edits, not scripted restructure"
+    },
+    "disproved_assumptions": {
+      "backdropfilter_resamples_on_scroll": false,
+      "controller_value_assignment_leaves_it_running": false,
+      "stale_settle_beat_can_restart_a_complete_draw": false,
+      "method": "each fix removed; test still passed \u2192 the defect was imaginary"
     }
-  }
+  },
+  "last_pass_outcome": "no change \u2014 three suspected defects all disproved"
 }

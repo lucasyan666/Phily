@@ -1127,3 +1127,36 @@ evidence.
 - **Verification:** `flutter analyze` 0 issues · `flutter test` 246/246 (8
   new) · `flutter build ios --simulator` ✓.
 - **Commit:** `overnight: pass #34 — design-board — 2026-09-11T14:58:35+0100`
+
+### Pass #35 — performance — NO CHANGE — 2026-09-11T15:31:06+0100
+- **Outcome: nothing shipped.** I chased three suspected defects in the guide
+  card's animation and **all three turned out not to exist**. Reverted to the
+  committed state rather than commit a change that fixes nothing.
+- **What I suspected, and what was actually true:**
+  1. *"The `BackdropFilter` wraps the new scroll view, so scrolling re-runs a
+     28-sigma blur every frame."* — **False.** Flutter's scroll view inserts
+     its own `RepaintBoundary`, and the blur's render object is never marked
+     dirty by scrolling. Measured: 0 repaints of the sampled layer, boundary
+     or no boundary.
+  2. *"Assigning `AnimationController.value` does not stop a running
+     controller, so Reduce Motion mid-draw jumps to complete then keeps
+     animating."* — **False.** A direct probe shows `value =` sets
+     `isAnimating` to false. I had written a fix and a comment asserting the
+     opposite before testing the premise.
+  3. *"The 140ms settle beat is an uncancelled callback, so it can start an
+     animation after dismissal or after Reduce Motion."* — **Harmless.**
+     `forward()` on a controller already at 1.0 is a no-op, and the existing
+     `mounted` guard covers dismissal. Confirmed by removing the cancellation
+     I had added: the test still passed, because there was nothing to catch.
+- **How each was caught:** by trying to write a test that *fails* without the
+  fix. Every time, the test passed with the "bug" reintroduced — which is the
+  signal that the bug is imaginary, not that the test is weak. Three for
+  three. A fix whose absence cannot be detected is not a fix.
+- **What this cost and what it bought:** one pass with no commit. In exchange
+  the three assumptions are now written down as *measured false*, so a later
+  pass does not re-derive them — and one incorrect comment never shipped.
+- **Process note:** twice during this pass a `git checkout --` to undo a
+  deliberate break also discarded unrelated in-progress work. Copying the
+  file to `/tmp` first is the cheaper habit.
+- **Verification:** tree identical to `39e1826` · `flutter analyze` 0 issues
+  · `flutter test` 246/246.
