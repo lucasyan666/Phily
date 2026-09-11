@@ -1070,6 +1070,16 @@ class _CompositionPainter extends CustomPainter {
   /// validating eye tracking.
   final List<Offset> eyePoints;
 
+  /// How strongly to draw the guide. 1.0 is the live viewfinder's weight —
+  /// deliberately quiet, because over a moving preview the guide is a hint and
+  /// the subject is the point (board 1b: "Guide (persistent, quiet)").
+  ///
+  /// The guide *sheet* is the opposite case: a still photograph the user
+  /// opened in order to study the guide, often a bright one, where 0.45 alpha
+  /// at 0.8pt is close to invisible. It passes a higher value so the lines
+  /// actually read. Scales both alpha and stroke width.
+  final double emphasis;
+
   /// Selected crop ratio (W/H) for the Aspect Ratio mode.
   final double aspect;
 
@@ -1113,6 +1123,7 @@ class _CompositionPainter extends CustomPainter {
     this.aspect = 1.0,
     this.horizon,
     this.deviceTurns = 0,
+    this.emphasis = 1.0,
     List<Offset>? eyePoints,
     super.repaint,
   }) : glowSegs = glowSegs ?? const [],
@@ -1141,8 +1152,8 @@ class _CompositionPainter extends CustomPainter {
 
   /// Normal white hairline paint used by all draw methods.
   Paint _gp({StrokeCap cap = StrokeCap.butt}) => Paint()
-    ..color = _gold.withValues(alpha: 0.45)
-    ..strokeWidth = _sw
+    ..color = _gold.withValues(alpha: (0.45 * emphasis).clamp(0.0, 1.0))
+    ..strokeWidth = _sw * emphasis
     ..style = PaintingStyle.stroke
     ..strokeCap = cap
     ..strokeJoin = StrokeJoin.round
@@ -1825,7 +1836,10 @@ class _CompositionPainter extends CustomPainter {
   // two remaining corners (TR and BL) onto that diagonal.
   // Result: 3 unique lines, 4 non-overlapping triangles, all within the frame.
   void _drawGoldenTriangles(Canvas canvas, Size s) {
-    final p = _gp()..color = _gold.withValues(alpha: 0.45 * _gridDip);
+    final p = _gp()
+      ..color = _gold.withValues(
+        alpha: (0.45 * _gridDip * emphasis).clamp(0.0, 1.0),
+      );
 
     final double w = s.width;
     final double h = s.height;
@@ -1848,7 +1862,10 @@ class _CompositionPainter extends CustomPainter {
   // ── Golden Spiral ───────────────────────────────────────────────────────────
   void _drawGoldenSpiral(Canvas canvas, Size s) {
     final double dip = _gridDip;
-    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
+    final p = _p
+      ..color = _gold.withValues(
+        alpha: (0.45 * dip * emphasis).clamp(0.0, 1.0),
+      );
     const double phi = 1.6180339887;
 
     // 90°-per-step rotation lets the user aim the spiral's eye at any corner.
@@ -2085,7 +2102,10 @@ class _CompositionPainter extends CustomPainter {
   void _drawVArrangement(Canvas canvas, Size s) {
     // Fade through the shared flip dip so the upside-down swap is hidden.
     final double dip = _gridDip;
-    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
+    final p = _p
+      ..color = _gold.withValues(
+        alpha: (0.45 * dip * emphasis).clamp(0.0, 1.0),
+      );
 
     // Vertex at lower-center; arms rise symmetrically to the upper corners
     // of a contained region — fully visible, no clipping at edges.
@@ -2117,7 +2137,10 @@ class _CompositionPainter extends CustomPainter {
   // to ~85px apart near the opposite corner. The turn button cycles the corner.
   void _drawDiagonal(Canvas canvas, Size s) {
     final double dip = _gridDip;
-    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
+    final p = _p
+      ..color = _gold.withValues(
+        alpha: (0.45 * dip * emphasis).clamp(0.0, 1.0),
+      );
 
     // Offsets as fractions so the helpers stay ~85px apart near the far corner.
     final double ox = 85 / s.width;
@@ -2173,7 +2196,10 @@ class _CompositionPainter extends CustomPainter {
   // ── L Arrangement ───────────────────────────────────────────────────────────
   void _drawLArrangement(Canvas canvas, Size s) {
     final double dip = _gridDip;
-    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
+    final p = _p
+      ..color = _gold.withValues(
+        alpha: (0.45 * dip * emphasis).clamp(0.0, 1.0),
+      );
 
     // Normalised (turn 0, unflipped): corner low-left, vertical bar rising, foot
     // across the bottom to the right — a standard "L" by default. Flip mirrors

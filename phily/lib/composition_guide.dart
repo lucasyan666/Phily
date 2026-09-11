@@ -35,6 +35,15 @@ class _CompositionGuideSheet extends StatelessWidget {
     ..perfect = true
     ..alignGlow = 1.0;
 
+  /// How much heavier the guide is drawn here than on the live viewfinder.
+  ///
+  /// The camera keeps its guide quiet on purpose — it is a hint over a moving
+  /// subject. This sheet is the opposite: a still photograph the reader opened
+  /// *to study the guide*, often a bright one (sky, pale tabletop), where the
+  /// viewfinder's 0.45 alpha at 0.8pt all but disappears. See
+  /// [_CompositionPainter.emphasis].
+  static const double _kSheetEmphasis = 2.6;
+
   /// The mode's overlay painter with staged state, so the diagram shows the
   /// guide mid-use rather than bare lines.
   CustomPainter _diagramPainter() {
@@ -44,12 +53,14 @@ class _CompositionGuideSheet extends StatelessWidget {
           spec.mode,
           faceBoxes: [_demoFace],
           powerGlow: const [1.0, 0.25, 0.25, 0.25],
+          emphasis: _kSheetEmphasis,
         );
       case CompositionMode.goldenSection:
         // First phi point glows — the scene stands its figure there.
         return _CompositionPainter(
           spec.mode,
           powerGlow: const [1.0, 0.25, 0.25, 0.25],
+          emphasis: _kSheetEmphasis,
         );
       case CompositionMode.horizonGrid:
         // A slightly-tilted true horizon approaching the gold guide.
@@ -63,11 +74,16 @@ class _CompositionGuideSheet extends StatelessWidget {
             aligned: 0.35,
             dy: -0.04,
           )),
+          emphasis: _kSheetEmphasis,
         );
       case CompositionMode.aspectRatio:
-        return _CompositionPainter(spec.mode, aspect: 4 / 5);
+        return _CompositionPainter(
+          spec.mode,
+          aspect: 4 / 5,
+          emphasis: _kSheetEmphasis,
+        );
       default:
-        return _CompositionPainter(spec.mode);
+        return _CompositionPainter(spec.mode, emphasis: _kSheetEmphasis);
     }
   }
 
