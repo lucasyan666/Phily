@@ -174,6 +174,10 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - [ ] `gallery_viewer.dart` is not `dart format` clean (a format pass churns
       ~210 lines) — do it alone, in its own commit, never mixed into a pass.
 
+## Shipped from the backlog
+- Paywall breakpoints: was never covered (StoreKit guardrail kept passes out
+  of it). Pass #31 found it unusable on an iPhone SE and fixed it.
+
 ## Proposals (not done — needs a decision)
 - 1b level glyph in the rail: retires the centre-frame level line in portrait.
 - Camera bottom chrome vs the home indicator (pass #6 audit). The bottom
@@ -1005,3 +1009,33 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
   noting because the suite passed *before* analyze ran — a green test run is
   not evidence the code is current.
 - **Commit:** `overnight: pass #30 — compatibility — 2026-09-11T12:58:34+0100`
+
+### Pass #31 — design-system → became a real bug fix — 2026-09-11T13:30:14+0100
+- **Started as:** a consistency check — does every modal announce itself to
+  assistive tech the way the guide and level-line cards now do? The paywall
+  did not (no `barrierLabel`).
+- **Found instead:** probing the paywall threw **three RenderFlex overflows
+  at the default text size**, on every device tested. The worst: **233pt off
+  the bottom of an iPhone SE**, because the paywall has no scroll view at
+  all — its content is a fixed `Column`, so a phone shorter than the content
+  just clips. The purchase buttons were in the clipped region. **A user on an
+  SE could not subscribe.**
+- **Why it was never caught:** CLAUDE.md guardrails this loop out of
+  StoreKit/trial logic, and I had read that as "leave the paywall alone".
+  That is right about the *purchase logic* and wrong about the *layout* —
+  pass #11 touched its controls, but nothing ever measured the sheet.
+- **Fixed:**
+  - `SingleChildScrollView` around the content (the real bug).
+  - Four unconstrained rows → `Flexible`: tier name (60pt over on an SE at
+    1.0×), price column (492pt over at AX5), header wordmark (215pt at AX2),
+    promo badge (78pt at AX2).
+  - Legal links `Row` → `Wrap`: two 44pt targets plus a separator did not fit
+    a narrow phone.
+  - `barrierLabel: 'Dismiss Phily Pro'` — the consistency fix that started it.
+- **Metric:** paywall configurations rendering without overflow: **0/12 →
+  12/12** (3 devices × 4 text scales). Purchase buttons reachable on an SE:
+  no → yes (asserted via `ensureVisible`). Paywall breakpoint tests: 0 → 14.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 234/234 (14
+  new) · `flutter build ios --simulator` ✓. StoreKit logic untouched —
+  layout and semantics only.
+- **Commit:** `overnight: pass #31 — compatibility — 2026-09-11T13:30:14+0100`

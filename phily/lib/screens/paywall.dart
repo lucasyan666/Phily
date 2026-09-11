@@ -18,6 +18,9 @@ Future<void> showPhilyProPaywall(BuildContext context) {
     context: context,
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
+    // Named for assistive tech, like the guide and level-line cards. Without
+    // it VoiceOver announces an anonymous region.
+    barrierLabel: 'Dismiss Phily Pro',
     builder: (_) => const _PaywallSheet(),
   );
 }
@@ -135,7 +138,11 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                     right: 0,
                     child: GildedHairline(height: 1.2),
                   ),
-                  Padding(
+                  // Scrolls when it must: the content is a fixed Column, so on
+                  // any phone shorter than it the paywall simply CLIPPED —
+                  // 233pt off the bottom of an SE at the default text size,
+                  // taking the purchase buttons with it. A user could not buy.
+                  SingleChildScrollView(
                     padding: EdgeInsets.fromLTRB(24, 14, 24, 18 + bottom),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -161,24 +168,29 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                               size: 26,
                             ),
                             const SizedBox(width: 10),
-                            // Gilded wordmark — paper melting into gold, like the loader.
-                            ShaderMask(
-                              shaderCallback: (r) => const LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [kPaper, kGold],
-                                stops: [0.35, 1.0],
-                              ).createShader(r),
-                              child: Text(
-                                'Phily Pro',
-                                style: brandDisplay(
-                                  size: 28,
-                                  weight: FontWeight.w500,
-                                  color:
-                                      Colors.white, // recoloured by the shader
-                                  letterSpacing: 0.2,
-                                ),
-                              ),
+                            // Flexible: the wordmark grows with the text size
+                            // and pushed this row 215pt past the edge at AX2.
+                            Flexible(
+                              child:
+                                  // Gilded wordmark — paper melting into gold, like the loader.
+                                  ShaderMask(
+                                    shaderCallback: (r) => const LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [kPaper, kGold],
+                                      stops: [0.35, 1.0],
+                                    ).createShader(r),
+                                    child: Text(
+                                      'Phily Pro',
+                                      style: brandDisplay(
+                                        size: 28,
+                                        weight: FontWeight.w500,
+                                        color: Colors
+                                            .white, // recoloured by the shader
+                                        letterSpacing: 0.2,
+                                      ),
+                                    ),
+                                  ),
                             ),
                           ],
                         ),
@@ -308,9 +320,13 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                               ),
                             ),
                           ),
-                        // Apple-required legal links.
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                        // Apple-required legal links. A Wrap, not a Row: both
+                        // links carry a 44pt minimum tap target, so on a
+                        // narrow phone the pair plus its separator overflowed
+                        // the row — they drop to a second line instead.
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
                             _LegalLink(
                               label: 'Terms of Use',
@@ -423,44 +439,54 @@ class _TierRow extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      Text(
-                        tier.name,
-                        style: brandLabel(
-                          size: 15,
-                          weight: FontWeight.w600,
-                          color: kPaper,
-                          letterSpacing: 0.2,
+                      // Flexible: the name sits beside a badge and a price
+                      // column, and an unconstrained Text here overflowed the
+                      // row by up to 60pt on an SE at the DEFAULT text size.
+                      Flexible(
+                        child: Text(
+                          tier.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: brandLabel(
+                            size: 15,
+                            weight: FontWeight.w600,
+                            color: kPaper,
+                            letterSpacing: 0.2,
+                          ),
                         ),
                       ),
                       if (tier.badge != null) ...[
                         const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            // Metallic badge: lit lip → gold → antique base.
-                            gradient: const LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [kGoldLit, kGold, kGoldDeep],
+                        // Flexible: "BEST VALUE" at AX sizes is wider than the
+                        // row can give it beside the name.
+                        Flexible(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 2,
                             ),
-                            borderRadius: BorderRadius.circular(5),
-                            boxShadow: [
-                              BoxShadow(
-                                color: kGold.withValues(alpha: 0.35),
-                                blurRadius: 8,
+                            decoration: BoxDecoration(
+                              // Metallic badge: lit lip → gold → antique base.
+                              gradient: const LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [kGoldLit, kGold, kGoldDeep],
                               ),
-                            ],
-                          ),
-                          child: Text(
-                            tier.badge!,
-                            style: const TextStyle(
-                              color: Colors.black,
-                              fontSize: 9,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 0.4,
+                              borderRadius: BorderRadius.circular(5),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: kGold.withValues(alpha: 0.35),
+                                  blurRadius: 8,
+                                ),
+                              ],
+                            ),
+                            child: Text(
+                              tier.badge!,
+                              style: const TextStyle(
+                                color: Colors.black,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.4,
+                              ),
                             ),
                           ),
                         ),
@@ -481,26 +507,35 @@ class _TierRow extends StatelessWidget {
                 ],
               ),
             ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  price ?? '—',
-                  style: brandDisplay(
-                    size: 17,
-                    weight: FontWeight.w600,
-                    color: kGold,
-                    letterSpacing: 0.2,
+            const SizedBox(width: 8),
+            // Flexible too: at accessibility text sizes the price and the tier
+            // name were both unconstrained in one row and fought for the same
+            // width, overflowing by up to 492pt. Now each takes what it needs
+            // and the price wins ties (it is the number being decided on).
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    price ?? '—',
+                    textAlign: TextAlign.end,
+                    style: brandDisplay(
+                      size: 17,
+                      weight: FontWeight.w600,
+                      color: kGold,
+                      letterSpacing: 0.2,
+                    ),
                   ),
-                ),
-                Text(
-                  tier.cadence,
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.45),
-                    fontSize: 10.5,
+                  Text(
+                    tier.cadence,
+                    textAlign: TextAlign.end,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.45),
+                      fontSize: 10.5,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),

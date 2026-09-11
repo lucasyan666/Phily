@@ -1,6 +1,6 @@
 {
-  "pass": 30,
-  "updated": "2026-09-11T12:58:34+0100",
+  "pass": 31,
+  "updated": "2026-09-11T13:30:14+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-system",
+  "next_type": "design-board",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 220,
+    "flutter_test_passed": 234,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -427,6 +427,23 @@
         "bundled example photo",
         "painted fallback scene"
       ]
+    },
+    "paywall_breakpoints": {
+      "configs_without_overflow": {
+        "before": "0/12",
+        "after": "12/12"
+      },
+      "worst_clip_pt": {
+        "before": 233,
+        "after": 0,
+        "device": "iPhone SE @1.0x"
+      },
+      "purchase_buttons_reachable_on_se": {
+        "before": false,
+        "after": true
+      },
+      "root_cause": "no scroll view \u2014 content was a fixed Column",
+      "storekit_logic": "untouched"
     }
   }
 }
