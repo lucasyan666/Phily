@@ -1000,6 +1000,20 @@ class _LevelDialPainter extends CustomPainter {
       old.deviceTurns != deviceTurns;
 }
 
+/// Whether the guide diagram needs an offscreen fade layer to draw itself on.
+///
+/// This gates a `saveLayer`, which allocates an offscreen buffer and
+/// composites it back — the most expensive thing a painter can do per frame.
+/// The **live viewfinder always paints at `reveal` 1.0**, so it must never
+/// take this path: the composition overlay is drawn over every camera frame,
+/// and CLAUDE.md makes preview FPS a first-class concern.
+///
+/// The Fibonacci Spiral is excluded because it traces itself from the eye
+/// outward instead of fading, so it needs no layer either.
+@visibleForTesting
+bool guideFadesIn(CompositionMode mode, double reveal) =>
+    reveal < 0.999 && mode != CompositionMode.fibonacciSpiral;
+
 /// Test seam: paint one composition's guide at a given draw-on [reveal], so
 /// the save/restore balance of the reveal's conditional `saveLayer` can be
 /// checked for every mode. See `test/guide_reveal_modes_test.dart`.
@@ -1234,8 +1248,7 @@ class _CompositionPainter extends CustomPainter {
     // start point, so forcing a stroke order on them would invent a reading
     // direction the composition does not have. They fade up together instead —
     // one gesture, honestly applied to two different kinds of shape.
-    final bool fadeIn =
-        reveal < 0.999 && mode != CompositionMode.fibonacciSpiral;
+    final bool fadeIn = guideFadesIn(mode, reveal);
     if (fadeIn) {
       canvas.saveLayer(
         Rect.fromLTWH(0, 0, grid.width, grid.height),

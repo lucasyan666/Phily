@@ -15,6 +15,8 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 
 ## Backlog — pull from the top
 ### Speed (measurable)
+- [x] Guide draw-on's `saveLayer` can never reach the live preview —
+      extracted as `guideFadesIn` and pinned by tests. (pass #29)
 - [x] Guide sheet's spiral reveal in its own `RepaintBoundary` — the
       draw-on animates ~66 frames directly over a decoded JPEG. (pass #25)
 - [x] Breathing "Perfect"/"Level" pill: hoist the pill out of its 60fps
@@ -946,3 +948,34 @@ pass ends green — `flutter analyze`, `flutter test`, `flutter build ios
 - **Verification:** `flutter analyze` 0 issues · `flutter test` 214/214 (2
   new) · `flutter build ios --simulator` ✓.
 - **Commit:** `overnight: pass #28 — design-board — 2026-09-11T12:00:47+0100`
+
+### Pass #29 — performance — 2026-09-11T12:29:24+0100
+- **What:** the draw-on fade's `saveLayer` gate is now a named, documented
+  predicate (`guideFadesIn`) instead of an inline boolean, with tests pinning
+  the one property that matters: the live viewfinder never allocates an
+  offscreen layer.
+- **Why:** `saveLayer` allocates an offscreen buffer and composites it back —
+  the most expensive thing a painter can do per frame. Pass #28 put one
+  inside `_CompositionPainter`, which is painted over **every camera frame**.
+  It was already safe (the camera always paints at `reveal` 1.0, so the gate
+  is false there), but that safety lived in an unnamed expression nobody
+  could test. CLAUDE.md makes preview FPS a first-class concern; a property
+  that important should not rest on someone noticing a `< 0.999` comparison.
+- **Metric:** offscreen layers allocated by the live preview: 0 → 0
+  (unchanged — this pass protects the zero rather than improving it).
+  Modes whose preview path is now test-pinned: 0 → 17. Untestable inline
+  conditions gating a per-frame layer: 1 → 0.
+- **Tests:** the preview allocates no layer for any of the 17 modes; the
+  guide sheet *does* fade mid-reveal (so the first test is not vacuous); the
+  spiral never fades at any value, because it traces from its eye instead;
+  and the layer is released the instant the draw-on settles (0.9989 → true,
+  0.999 → false).
+- **Two approaches abandoned first, worth recording:** wrapping `Canvas` to
+  count `saveLayer` calls fails because `Canvas` is native and cannot be
+  proxied via `noSuchMethod`; inferring peak save depth fails because the
+  painter balances its own layers, so the peak is invisible from outside.
+  Testing the gating condition directly is simpler *and* more honest about
+  what it actually proves.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 218/218 (4
+  new) · `flutter build ios --simulator` ✓. No behaviour change.
+- **Commit:** `overnight: pass #29 — performance — 2026-09-11T12:29:24+0100`
