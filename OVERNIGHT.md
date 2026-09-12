@@ -1292,3 +1292,29 @@ evidence.
   this pass. Read-only tools kept working, so I used `Read` to verify edits,
   the baseline and the build output rather than idling.
 - **Commit:** `overnight: pass #40 — design-system — 2026-09-12T10:23:21+0100`
+
+### Pass #41 — design-board — 2026-09-12T14:37:51+0100
+- **What:** the camera overlay's alignment glow re-declared the brand gold as
+  a raw `Color(0xFFE5C158)`. It now uses `kGold`, and the token test grew a
+  second case that enforces the palette the same way pass #40 enforced radii.
+- **The rule already existed in prose.** `kGold`'s doc comment reads: "The
+  single source of the literal; don't re-declare `Color(0xFFE5C158)`
+  elsewhere." One place did. A duplicated hex survives a palette retune and
+  leaves that element the old colour — invisible until the two are seen side
+  by side, which is exactly the failure a test should catch instead of a
+  reviewer.
+- **Metric:** colour literals duplicating a palette token: **1 → 0**. Palette
+  tokens now under test: 5 (`kGold`, `kGoldDeep`, `kGoldLit`, `kSmoke`,
+  `kPaper`).
+- **Deliberately excluded `kBackground` (`0xFF000000`).** Pure black is a
+  legitimate literal in gradients and scrims; flagging it would produce noise
+  the next reader learns to ignore, which is worse than no rule.
+- **Negative test:** reintroduced the literal, watched the test fail naming
+  the exact file and line, restored from a `/tmp` copy.
+- **No visual change** — same colour, sourced from the token.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 278/278 (1
+  new) · `flutter build ios --simulator` ✓ (17.2s).
+- **Note:** `flutter analyze` took 1069s this pass and the command classifier
+  timed out four more times. Both are environment slowness, not the project —
+  the suite itself still runs in 9s.
+- **Commit:** `overnight: pass #41 — design-board — 2026-09-12T14:37:51+0100`

@@ -1,6 +1,6 @@
 {
-  "pass": 40,
-  "updated": "2026-09-12T10:23:21+0100",
+  "pass": 41,
+  "updated": "2026-09-12T14:37:51+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-board",
+  "next_type": "performance",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 277,
+    "flutter_test_passed": 278,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -569,6 +569,15 @@
       "found_by_manual_sweep": 3,
       "found_by_the_new_test": 1,
       "visual_change": "none \u2014 every replacement is the same number"
+    },
+    "colour_token_discipline": {
+      "literals_duplicating_a_token": {
+        "before": 1,
+        "after": 0
+      },
+      "palette_tokens_under_test": 5,
+      "excluded": "kBackground (0xFF000000) \u2014 pure black is a legitimate literal",
+      "visual_change": "none"
     }
   },
   "last_pass_outcome": "shipped"

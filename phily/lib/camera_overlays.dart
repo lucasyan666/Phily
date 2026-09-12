@@ -1544,9 +1544,9 @@ class _CompositionPainter extends CustomPainter {
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.5);
       for (final seg in glowSegs) {
         if (seg.intensity <= 0) continue;
-        glowPaint.color = const Color(
-          0xFFE5C158,
-        ).withValues(alpha: (0.65 * seg.intensity).clamp(0.0, 1.0));
+        glowPaint.color = kGold.withValues(
+          alpha: (0.65 * seg.intensity).clamp(0.0, 1.0),
+        );
         canvas.drawLine(
           Offset(seg.x1 * size.width, seg.y1 * size.height),
           Offset(seg.x2 * size.width, seg.y2 * size.height),
