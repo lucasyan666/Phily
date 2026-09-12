@@ -1214,3 +1214,26 @@ evidence.
 - **Verification:** `flutter analyze` 0 issues · `flutter test` 267/267 (4
   new) · `flutter build ios --simulator` ✓.
 - **Commit:** `overnight: pass #37 — design-system — 2026-09-11T22:22:06+0100`
+
+### Pass #38 — design-board — 2026-09-12T01:24:57+0100
+- **What:** the gallery's ALL / ◆ BY PHILY filter chips were **40pt tall** —
+  under Apple's 44pt minimum for an interactive control. A 2pt pad each side
+  lifts the tap target to 44pt without changing the chip's appearance at all.
+- **Measured, not assumed.** The fixed-height sweep that drove passes #36–37
+  is now genuinely exhausted: the two remaining hits (paywall check chip,
+  gallery play/pause) are fixed-size *icon* discs, correctly fixed. So I
+  changed axis and measured tap targets instead — and the chips came back at
+  40pt while the guide card's dismiss chip, built from the same 40pt chip,
+  measured a correct 44pt. The pattern already existed; the filter chips just
+  never got it.
+- **Metric:** filter chip tap target **40 → 44pt** at every text size (58pt
+  at AX5, where the chip itself grows to 54). Visible chip height unchanged
+  at 40pt — this is purely hit-area, no visual diff.
+- **Negative test:** removed the pad, watched the new test fail, restored
+  from a `/tmp` copy rather than `git checkout`.
+- **Gates run sequentially** this time. Pass #37 logged a 49-minute suite
+  that turned out to be contention from `flutter test` and
+  `flutter build ios` racing in the background; run one at a time it is 22s.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 271/271 (4
+  new) · `flutter build ios --simulator` ✓ (15.6s).
+- **Commit:** `overnight: pass #38 — design-board — 2026-09-12T01:24:57+0100`

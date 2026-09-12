@@ -528,6 +528,36 @@ void main() {
       }
     }
 
+    for (final scale in _textScales) {
+      testWidgets('chips meet the 44pt tap target at $scale× text', (
+        tester,
+      ) async {
+        // Apple's HIG minimum. The chips are 40pt by design (they match the
+        // guide card's dismiss chip), so a 2pt pad each side lifts the target
+        // without changing how the chip looks.
+        await _pumpOn(
+          tester,
+          _devices.first,
+          scale,
+          Scaffold(
+            body: Align(
+              alignment: Alignment.bottomCenter,
+              child: debugFilterRow(),
+            ),
+          ),
+        );
+        final chips = find.byType(PopTap);
+        expect(chips, findsNWidgets(2));
+        for (var i = 0; i < 2; i++) {
+          expect(
+            tester.getSize(chips.at(i)).height,
+            greaterThanOrEqualTo(44),
+            reason: 'filter chip $i is under the 44pt minimum',
+          );
+        }
+      });
+    }
+
     testWidgets('the chips sit on one line at ordinary text sizes', (
       tester,
     ) async {

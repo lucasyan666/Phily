@@ -469,31 +469,37 @@ class _FilterChip extends StatelessWidget {
       // and forced the two chips onto separate lines at EVERY text size. A
       // Row used to constrain them; a Wrap does not.
       child: IntrinsicWidth(
-        child: AnimatedContainer(
-          duration: motionOf(context, kDurFast),
-          curve: Curves.easeOut,
-          // minHeight, not height: the label is tracked small-caps that grows
-          // with the text size, and a fixed 40pt box clipped it at AX5. At
-          // ordinary sizes this is exactly 40pt, as before.
-          constraints: const BoxConstraints(minHeight: 40),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
-          alignment: Alignment.center,
-          decoration: active
-              ? glassChipDecoration(radius: 20, active: gold)
-              : BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: ink.withValues(alpha: gold ? 0.5 : 0.22),
-                    width: gold ? 1.0 : 0.8,
+        // 2pt each side lifts the 40pt chip to a 44pt tap target without
+        // changing how the chip looks — the same pad the guide card's dismiss
+        // chip uses. Apple's HIG minimum; the chips were 40pt.
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: AnimatedContainer(
+            duration: motionOf(context, kDurFast),
+            curve: Curves.easeOut,
+            // minHeight, not height: the label is tracked small-caps that grows
+            // with the text size, and a fixed 40pt box clipped it at AX5. At
+            // ordinary sizes this is exactly 40pt, as before.
+            constraints: const BoxConstraints(minHeight: 40),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+            alignment: Alignment.center,
+            decoration: active
+                ? glassChipDecoration(radius: 20, active: gold)
+                : BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: ink.withValues(alpha: gold ? 0.5 : 0.22),
+                      width: gold ? 1.0 : 0.8,
+                    ),
                   ),
-                ),
-          child: Text(
-            label,
-            style: brandLabel(
-              size: 10,
-              weight: FontWeight.w500,
-              color: active ? ink : ink.withValues(alpha: 0.75),
-              letterSpacing: 1.4,
+            child: Text(
+              label,
+              style: brandLabel(
+                size: 10,
+                weight: FontWeight.w500,
+                color: active ? ink : ink.withValues(alpha: 0.75),
+                letterSpacing: 1.4,
+              ),
             ),
           ),
         ),
