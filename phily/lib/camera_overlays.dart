@@ -1776,7 +1776,11 @@ class _CompositionPainter extends CustomPainter {
       width: tp.width + 18,
       height: tp.height + 9,
     );
-    final RRect pill = RRect.fromRectAndRadius(r, const Radius.circular(20));
+    // Same pill radius as the app's chrome — the token, not a matching 20.
+    final RRect pill = RRect.fromRectAndRadius(
+      r,
+      const Radius.circular(kRadiusLg),
+    );
     canvas.drawRRect(
       pill,
       Paint()

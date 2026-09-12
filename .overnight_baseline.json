@@ -1,6 +1,6 @@
 {
-  "pass": 39,
-  "updated": "2026-09-12T04:02:17+0100",
+  "pass": 40,
+  "updated": "2026-09-12T10:23:21+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "design-system",
+  "next_type": "design-board",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 276,
+    "flutter_test_passed": 277,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -556,6 +556,19 @@
         "after": 0
       },
       "note": "pad at the call site, not in HintPill \u2014 most pills are passive labels"
+    },
+    "radius_token_discipline": {
+      "literals_duplicating_a_token": {
+        "before": 4,
+        "after": 0
+      },
+      "token_references_in_lib": {
+        "before": 27,
+        "after": 31
+      },
+      "found_by_manual_sweep": 3,
+      "found_by_the_new_test": 1,
+      "visual_change": "none \u2014 every replacement is the same number"
     }
   },
   "last_pass_outcome": "shipped"

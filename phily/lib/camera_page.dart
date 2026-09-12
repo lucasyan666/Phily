@@ -3661,7 +3661,8 @@ class _CameraPageState extends State<CameraPage>
                       ),
                       decoration: BoxDecoration(
                         color: Colors.black.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(20),
+                        // kRadiusLg: this is a pill, the token's stated use.
+                        borderRadius: BorderRadius.circular(kRadiusLg),
                         border: Border.all(
                           color: Colors.white.withValues(alpha: 0.10),
                           width: 0.5,

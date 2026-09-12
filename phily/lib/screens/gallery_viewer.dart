@@ -299,7 +299,7 @@ class _ScrubBubble extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
       // The camera's shared smoked-glass chip, gold-kissed (active) — the scrub
       // bubble is a "live" control, so it wears the lit rim.
-      decoration: glassChipDecoration(radius: 14, active: true),
+      decoration: glassChipDecoration(radius: kRadiusMd, active: true),
       child: Text(
         label,
         style: const TextStyle(
@@ -490,10 +490,12 @@ class _FilterChip extends StatelessWidget {
             constraints: const BoxConstraints(minHeight: 40),
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
             alignment: Alignment.center,
+            // Both branches take the SAME token: hardcoding 20 twice let the
+            // active and inactive states drift apart silently.
             decoration: active
-                ? glassChipDecoration(radius: 20, active: gold)
+                ? glassChipDecoration(radius: kRadiusLg, active: gold)
                 : BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(kRadiusLg),
                     border: Border.all(
                       color: ink.withValues(alpha: gold ? 0.5 : 0.22),
                       width: gold ? 1.0 : 0.8,

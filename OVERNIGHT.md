@@ -1265,3 +1265,30 @@ evidence.
 - **Verification:** `flutter analyze` 0 issues · `flutter test` 276/276 (5
   new) · `flutter build ios --simulator` ✓.
 - **Commit:** `overnight: pass #39 — compatibility — 2026-09-12T04:02:17+0100`
+
+### Pass #40 — design-system — 2026-09-12T10:23:21+0100
+- **What:** four places hardcoded a corner radius identical to a design
+  token. All now use the token, and a new test makes the rule enforceable.
+- **Why it matters even though nothing looked wrong:** a literal `20` that
+  happens to equal `kRadiusLg` is invisible *until someone retunes the
+  token* — then one pill silently keeps the old shape. CLAUDE.md makes
+  `theme.dart` "the single definition of the app's gold/glass language"; this
+  is that rule actually holding.
+- **The worst instance:** the gallery's filter chip hardcoded `20` in **both**
+  branches of its active/inactive decoration. Two copies of the same number,
+  free to drift apart from each other as well as from the token.
+- **The test found what I missed.** I swept manually, fixed three, then wrote
+  `test/design_tokens_test.dart` — which immediately failed on a **fourth**:
+  a hardcoded `14` in the gallery's scrub bubble, whose own comment says it
+  wears "the camera's shared smoked-glass chip". It earned its place before
+  it was committed. The test reads the *source*, not the widget tree, because
+  the defect is a literal in the code that no rendered frame can reveal.
+- **Metric:** radius literals duplicating a token: **4 → 0**. Token
+  references across `lib/`: 27 → 31. Hardcoded pill radii: 3 → 0.
+- **No visual change whatsoever** — every replacement is the same number.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 277/277 (1
+  new) · `flutter build ios --simulator` ✓ (17.3s).
+- **Note:** the classifier gating shell commands timed out six times during
+  this pass. Read-only tools kept working, so I used `Read` to verify edits,
+  the baseline and the build output rather than idling.
+- **Commit:** `overnight: pass #40 — design-system — 2026-09-12T10:23:21+0100`
