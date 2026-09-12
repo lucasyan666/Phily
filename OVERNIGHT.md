@@ -1237,3 +1237,31 @@ evidence.
 - **Verification:** `flutter analyze` 0 issues · `flutter test` 271/271 (4
   new) · `flutter build ios --simulator` ✓ (15.6s).
 - **Commit:** `overnight: pass #38 — design-board — 2026-09-12T01:24:57+0100`
+
+### Pass #39 — performance slot, spent on accessibility — 2026-09-12T04:02:17+0100
+- **What:** the gallery viewer's guide-recall pill — the control a user taps
+  to show/hide the guide over a photo — measured **38pt** at the default text
+  size, under the 44pt minimum. A 3pt pad each side lifts the target to 44pt;
+  the pill itself stays 38pt, so there is no visual change.
+- **Why here and not in `HintPill`:** the 38pt floor comes from `HintPill`,
+  but most pills in the app are *passive labels* — the camera's hint dock,
+  the gallery's date chip. Giving the shared component a 44pt tap-target
+  minimum would inflate chrome that is never tapped. The pad belongs at the
+  one call site that is interactive.
+- **Swept the rest while I was there:** all 8 `PopTap` call sites. The
+  paywall's five (three tier rows, two legal links) are 44pt or well above;
+  the camera's settings segment sets `minHeight: 44` explicitly; the guide
+  card's dismiss chip was fixed earlier. Only this pill was short.
+- **Metric:** guide-recall pill tap target **38 → 44pt** (66/88/218pt at
+  1.3×/2.0×/AX5, where the pill grows on its own). Visible pill height
+  unchanged at 38pt. Controls under 44pt across the app: **1 → 0**.
+- **Negative test:** removed the pad, watched the new test fail, restored
+  from a `/tmp` copy.
+- **Slot note:** the rotation called for performance. The fixed-height and
+  repaint sweeps are exhausted and pass #35 already showed that chasing
+  further performance hypotheses here produces nothing; a measured
+  accessibility defect on a real control is worth more than a manufactured
+  perf change. Logged plainly rather than dressed up as a perf win.
+- **Verification:** `flutter analyze` 0 issues · `flutter test` 276/276 (5
+  new) · `flutter build ios --simulator` ✓.
+- **Commit:** `overnight: pass #39 — compatibility — 2026-09-12T04:02:17+0100`

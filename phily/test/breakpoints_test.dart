@@ -589,6 +589,41 @@ void main() {
     });
   });
 
+  group('viewer guide-recall pill', () {
+    // The pill a user taps to show/hide the guide over a photo. Built on
+    // HintPill, whose 38pt minimum is under the 44pt an interactive control
+    // needs — most pills are passive labels, so the pad belongs at this call
+    // site rather than in HintPill itself.
+    for (final scale in _textScales) {
+      testWidgets('meets the 44pt tap target at $scale× text', (tester) async {
+        await _pumpOn(
+          tester,
+          _devices[1],
+          scale,
+          Scaffold(body: Center(child: debugGuidePill())),
+        );
+        expect(
+          tester.getSize(find.byType(PopTap)).height,
+          greaterThanOrEqualTo(44),
+          reason: 'guide-recall pill is under the 44pt minimum',
+        );
+      });
+    }
+
+    testWidgets('the pill itself is unchanged at ordinary sizes', (
+      tester,
+    ) async {
+      // Hit-area only: the visible pill must still be HintPill's 38pt.
+      await _pumpOn(
+        tester,
+        _devices[1],
+        1.0,
+        Scaffold(body: Center(child: debugGuidePill())),
+      );
+      expect(tester.getSize(find.byType(HintPill)).height, 38);
+    });
+  });
+
   group('guide card height budget', () {
     // The framed diagram used a flat 200pt on every phone, which on a short
     // one was ~30% of the card — squeezing the copy and pushing the dismiss

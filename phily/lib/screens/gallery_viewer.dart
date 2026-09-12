@@ -187,6 +187,13 @@ class _SectionHeaderBar extends StatelessWidget {
 }
 
 /// Calm empty state when the library (or the Phily filter) has nothing yet.
+/// Test seam: the viewer's guide-recall toggle — the pill a user taps to show
+/// or hide the guide over a photo. Built on [HintPill], whose 38pt minimum is
+/// under the 44pt tap target an interactive control needs.
+@visibleForTesting
+Widget debugGuidePill({String label = 'Thirds', bool on = true}) =>
+    _GuidePill(label: label, on: on, onTap: () {});
+
 /// Test seam: the ALL / BY PHILY filter row, docked at the foot of the grid.
 /// Two chips in an unconstrained Row, each a fixed 40pt tall — the shape that
 /// overflowed the paywall (pass #31). See `test/breakpoints_test.dart`.
@@ -2681,20 +2688,27 @@ class _GuidePill extends StatelessWidget {
   @override
   Widget build(BuildContext context) => PopTap(
     onTap: onTap,
-    child: HintPill(
-      leading: Transform.rotate(
-        angle: math.pi / 4,
-        child: Container(
-          width: 6,
-          height: 6,
-          decoration: BoxDecoration(
-            color: on ? kGold : Colors.transparent,
-            border: Border.all(color: kGold, width: 1),
+    // 3pt each side lifts HintPill's 38pt minimum to a 44pt tap target
+    // without changing the pill. The padding lives HERE, not in HintPill:
+    // most pills are passive labels (the camera's hint dock, the gallery's
+    // date chip) and should not carry a tap-target minimum they never use.
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: HintPill(
+        leading: Transform.rotate(
+          angle: math.pi / 4,
+          child: Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: on ? kGold : Colors.transparent,
+              border: Border.all(color: kGold, width: 1),
+            ),
           ),
         ),
+        text: '${label.toUpperCase()} · GUIDE ${on ? 'ON' : 'OFF'}',
+        emphasis: on,
       ),
-      text: '${label.toUpperCase()} · GUIDE ${on ? 'ON' : 'OFF'}',
-      emphasis: on,
     ),
   );
 }

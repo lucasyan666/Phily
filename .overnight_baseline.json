@@ -1,6 +1,6 @@
 {
-  "pass": 38,
-  "updated": "2026-09-12T01:24:57+0100",
+  "pass": 39,
+  "updated": "2026-09-12T04:02:17+0100",
   "branch": "overnight-polish",
   "rotation": [
     "performance",
@@ -8,10 +8,10 @@
     "design-system",
     "design-board"
   ],
-  "next_type": "performance",
+  "next_type": "design-system",
   "gates": {
     "flutter_analyze_issues": 0,
-    "flutter_test_passed": 271,
+    "flutter_test_passed": 276,
     "flutter_test_failed": 0,
     "flutter_build_ios_simulator": "ok"
   },
@@ -541,6 +541,21 @@
       },
       "hig_minimum": 44,
       "note": "the guide card's dismiss chip already used this 2pt pad; the filter chips never got it"
+    },
+    "guide_recall_pill_tap_target": {
+      "target_height_pt": {
+        "before": 38,
+        "after": 44
+      },
+      "visible_pill_height_pt": {
+        "before": 38,
+        "after": 38
+      },
+      "controls_under_44pt_app_wide": {
+        "before": 1,
+        "after": 0
+      },
+      "note": "pad at the call site, not in HintPill \u2014 most pills are passive labels"
     }
   },
   "last_pass_outcome": "shipped"
