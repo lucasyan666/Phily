@@ -18,6 +18,9 @@ Future<void> showPhilyProPaywall(BuildContext context) {
     context: context,
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
+    // Named for assistive tech, like the guide and level-line cards. Without
+    // it VoiceOver announces an anonymous region.
+    barrierLabel: 'Dismiss Phily Pro',
     builder: (_) => const _PaywallSheet(),
   );
 }
@@ -126,17 +129,7 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                     top: -100,
                     left: -40,
                     right: -40,
-                    child: IgnorePointer(
-                      child: Container(
-                        height: 260,
-                        decoration: const BoxDecoration(
-                          gradient: RadialGradient(
-                            radius: 0.75,
-                            colors: [Color(0x33E5C158), Color(0x00E5C158)],
-                          ),
-                        ),
-                      ),
-                    ),
+                    child: const GoldAura(height: 260, strength: 0.20),
                   ),
                   // Gold-leaf top edge, burning brightest at the centre.
                   const Positioned(
@@ -145,7 +138,11 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                     right: 0,
                     child: GildedHairline(height: 1.2),
                   ),
-                  Padding(
+                  // Scrolls when it must: the content is a fixed Column, so on
+                  // any phone shorter than it the paywall simply CLIPPED —
+                  // 233pt off the bottom of an SE at the default text size,
+                  // taking the purchase buttons with it. A user could not buy.
+                  SingleChildScrollView(
                     padding: EdgeInsets.fromLTRB(24, 14, 24, 18 + bottom),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -171,24 +168,29 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                               size: 26,
                             ),
                             const SizedBox(width: 10),
-                            // Gilded wordmark — paper melting into gold, like the loader.
-                            ShaderMask(
-                              shaderCallback: (r) => const LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [kPaper, kGold],
-                                stops: [0.35, 1.0],
-                              ).createShader(r),
-                              child: Text(
-                                'Phily Pro',
-                                style: brandDisplay(
-                                  size: 28,
-                                  weight: FontWeight.w500,
-                                  color:
-                                      Colors.white, // recoloured by the shader
-                                  letterSpacing: 0.2,
-                                ),
-                              ),
+                            // Flexible: the wordmark grows with the text size
+                            // and pushed this row 215pt past the edge at AX2.
+                            Flexible(
+                              child:
+                                  // Gilded wordmark — paper melting into gold, like the loader.
+                                  ShaderMask(
+                                    shaderCallback: (r) => const LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [kPaper, kGold],
+                                      stops: [0.35, 1.0],
+                                    ).createShader(r),
+                                    child: Text(
+                                      'Phily Pro',
+                                      style: brandDisplay(
+                                        size: 28,
+                                        weight: FontWeight.w500,
+                                        color: Colors
+                                            .white, // recoloured by the shader
+                                        letterSpacing: 0.2,
+                                      ),
+                                    ),
+                                  ),
                             ),
                           ],
                         ),
@@ -318,9 +320,13 @@ class _PaywallSheetState extends State<_PaywallSheet> {
                               ),
                             ),
                           ),
-                        // Apple-required legal links.
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                        // Apple-required legal links. A Wrap, not a Row: both
+                        // links carry a 44pt minimum tap target, so on a
+                        // narrow phone the pair plus its separator overflowed
+                        // the row — they drop to a second line instead.
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
                             _LegalLink(
                               label: 'Terms of Use',
@@ -367,13 +373,22 @@ class _TierRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    // PopTap, like every other control in the app: the row ticks and bubbles
+    // on tap, is announced as a selectable button, and stills under Reduce
+    // Motion. `constraints` guarantees the 44pt minimum target — the padding
+    // alone left short rows under it.
+    return PopTap(
       onTap: onTap,
+      semanticLabel: price == null
+          ? tier.name
+          : '${tier.name}, $price ${tier.cadence}',
+      toggled: selected,
       // Animated so selection GLIDES between tiers — the gilt fill, rim and
       // glow melt from one row to the next rather than snapping.
       child: AnimatedContainer(
-        duration: kDurFast,
+        duration: motionOf(context, kDurFast),
         curve: kEaseOut,
+        constraints: const BoxConstraints(minHeight: 44),
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
@@ -424,44 +439,54 @@ class _TierRow extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      Text(
-                        tier.name,
-                        style: brandLabel(
-                          size: 15,
-                          weight: FontWeight.w600,
-                          color: kPaper,
-                          letterSpacing: 0.2,
+                      // Flexible: the name sits beside a badge and a price
+                      // column, and an unconstrained Text here overflowed the
+                      // row by up to 60pt on an SE at the DEFAULT text size.
+                      Flexible(
+                        child: Text(
+                          tier.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: brandLabel(
+                            size: 15,
+                            weight: FontWeight.w600,
+                            color: kPaper,
+                            letterSpacing: 0.2,
+                          ),
                         ),
                       ),
                       if (tier.badge != null) ...[
                         const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            // Metallic badge: lit lip → gold → antique base.
-                            gradient: const LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [kGoldLit, kGold, kGoldDeep],
+                        // Flexible: "BEST VALUE" at AX sizes is wider than the
+                        // row can give it beside the name.
+                        Flexible(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 2,
                             ),
-                            borderRadius: BorderRadius.circular(5),
-                            boxShadow: [
-                              BoxShadow(
-                                color: kGold.withValues(alpha: 0.35),
-                                blurRadius: 8,
+                            decoration: BoxDecoration(
+                              // Metallic badge: lit lip → gold → antique base.
+                              gradient: const LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [kGoldLit, kGold, kGoldDeep],
                               ),
-                            ],
-                          ),
-                          child: Text(
-                            tier.badge!,
-                            style: const TextStyle(
-                              color: Colors.black,
-                              fontSize: 9,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 0.4,
+                              borderRadius: BorderRadius.circular(5),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: kGold.withValues(alpha: 0.35),
+                                  blurRadius: 8,
+                                ),
+                              ],
+                            ),
+                            child: Text(
+                              tier.badge!,
+                              style: const TextStyle(
+                                color: Colors.black,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.4,
+                              ),
                             ),
                           ),
                         ),
@@ -482,26 +507,35 @@ class _TierRow extends StatelessWidget {
                 ],
               ),
             ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  price ?? '—',
-                  style: brandDisplay(
-                    size: 17,
-                    weight: FontWeight.w600,
-                    color: kGold,
-                    letterSpacing: 0.2,
+            const SizedBox(width: 8),
+            // Flexible too: at accessibility text sizes the price and the tier
+            // name were both unconstrained in one row and fought for the same
+            // width, overflowing by up to 492pt. Now each takes what it needs
+            // and the price wins ties (it is the number being decided on).
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    price ?? '—',
+                    textAlign: TextAlign.end,
+                    style: brandDisplay(
+                      size: 17,
+                      weight: FontWeight.w600,
+                      color: kGold,
+                      letterSpacing: 0.2,
+                    ),
                   ),
-                ),
-                Text(
-                  tier.cadence,
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.45),
-                    fontSize: 10.5,
+                  Text(
+                    tier.cadence,
+                    textAlign: TextAlign.end,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.45),
+                      fontSize: 10.5,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
@@ -518,11 +552,14 @@ class _LegalLink extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    // A link, but still a tap target: PopTap for the tick + button trait, and
+    // a 44pt minimum box around the 11px text.
+    return PopTap(
       onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
         child: Text(
           label,
           style: TextStyle(
@@ -556,8 +593,21 @@ class _PrimaryButtonState extends State<_PrimaryButton>
   late final AnimationController _sweep = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 2800),
-  )..repeat();
+  );
   bool _pressed = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // The shimmer is decoration: a light band crossing the bar every 2.8s,
+    // forever. Under Reduce Motion the bar rests as polished metal instead.
+    final still = reduceMotionOf(context);
+    if (still && _sweep.isAnimating) {
+      _sweep.stop();
+    } else if (!still && !_sweep.isAnimating) {
+      _sweep.repeat();
+    }
+  }
 
   @override
   void dispose() {
@@ -568,83 +618,115 @@ class _PrimaryButtonState extends State<_PrimaryButton>
   @override
   Widget build(BuildContext context) {
     final bool enabled = widget.onTap != null;
-    return GestureDetector(
-      onTap: widget.onTap,
-      onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
-      onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
-      onTapCancel: () => setState(() => _pressed = false),
-      child: AnimatedScale(
-        scale: _pressed ? 0.97 : 1.0,
-        duration: kDurFast,
-        curve: kEaseOut,
-        child: Container(
-          height: 52,
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(kRadiusMd),
-            // Metallic gilt: a bright lit lip up top melting through gold into a
-            // deeper antique-gold base — a polished bar, not a flat fill.
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: enabled
-                  ? [kGoldLit, kGold, kGoldDeep]
-                  : [
-                      kGold.withValues(alpha: 0.32),
-                      kGold.withValues(alpha: 0.26),
-                    ],
-              stops: enabled ? const [0.0, 0.5, 1.0] : null,
+    // The CTA is a bare GestureDetector (it owns a press scale and a shimmer,
+    // so it is not a PopTap); it still has to announce itself as a button.
+    return Semantics(
+      button: enabled,
+      enabled: enabled,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
+        onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
+        onTapCancel: () => setState(() => _pressed = false),
+        child: AnimatedScale(
+          scale: _pressed ? 0.97 : 1.0,
+          duration: motionOf(context, kDurFast),
+          curve: kEaseOut,
+          child: Container(
+            // minHeight, not height: at accessibility text sizes the label
+            // wraps and a fixed 52pt box clipped it by 86pt — on the button a
+            // user taps to pay. Exactly 52pt at ordinary sizes, as before.
+            //
+            // The Stack below holds a full-bleed shimmer, which cannot size
+            // itself, so the label is the Stack's sizing child (see
+            // `StackFit.loose` + the label first in the children list) — that
+            // is what gives this Container a finite height to grow with.
+            constraints: const BoxConstraints(minHeight: 52),
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(kRadiusMd),
+              // Metallic gilt: a bright lit lip up top melting through gold into a
+              // deeper antique-gold base — a polished bar, not a flat fill.
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: enabled
+                    ? [kGoldLit, kGold, kGoldDeep]
+                    : [
+                        kGold.withValues(alpha: 0.32),
+                        kGold.withValues(alpha: 0.26),
+                      ],
+                stops: enabled ? const [0.0, 0.5, 1.0] : null,
+              ),
+              boxShadow: enabled
+                  ? [
+                      BoxShadow(
+                        color: kGold.withValues(alpha: 0.38),
+                        blurRadius: 20,
+                        offset: const Offset(0, 7),
+                      ),
+                    ]
+                  : null,
             ),
-            boxShadow: enabled
-                ? [
-                    BoxShadow(
-                      color: kGold.withValues(alpha: 0.38),
-                      blurRadius: 20,
-                      offset: const Offset(0, 7),
+            child: Stack(
+              children: [
+                // The label is FIRST and unpositioned, so it is the Stack's
+                // sizing child — that is what lets the button grow with the
+                // text instead of clipping it. The shimmer is Positioned.fill
+                // around it (a full-bleed child cannot size a Stack).
+                Center(
+                  child: Padding(
+                    // Breathing room for a label that wraps to two or three
+                    // lines at accessibility text sizes, so it never runs into
+                    // the gilt edge.
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
                     ),
-                  ]
-                : null,
-          ),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // Light sweep: a soft white band gliding across the metal.
-              if (enabled)
-                AnimatedBuilder(
-                  animation: _sweep,
-                  builder: (_, _) => FractionalTranslation(
-                    translation: Offset(
-                      -1.0 + 2.0 * Curves.easeInOut.transform(_sweep.value),
-                      0,
-                    ),
-                    child: const DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                          colors: [
-                            Color(0x00FFFFFF),
-                            Color(0x59FFFFFF),
-                            Color(0x00FFFFFF),
-                          ],
-                          stops: [0.35, 0.5, 0.65],
-                        ),
+                    child: Text(
+                      widget.label,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.black,
+                        fontSize: 15.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.2,
                       ),
                     ),
                   ),
                 ),
-              Center(
-                child: Text(
-                  widget.label,
-                  style: const TextStyle(
-                    color: Colors.black,
-                    fontSize: 15.5,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.2,
+                // Light sweep: a soft white band gliding across the metal.
+                if (enabled)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: AnimatedBuilder(
+                        animation: _sweep,
+                        builder: (_, _) => FractionalTranslation(
+                          translation: Offset(
+                            -1.0 +
+                                2.0 * Curves.easeInOut.transform(_sweep.value),
+                            0,
+                          ),
+                          child: const DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.centerLeft,
+                                end: Alignment.centerRight,
+                                colors: [
+                                  Color(0x00FFFFFF),
+                                  Color(0x59FFFFFF),
+                                  Color(0x00FFFFFF),
+                                ],
+                                stops: [0.35, 0.5, 0.65],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

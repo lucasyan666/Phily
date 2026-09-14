@@ -683,11 +683,24 @@ List<_FocalDot> _buildFocalDots() {
 /// Reads AMBER while the shot is off-level and cools to GREEN as it squares up
 /// (the universal warning→good read on a spirit level). Drawn in the USER's
 /// frame, so it works identically in portrait and both landscape holds.
+/// Test seam: the bubble level's proportions decide whether a flat, overhead
+/// shot can actually be aligned by eye. The painter is private, so its
+/// geometry is exposed here for `test/bubble_level_test.dart`.
+@visibleForTesting
+({double bubbleR, double targetR, double targetAlpha, double targetStroke})
+debugBubbleGeometry() => (
+  bubbleR: _LevelDialPainter.kBubbleR,
+  targetR: _LevelDialPainter.kBubbleR * _LevelDialPainter.kBubbleTargetScale,
+  targetAlpha: _LevelDialPainter.kBubbleTargetAlpha,
+  targetStroke: _LevelDialPainter.kBubbleTargetStroke,
+);
+
 class _LevelDialPainter extends CustomPainter {
   final ValueNotifier<LevelReading?> attitude;
   final double bottomInset;
   final double topInset;
   final int deviceTurns;
+
   /// Fade time-constants (seconds), supplied by the state machine so the
   /// tuning lives in one place with the rest of its constants.
   final double fadeInTau;
@@ -716,6 +729,26 @@ class _LevelDialPainter extends CustomPainter {
   /// universal "warning → good" read on a spirit level.
   static const Color _amber = Color(0xFFFFB020);
   static const Color _levelGreen = Color(0xFF4CD97B);
+
+  // ── Bubble level geometry (flat / overhead framing) ──
+  // The bubble is the only instrument for a birds-eye shot, so its target has
+  // to be legible over a live scene at a glance. Named here rather than inline
+  // so the proportion is tunable in one place — see [LevelLineConfig] for the
+  // same idea applied to the state machine's timing.
+
+  /// The gilded bead's radius, in points.
+  static const double kBubbleR = 3.4;
+
+  /// Centre target radius as a multiple of [kBubbleR]. Must be comfortably
+  /// greater than 1 or the bubble can't be seen to sit *inside* it.
+  static const double kBubbleTargetScale = 2.6;
+
+  /// Resting alpha of the target ring. It carries the whole "where is centre"
+  /// question when the phone is flat, so it is drawn to be found, not hinted.
+  static const double kBubbleTargetAlpha = 0.52;
+
+  /// Resting stroke width of the target ring, in points.
+  static const double kBubbleTargetStroke = 0.9;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -778,9 +811,7 @@ class _LevelDialPainter extends CustomPainter {
     // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°). On the
     // level confirmation the machine asks for a dead-centre snap, so the line
     // settles flat rather than sitting at whatever fraction of a degree remains.
-    final double rollEx = a.snap
-        ? 0.0
-        : (roll * 1.8).clamp(-1.3, 1.3);
+    final double rollEx = a.snap ? 0.0 : (roll * 1.8).clamp(-1.3, 1.3);
     // Vertical deflection → how far the bar rides off centre. Tightened now the
     // indicator lives at frame centre: a big swing would wander across the
     // composition guides instead of reading as a horizon near the middle.
@@ -876,16 +907,30 @@ class _LevelDialPainter extends CustomPainter {
       final double bx = (a.bubbleX).clamp(-1.0, 1.0) * ringR * 0.72;
       final double by = (a.bubbleY).clamp(-1.0, 1.0) * ringR * 0.72;
       final Offset bub = Offset(cx + bx, cy + by);
+
       // Centre target — a hairline ring the bubble nests into, rather than four
       // ticks. It echoes the outer hoop, so the instrument reads as concentric
       // circles: a still point to bring the bubble home to.
+      //
+      // Sized against the bubble, not in absolute points: a target the bubble
+      // can visibly sit *inside* is what makes "centred" readable at a glance.
+      // It was 4.6pt against a 3.4pt bead — barely larger than the thing it
+      // had to contain, at 0.30 alpha over a live scene, which is why flat
+      // overhead framing was hard to judge.
+      //
+      // It also closes the loop as you arrive: the ring brightens and tightens
+      // with [lit], so the last degree of correction is visible rather than
+      // guessed.
+      final double targetR = kBubbleR * kBubbleTargetScale - 1.2 * lit;
       canvas.drawCircle(
         c,
-        4.6,
+        targetR,
         Paint()
-          ..color = tone.withValues(alpha: 0.30 * ov)
+          ..color = tone.withValues(
+            alpha: (kBubbleTargetAlpha + 0.34 * lit) * ov,
+          )
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.55
+          ..strokeWidth = kBubbleTargetStroke + 0.35 * lit
           ..isAntiAlias = true,
       );
 
@@ -895,7 +940,7 @@ class _LevelDialPainter extends CustomPainter {
       // tiny specular highlight. Same light source and metal as the app's gold
       // chrome, so it reads as a jewel rather than a flat dot.
       final double bloom = 1.0 + 0.30 * lit;
-      final double rad = 3.4 * bloom;
+      final double rad = kBubbleR * bloom;
 
       // Aura — widens and warms as it lands.
       canvas.drawCircle(
@@ -953,6 +998,42 @@ class _LevelDialPainter extends CustomPainter {
       old.bottomInset != bottomInset ||
       old.topInset != topInset ||
       old.deviceTurns != deviceTurns;
+}
+
+/// Whether the guide diagram needs an offscreen fade layer to draw itself on.
+///
+/// This gates a `saveLayer`, which allocates an offscreen buffer and
+/// composites it back — the most expensive thing a painter can do per frame.
+/// The **live viewfinder always paints at `reveal` 1.0**, so it must never
+/// take this path: the composition overlay is drawn over every camera frame,
+/// and CLAUDE.md makes preview FPS a first-class concern.
+///
+/// The Fibonacci Spiral is excluded because it traces itself from the eye
+/// outward instead of fading, so it needs no layer either.
+@visibleForTesting
+bool guideFadesIn(CompositionMode mode, double reveal) =>
+    reveal < 0.999 && mode != CompositionMode.fibonacciSpiral;
+
+/// Test seam: paint one composition's guide at a given draw-on [reveal], so
+/// the save/restore balance of the reveal's conditional `saveLayer` can be
+/// checked for every mode. See `test/guide_reveal_modes_test.dart`.
+@visibleForTesting
+void debugPaintComposition(
+  Canvas canvas,
+  Size size,
+  CompositionMode mode,
+  double reveal,
+) => _CompositionPainter(mode, reveal: reveal).paint(canvas, size);
+
+/// Test seam: would the guide-layer painter repaint when the page rebuilds
+/// with its state unchanged (same mode, the fresh-but-equal lists a build
+/// hands it)? Must stay false — see [_CompositionPainter.shouldRepaint].
+/// Different modes must still repaint.
+@visibleForTesting
+bool debugCompositionPainterRepaints(CompositionMode from, CompositionMode to) {
+  final before = _CompositionPainter(from, glowSegs: <_GlowSeg>[]);
+  final after = _CompositionPainter(to, glowSegs: <_GlowSeg>[]);
+  return after.shouldRepaint(before);
 }
 
 class _CompositionPainter extends CustomPainter {
@@ -1014,6 +1095,27 @@ class _CompositionPainter extends CustomPainter {
   /// validating eye tracking.
   final List<Offset> eyePoints;
 
+  /// Draw-on progress for the guide sheet's diagram, 0..1. At 1.0 (the live
+  /// viewfinder, and the settled sheet) everything draws normally.
+  ///
+  /// Below 1.0 the Fibonacci Spiral grows from its eye outward: the arc is
+  /// traced by arc-length from the tight centre out to the widest sweep, and
+  /// each golden-section divider fades in as the arc passes it. Growing from
+  /// the eye — rather than unspooling from the outside — is what makes the
+  /// shape read as *the spiral it is*, since the eye is where the composition
+  /// resolves.
+  final double reveal;
+
+  /// How strongly to draw the guide. 1.0 is the live viewfinder's weight —
+  /// deliberately quiet, because over a moving preview the guide is a hint and
+  /// the subject is the point (board 1b: "Guide (persistent, quiet)").
+  ///
+  /// The guide *sheet* is the opposite case: a still photograph the user
+  /// opened in order to study the guide, often a bright one, where 0.45 alpha
+  /// at 0.8pt is close to invisible. It passes a higher value so the lines
+  /// actually read. Scales both alpha and stroke width.
+  final double emphasis;
+
   /// Selected crop ratio (W/H) for the Aspect Ratio mode.
   final double aspect;
 
@@ -1057,6 +1159,8 @@ class _CompositionPainter extends CustomPainter {
     this.aspect = 1.0,
     this.horizon,
     this.deviceTurns = 0,
+    this.emphasis = 1.0,
+    this.reveal = 1.0,
     List<Offset>? eyePoints,
     super.repaint,
   }) : glowSegs = glowSegs ?? const [],
@@ -1085,8 +1189,8 @@ class _CompositionPainter extends CustomPainter {
 
   /// Normal white hairline paint used by all draw methods.
   Paint _gp({StrokeCap cap = StrokeCap.butt}) => Paint()
-    ..color = _gold.withValues(alpha: 0.45)
-    ..strokeWidth = _sw
+    ..color = _gold.withValues(alpha: (0.45 * emphasis).clamp(0.0, 1.0))
+    ..strokeWidth = _sw * emphasis
     ..style = PaintingStyle.stroke
     ..strokeCap = cap
     ..strokeJoin = StrokeJoin.round
@@ -1137,6 +1241,22 @@ class _CompositionPainter extends CustomPainter {
     if (banded) {
       canvas.translate(0, topInset);
       canvas.clipRect(Rect.fromLTWH(0, 0, grid.width, grid.height));
+    }
+    // The guide sheet draws its diagram on as the card settles. The spiral
+    // traces itself from the eye outward (it is a single continuous line, so
+    // it *can*); every other mode is a set of straight lines with no natural
+    // start point, so forcing a stroke order on them would invent a reading
+    // direction the composition does not have. They fade up together instead —
+    // one gesture, honestly applied to two different kinds of shape.
+    final bool fadeIn = guideFadesIn(mode, reveal);
+    if (fadeIn) {
+      canvas.saveLayer(
+        Rect.fromLTWH(0, 0, grid.width, grid.height),
+        Paint()
+          ..color = Colors.white.withValues(
+            alpha: Curves.easeOut.transform(reveal.clamp(0.0, 1.0)),
+          ),
+      );
     }
     switch (mode) {
       case CompositionMode.none:
@@ -1266,6 +1386,9 @@ class _CompositionPainter extends CustomPainter {
         }
       }
     }
+    // Close the draw-on fade layer (guide lines + power points together, so
+    // the grid and its dots arrive as one object rather than in two stages).
+    if (fadeIn) canvas.restore();
     canvas.restore();
 
     // ── Horizon Grid: a golden guide line marking the ideal horizon placement,
@@ -1421,9 +1544,9 @@ class _CompositionPainter extends CustomPainter {
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.5);
       for (final seg in glowSegs) {
         if (seg.intensity <= 0) continue;
-        glowPaint.color = const Color(
-          0xFFE5C158,
-        ).withValues(alpha: (0.65 * seg.intensity).clamp(0.0, 1.0));
+        glowPaint.color = kGold.withValues(
+          alpha: (0.65 * seg.intensity).clamp(0.0, 1.0),
+        );
         canvas.drawLine(
           Offset(seg.x1 * size.width, seg.y1 * size.height),
           Offset(seg.x2 * size.width, seg.y2 * size.height),
@@ -1653,7 +1776,11 @@ class _CompositionPainter extends CustomPainter {
       width: tp.width + 18,
       height: tp.height + 9,
     );
-    final RRect pill = RRect.fromRectAndRadius(r, const Radius.circular(20));
+    // Same pill radius as the app's chrome — the token, not a matching 20.
+    final RRect pill = RRect.fromRectAndRadius(
+      r,
+      const Radius.circular(kRadiusLg),
+    );
     canvas.drawRRect(
       pill,
       Paint()
@@ -1769,7 +1896,10 @@ class _CompositionPainter extends CustomPainter {
   // two remaining corners (TR and BL) onto that diagonal.
   // Result: 3 unique lines, 4 non-overlapping triangles, all within the frame.
   void _drawGoldenTriangles(Canvas canvas, Size s) {
-    final p = _gp()..color = _gold.withValues(alpha: 0.45 * _gridDip);
+    final p = _gp()
+      ..color = _gold.withValues(
+        alpha: (0.45 * _gridDip * emphasis).clamp(0.0, 1.0),
+      );
 
     final double w = s.width;
     final double h = s.height;
@@ -1792,7 +1922,10 @@ class _CompositionPainter extends CustomPainter {
   // ── Golden Spiral ───────────────────────────────────────────────────────────
   void _drawGoldenSpiral(Canvas canvas, Size s) {
     final double dip = _gridDip;
-    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
+    final p = _p
+      ..color = _gold.withValues(
+        alpha: (0.45 * dip * emphasis).clamp(0.0, 1.0),
+      );
     const double phi = 1.6180339887;
 
     // 90°-per-step rotation lets the user aim the spiral's eye at any corner.
@@ -1833,6 +1966,9 @@ class _CompositionPainter extends CustomPainter {
     int dir = 0;
     final path = Path();
     bool isFirst = true;
+    // Collected rather than drawn inline: the reveal fades each divider in as
+    // the growing arc reaches it, so the shape assembles as one motion.
+    final List<(Offset, Offset)> dividers = [];
 
     // Cut squares, drawing the golden-section dividing line for each (the lines
     // overlaid in the reference) plus a continuous quarter-arc through it. 12
@@ -1847,11 +1983,10 @@ class _CompositionPainter extends CustomPainter {
         // Cut Right Square — divider is its left edge (vertical, full height).
         center = Offset(rect.right - sqSize, rect.top);
         startAngle = 0;
-        canvas.drawLine(
+        dividers.add((
           Offset(rect.right - sqSize, rect.top),
           Offset(rect.right - sqSize, rect.bottom),
-          p,
-        );
+        ));
         rect = Rect.fromLTRB(
           rect.left,
           rect.top,
@@ -1862,11 +1997,10 @@ class _CompositionPainter extends CustomPainter {
         // Cut Bottom Square — divider is its top edge (horizontal, full width).
         center = Offset(rect.right, rect.bottom - sqSize);
         startAngle = math.pi / 2;
-        canvas.drawLine(
+        dividers.add((
           Offset(rect.left, rect.bottom - sqSize),
           Offset(rect.right, rect.bottom - sqSize),
-          p,
-        );
+        ));
         rect = Rect.fromLTRB(
           rect.left,
           rect.top,
@@ -1877,11 +2011,10 @@ class _CompositionPainter extends CustomPainter {
         // Cut Left Square — divider is its right edge (vertical, full height).
         center = Offset(rect.left + sqSize, rect.bottom);
         startAngle = math.pi;
-        canvas.drawLine(
+        dividers.add((
           Offset(rect.left + sqSize, rect.top),
           Offset(rect.left + sqSize, rect.bottom),
-          p,
-        );
+        ));
         rect = Rect.fromLTRB(
           rect.left + sqSize,
           rect.top,
@@ -1892,11 +2025,10 @@ class _CompositionPainter extends CustomPainter {
         // Cut Top Square — divider is its bottom edge (horizontal, full width).
         center = Offset(rect.left, rect.top + sqSize);
         startAngle = -math.pi / 2;
-        canvas.drawLine(
+        dividers.add((
           Offset(rect.left, rect.top + sqSize),
           Offset(rect.right, rect.top + sqSize),
-          p,
-        );
+        ));
         rect = Rect.fromLTRB(
           rect.left,
           rect.top + sqSize,
@@ -1911,7 +2043,43 @@ class _CompositionPainter extends CustomPainter {
       dir = (dir + 1) % 4;
     }
 
-    canvas.drawPath(path, p);
+    // ── Reveal ──
+    // The path is built OUTSIDE-IN (largest square first), so growing from the
+    // eye means tracing it backwards: take the last `t` of its arc length.
+    final double t = reveal.clamp(0.0, 1.0);
+    if (t >= 0.999) {
+      for (final (a, b) in dividers) {
+        canvas.drawLine(a, b, p);
+      }
+      canvas.drawPath(path, p);
+    } else if (t > 0.0) {
+      // Dividers fade in with the arc that passes them. They are collected
+      // outside-in too, so the LAST divider belongs to the tightest turn.
+      for (int i = 0; i < dividers.length; i++) {
+        // 0 at the eye end → 1 at the outermost divider.
+        final double at = dividers.length == 1
+            ? 0.0
+            : 1.0 - (i / (dividers.length - 1));
+        // Each fades over a short window as the arc sweeps past it.
+        final double f = ((t - at) / 0.18).clamp(0.0, 1.0);
+        if (f <= 0.0) continue;
+        canvas.drawLine(
+          dividers[i].$1,
+          dividers[i].$2,
+          Paint()
+            ..color = p.color.withValues(alpha: p.color.a * f)
+            ..strokeWidth = p.strokeWidth
+            ..style = PaintingStyle.stroke
+            ..strokeCap = p.strokeCap
+            ..strokeJoin = p.strokeJoin
+            ..isAntiAlias = true,
+        );
+      }
+      for (final metric in path.computeMetrics()) {
+        final double len = metric.length;
+        canvas.drawPath(metric.extractPath(len * (1.0 - t), len), p);
+      }
+    }
     canvas.restore();
   }
 
@@ -2029,7 +2197,10 @@ class _CompositionPainter extends CustomPainter {
   void _drawVArrangement(Canvas canvas, Size s) {
     // Fade through the shared flip dip so the upside-down swap is hidden.
     final double dip = _gridDip;
-    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
+    final p = _p
+      ..color = _gold.withValues(
+        alpha: (0.45 * dip * emphasis).clamp(0.0, 1.0),
+      );
 
     // Vertex at lower-center; arms rise symmetrically to the upper corners
     // of a contained region — fully visible, no clipping at edges.
@@ -2061,7 +2232,10 @@ class _CompositionPainter extends CustomPainter {
   // to ~85px apart near the opposite corner. The turn button cycles the corner.
   void _drawDiagonal(Canvas canvas, Size s) {
     final double dip = _gridDip;
-    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
+    final p = _p
+      ..color = _gold.withValues(
+        alpha: (0.45 * dip * emphasis).clamp(0.0, 1.0),
+      );
 
     // Offsets as fractions so the helpers stay ~85px apart near the far corner.
     final double ox = 85 / s.width;
@@ -2117,7 +2291,10 @@ class _CompositionPainter extends CustomPainter {
   // ── L Arrangement ───────────────────────────────────────────────────────────
   void _drawLArrangement(Canvas canvas, Size s) {
     final double dip = _gridDip;
-    final p = _p..color = _gold.withValues(alpha: 0.45 * dip);
+    final p = _p
+      ..color = _gold.withValues(
+        alpha: (0.45 * dip * emphasis).clamp(0.0, 1.0),
+      );
 
     // Normalised (turn 0, unflipped): corner low-left, vertical bar rising, foot
     // across the bottom to the right — a standard "L" by default. Flip mirrors
@@ -2322,7 +2499,12 @@ class _CompositionPainter extends CustomPainter {
   @override
   bool shouldRepaint(_CompositionPainter old) =>
       old.mode != mode ||
-      old.glowSegs != glowSegs ||
+      // By contents, not identity: the page hands the painter a fresh list on
+      // every build, and an identity check made every setState (a pinch, a
+      // belt scroll, a chrome toggle) re-rasterise the full-screen guide
+      // layer with nothing in it changed. Per-tick easing repaints still
+      // arrive through [repaint]; this only gates rebuilds.
+      !listEquals(old.glowSegs, glowSegs) ||
       old.faceBoxes != faceBoxes ||
       old.topInset != topInset ||
       old.bottomInset != bottomInset ||
@@ -2336,5 +2518,7 @@ class _CompositionPainter extends CustomPainter {
       old.vFlipped != vFlipped ||
       old.aspect != aspect ||
       old.deviceTurns != deviceTurns ||
+      old.reveal != reveal ||
+      old.emphasis != emphasis ||
       old.eyePoints != eyePoints;
 }

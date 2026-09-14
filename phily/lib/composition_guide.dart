@@ -14,17 +14,56 @@ part of 'camera_page.dart';
 Future<void> showCompositionGuide(BuildContext context, CompositionMode mode) {
   if (mode == CompositionMode.none) return Future.value();
   hapticTap();
-  return showModalBottomSheet(
+  // The app's shared reference-card presentation: fades up in place rather
+  // than sliding in from the bottom edge. See [showGildedCard] — the
+  // level-line preferences, opened by long-pressing the same button, use it
+  // too, so one control never produces two different modal gestures.
+  return showGildedCard<void>(
     context: context,
-    backgroundColor: Colors.transparent,
-    isScrollControlled: true,
+    barrierLabel: 'Dismiss guide',
     builder: (_) => _CompositionGuideSheet(spec: kCompositionByMode[mode]!),
   );
 }
 
-class _CompositionGuideSheet extends StatelessWidget {
+class _CompositionGuideSheet extends StatefulWidget {
   final CompositionSpec spec;
   const _CompositionGuideSheet({required this.spec});
+
+  @override
+  State<_CompositionGuideSheet> createState() => _CompositionGuideSheetState();
+}
+
+class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
+    with SingleTickerProviderStateMixin {
+  /// Draws the guide on once as the card settles. Slow enough to follow the
+  /// line with your eye, short enough that it never delays reading the copy.
+  late final AnimationController _draw = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  );
+
+  CompositionSpec get spec => widget.spec;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Instant under Reduce Motion: the diagram is information, so it must be
+    // complete either way — only the drawing-on is motion.
+    if (reduceMotionOf(context)) {
+      _draw.value = 1.0;
+    } else if (!_draw.isAnimating && _draw.value == 0.0) {
+      // A beat after the card's own fade, so the two don't compete.
+      Future<void>.delayed(const Duration(milliseconds: 140), () {
+        if (mounted) _draw.forward();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _draw.dispose();
+    super.dispose();
+  }
 
   /// Staged demo face for the detection modes — locked onto the top-left power
   /// point, glowing, exactly as it looks live when a shot lines up.
@@ -35,21 +74,45 @@ class _CompositionGuideSheet extends StatelessWidget {
     ..perfect = true
     ..alignGlow = 1.0;
 
+  /// How much heavier the guide is drawn here than on the live viewfinder.
+  ///
+  /// The camera keeps its guide quiet on purpose — it is a hint over a moving
+  /// subject. This sheet is the opposite: a still photograph the reader opened
+  /// *to study the guide*, often a bright one (sky, pale tabletop), where the
+  /// viewfinder's 0.45 alpha at 0.8pt all but disappears. See
+  /// [_CompositionPainter.emphasis].
+  static const double _kSheetEmphasis = 2.6;
+
+  /// Height for the framed diagram: a share of the screen rather than a flat
+  /// 200pt, so a short phone spends less of its card on the picture and more
+  /// on the words it has to fit.
+  static double _diagramHeight(BuildContext context) =>
+      (MediaQuery.of(context).size.height * 0.24).clamp(140.0, 220.0);
+
+  /// Widest the card may get. A reference card is a column of prose; on a
+  /// phone held landscape an uncapped card ran 816pt wide — line lengths no
+  /// one reads comfortably, and it swallowed the frame it is explaining.
+  static const double _kCardMaxW = 460;
+
   /// The mode's overlay painter with staged state, so the diagram shows the
   /// guide mid-use rather than bare lines.
-  CustomPainter _diagramPainter() {
+  CustomPainter _diagramPainter(double reveal) {
     switch (spec.mode) {
       case CompositionMode.ruleOfThirds:
         return _CompositionPainter(
           spec.mode,
           faceBoxes: [_demoFace],
           powerGlow: const [1.0, 0.25, 0.25, 0.25],
+          emphasis: _kSheetEmphasis,
+          reveal: reveal,
         );
       case CompositionMode.goldenSection:
         // First phi point glows — the scene stands its figure there.
         return _CompositionPainter(
           spec.mode,
           powerGlow: const [1.0, 0.25, 0.25, 0.25],
+          emphasis: _kSheetEmphasis,
+          reveal: reveal,
         );
       case CompositionMode.horizonGrid:
         // A slightly-tilted true horizon approaching the gold guide.
@@ -63,11 +126,22 @@ class _CompositionGuideSheet extends StatelessWidget {
             aligned: 0.35,
             dy: -0.04,
           )),
+          emphasis: _kSheetEmphasis,
+          reveal: reveal,
         );
       case CompositionMode.aspectRatio:
-        return _CompositionPainter(spec.mode, aspect: 4 / 5);
+        return _CompositionPainter(
+          spec.mode,
+          aspect: 4 / 5,
+          emphasis: _kSheetEmphasis,
+          reveal: reveal,
+        );
       default:
-        return _CompositionPainter(spec.mode);
+        return _CompositionPainter(
+          spec.mode,
+          emphasis: _kSheetEmphasis,
+          reveal: reveal,
+        );
     }
   }
 
@@ -99,229 +173,328 @@ class _CompositionGuideSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final double bottom = MediaQuery.of(context).padding.bottom;
     final double maxH = MediaQuery.of(context).size.height * 0.86;
     final String? orient = spec.orientation.label;
     final bool landscapeDiagram =
         spec.orientation == CompoOrientation.landscape;
-    return ClipRRect(
-      borderRadius: const BorderRadius.vertical(
-        top: Radius.circular(kRadiusLg + 8),
-      ),
-      child: BackdropFilter(
-        // Same deep frost as the paywall — a modal can afford true blur.
-        filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-        child: Container(
-          constraints: BoxConstraints(maxHeight: maxH),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.white.withValues(alpha: 0.10),
-                Colors.black.withValues(alpha: 0.66),
-                Colors.black.withValues(alpha: 0.84),
-              ],
-              stops: const [0.0, 0.4, 1.0],
-            ),
-          ),
-          child: Stack(
-            children: [
-              // Warm gold aura behind the header.
-              Positioned(
-                top: -90,
-                left: -40,
-                right: -40,
-                child: IgnorePointer(
-                  child: Container(
-                    height: 220,
-                    decoration: const BoxDecoration(
-                      gradient: RadialGradient(
-                        radius: 0.75,
-                        colors: [Color(0x2EE5C158), Color(0x00E5C158)],
-                      ),
-                    ),
-                  ),
+    // Centred card, not a docked sheet: rounded on all four corners and inset
+    // from the edges so the shot stays visible around it.
+    //
+    // The vertical inset takes the LARGER of the two safe areas, not their
+    // sum: `padding.vertical` adds top and bottom together, so a Dynamic
+    // Island phone was losing ~93pt of height to an inset meant to clear ~59.
+    final EdgeInsets safe = MediaQuery.of(context).padding;
+    return Center(
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+          horizontal: 18,
+          vertical: math.max(safe.top, safe.bottom) + 24,
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(kRadiusLg + 8),
+          child: BackdropFilter(
+            // Same deep frost as the paywall — a modal can afford true blur.
+            filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+            child: Container(
+              constraints: BoxConstraints(
+                maxHeight: maxH,
+                maxWidth: _kCardMaxW,
+              ),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.10),
+                    Colors.black.withValues(alpha: 0.66),
+                    Colors.black.withValues(alpha: 0.84),
+                  ],
+                  stops: const [0.0, 0.4, 1.0],
                 ),
               ),
-              // Gold-leaf top edge.
-              const Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: GildedHairline(height: 1.2),
-              ),
-              SingleChildScrollView(
-                padding: EdgeInsets.fromLTRB(24, 14, 24, 18 + bottom),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Grab handle.
-                    Center(
-                      child: Container(
-                        width: 38,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 14),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.25),
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    // Eyebrow: GUIDE + recommended hold.
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.auto_awesome_rounded,
-                          color: kGold,
-                          size: 12,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          'GUIDE',
-                          style: brandLabel(
-                            size: 9,
-                            weight: FontWeight.w600,
-                            color: kGold.withValues(alpha: 0.85),
-                            letterSpacing: 2.8,
-                          ),
-                        ),
-                        const Spacer(),
-                        if (orient != null) ...[
-                          Icon(
-                            orient == 'Portrait'
-                                ? Icons.stay_current_portrait_rounded
-                                : orient == 'Landscape'
-                                ? Icons.stay_current_landscape_rounded
-                                : Icons.screen_rotation_rounded,
-                            color: kGold.withValues(alpha: 0.7),
-                            size: 11,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            orient.toUpperCase(),
-                            style: brandLabel(
-                              size: 9,
-                              weight: FontWeight.w600,
-                              color: kGold.withValues(alpha: 0.7),
-                              letterSpacing: 1.8,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    // Mode name in the editorial serif.
-                    Text(
-                      spec.label,
-                      style: brandDisplay(
-                        size: 26,
-                        weight: FontWeight.w500,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    // The living diagram — a stylised scene (painted, not
-                    // photographed: copyright-free by construction) under the
-                    // mode's own overlay painter, framed like a print in a
-                    // fine gold mat.
-                    SizedBox(
-                      height: 200,
-                      child: Center(
-                        child: AspectRatio(
-                          aspectRatio: landscapeDiagram ? 4 / 3 : 3 / 4,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(kRadiusMd),
-                              border: Border.all(
-                                color: kGold.withValues(alpha: 0.35),
-                                width: 0.8,
-                              ),
-                              boxShadow: kSoftShadow,
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(kRadiusMd),
-                              child: Stack(
-                                fit: StackFit.expand,
+              child: Stack(
+                children: [
+                  // Warm gold aura behind the header.
+                  Positioned(
+                    top: -90,
+                    left: -40,
+                    right: -40,
+                    child: const GoldAura(height: 220),
+                  ),
+                  // Gold-leaf top edge.
+                  const Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: GildedHairline(height: 1.2),
+                  ),
+                  // The copy scrolls; the dismiss chip does not. "GOT IT" used
+                  // to be the last item INSIDE the scroll view, which put it
+                  // 216pt below the fold on an SE at the default text size —
+                  // the card's only *visible* way out, hidden. Now the
+                  // scrolling column takes whatever height is left and the
+                  // chip stays docked at the foot, always reachable.
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(24, 18, 24, 4),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              // Eyebrow: GUIDE + recommended hold. A Wrap, not a Row:
+                              // one line with the hold pushed right at normal sizes, and
+                              // at accessibility text sizes the hold drops to a second
+                              // line instead of overflowing (127px on an SE at AX5).
+                              Wrap(
+                                alignment: WrapAlignment.spaceBetween,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                runSpacing: 4,
                                 children: [
-                                  // Real example photo when one is bundled
-                                  // (assets/guides/<mode>.jpg — see the README
-                                  // there); otherwise the painted scene.
-                                  Image.asset(
-                                    'assets/guides/${spec.mode.name}.jpg',
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, _, _) => CustomPaint(
-                                      painter: _GuideScenePainter(spec.mode),
-                                    ),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.auto_awesome_rounded,
+                                        color: kGold,
+                                        size: 12,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'GUIDE',
+                                        style: brandLabel(
+                                          size: 9,
+                                          weight: FontWeight.w600,
+                                          color: kGold.withValues(alpha: 0.85),
+                                          letterSpacing: 2.8,
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                  // Soft scrim so the white guide lines stay
-                                  // legible over any photograph.
-                                  DecoratedBox(
-                                    decoration: BoxDecoration(
-                                      gradient: LinearGradient(
-                                        begin: Alignment.topCenter,
-                                        end: Alignment.bottomCenter,
-                                        colors: [
-                                          Colors.black.withValues(alpha: 0.18),
-                                          Colors.black.withValues(alpha: 0.30),
-                                        ],
+                                  if (orient != null)
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          orient == 'Portrait'
+                                              ? Icons
+                                                    .stay_current_portrait_rounded
+                                              : orient == 'Landscape'
+                                              ? Icons
+                                                    .stay_current_landscape_rounded
+                                              : Icons.screen_rotation_rounded,
+                                          color: kGold.withValues(alpha: 0.7),
+                                          size: 11,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          orient.toUpperCase(),
+                                          style: brandLabel(
+                                            size: 9,
+                                            weight: FontWeight.w600,
+                                            color: kGold.withValues(alpha: 0.7),
+                                            letterSpacing: 1.8,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              // Mode name in the editorial serif.
+                              Text(
+                                spec.label,
+                                style: brandDisplay(
+                                  size: 26,
+                                  weight: FontWeight.w500,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              // The living diagram — a stylised scene (painted, not
+                              // photographed: copyright-free by construction) under the
+                              // mode's own overlay painter, framed like a print in a
+                              // fine gold mat.
+                              SizedBox(
+                                // Proportional, not a flat 200pt: on a short phone
+                                // that fixed height was ~30% of the card, pushing
+                                // the copy — and the dismiss chip — further below
+                                // the fold. Clamped so it still reads as a framed
+                                // print on a tall screen and never collapses on a
+                                // small one.
+                                height: _diagramHeight(context),
+                                child: Center(
+                                  child: AspectRatio(
+                                    aspectRatio: landscapeDiagram
+                                        ? 4 / 3
+                                        : 3 / 4,
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(
+                                          kRadiusMd,
+                                        ),
+                                        border: Border.all(
+                                          color: kGold.withValues(alpha: 0.35),
+                                          width: 0.8,
+                                        ),
+                                        boxShadow: kSoftShadow,
+                                      ),
+                                      // One figure, not a stack of layers: the
+                                      // framed diagram IS this card's teaching
+                                      // content — a scene with the guide drawn over
+                                      // it. Unlabelled, a screen reader got the prose
+                                      // and nothing of the picture it describes.
+                                      // `image: true` announces it as a figure.
+                                      child: Semantics(
+                                        image: true,
+                                        label:
+                                            'Diagram: an example scene with the '
+                                            '${spec.label} guide drawn over it.',
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(
+                                            kRadiusMd,
+                                          ),
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              // Real example photo when one is bundled
+                                              // (assets/guides/<mode>.jpg — see the README
+                                              // there); otherwise the painted scene.
+                                              Image.asset(
+                                                'assets/guides/${spec.mode.name}.jpg',
+                                                fit: BoxFit.cover,
+                                                // The diagram IS this card's teaching
+                                                // content — a photograph with the guide
+                                                // drawn over it. Unlabelled, a screen
+                                                // reader got the prose and nothing of
+                                                // the picture the prose describes.
+                                                semanticLabel:
+                                                    'Example photograph with the '
+                                                    '${spec.label} guide drawn over it.',
+                                                errorBuilder: (_, _, _) =>
+                                                    CustomPaint(
+                                                      painter:
+                                                          _GuideScenePainter(
+                                                            spec.mode,
+                                                          ),
+                                                    ),
+                                              ),
+                                              // Soft scrim so the white guide lines stay
+                                              // legible over any photograph.
+                                              DecoratedBox(
+                                                decoration: BoxDecoration(
+                                                  gradient: LinearGradient(
+                                                    begin: Alignment.topCenter,
+                                                    end: Alignment.bottomCenter,
+                                                    colors: [
+                                                      Colors.black.withValues(
+                                                        alpha: 0.18,
+                                                      ),
+                                                      Colors.black.withValues(
+                                                        alpha: 0.30,
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                              // Own layer: the reveal animates for
+                                              // ~1.1s at display rate directly over a
+                                              // decoded JPEG and a gradient scrim.
+                                              // Without this, every frame of the draw-on
+                                              // marks the photo's layer dirty too — the
+                                              // guide's whole point is the photograph
+                                              // underneath, so it must not be
+                                              // re-rasterised 60×/second to animate a
+                                              // line over it.
+                                              RepaintBoundary(
+                                                child: AnimatedBuilder(
+                                                  animation: _draw,
+                                                  builder: (_, _) => CustomPaint(
+                                                    painter: _diagramPainter(
+                                                      Curves.easeInOutCubic
+                                                          .transform(
+                                                            _draw.value,
+                                                          ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ),
-                                  CustomPaint(painter: _diagramPainter()),
-                                ],
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              if (spec.tip != null) ...[
+                                _section('BEST FOR', spec.tip!),
+                                const SizedBox(height: 14),
+                              ],
+                              // How-to leads: a user opening this sheet wants to shoot,
+                              // not to study. The principle follows for those who want it.
+                              if (spec.how != null) ...[
+                                _section('HOW TO USE IT', spec.how!),
+                                const SizedBox(height: 14),
+                              ],
+                              if (spec.what != null)
+                                _section('WHAT IT IS', spec.what!),
+                            ],
+                          ),
+                        ),
+                      ),
+                      // Dismiss — the gallery's gilded filter chip (PopTap, 40pt,
+                      // radius 20), so the sheet's one control is the same object
+                      // as the rest of the app's chrome. The 2pt vertical pad
+                      // lifts the tap target to 44pt without changing the chip.
+                      // Shrink-wrapped explicitly: a Container with `alignment`
+                      // inside a bounded Center expands to the full width, and
+                      // minHeight (not height) lets large type grow the chip
+                      // instead of spilling out of it.
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
+                        child: Center(
+                          child: PopTap(
+                            onTap: () => Navigator.of(context).pop(),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2),
+                              child: Container(
+                                constraints: const BoxConstraints(
+                                  minHeight: 40,
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 22,
+                                ),
+                                decoration: glassChipDecoration(
+                                  radius: kRadiusLg,
+                                  active: true,
+                                ),
+                                child: Center(
+                                  widthFactor: 1,
+                                  heightFactor: 1,
+                                  child: Text(
+                                    'GOT IT',
+                                    style: brandLabel(
+                                      size: 10.5,
+                                      weight: FontWeight.w600,
+                                      color: kGold,
+                                      letterSpacing: 2.4,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    if (spec.tip != null) ...[
-                      _section('BEST FOR', spec.tip!),
-                      const SizedBox(height: 14),
                     ],
-                    // How-to leads: a user opening this sheet wants to shoot,
-                    // not to study. The principle follows for those who want it.
-                    if (spec.how != null) ...[
-                      _section('HOW TO USE IT', spec.how!),
-                      const SizedBox(height: 14),
-                    ],
-                    if (spec.what != null) _section('WHAT IT IS', spec.what!),
-                    const SizedBox(height: 20),
-                    // Dismiss — gilded chip, back to shooting.
-                    Center(
-                      child: GestureDetector(
-                        onTap: () {
-                          hapticTap();
-                          Navigator.of(context).pop();
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 22,
-                            vertical: 10,
-                          ),
-                          decoration: glassChipDecoration(
-                            radius: kRadiusLg,
-                            active: true,
-                          ),
-                          child: Text(
-                            'GOT IT',
-                            style: brandLabel(
-                              size: 10.5,
-                              weight: FontWeight.w600,
-                              color: kGold,
-                              letterSpacing: 2.4,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),

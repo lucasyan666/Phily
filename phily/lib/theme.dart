@@ -100,6 +100,16 @@ const Duration kDurFast = Duration(milliseconds: 200); // taps, toggles
 const Duration kDurMed = Duration(milliseconds: 340); // pills, hints
 const Duration kDurSlow = Duration(milliseconds: 460); // sheets, reveals
 
+/// iOS Reduce Motion (Settings → Accessibility → Motion). Decorative motion —
+/// the tap bubble, fades, zooms — collapses to an instant state change. Motion
+/// that carries information (the level line, detection targets) is untouched.
+bool reduceMotionOf(BuildContext context) =>
+    MediaQuery.disableAnimationsOf(context);
+
+/// [d], or zero under Reduce Motion — for implicit animations' `duration:`.
+Duration motionOf(BuildContext context, Duration d) =>
+    reduceMotionOf(context) ? Duration.zero : d;
+
 // ── Haptics ──────────────────────────────────────────────────────────────────
 
 /// The app's standard tap tick — selection-style, used on every deliberate tap.
@@ -148,6 +158,42 @@ class GildedHairline extends StatelessWidget {
           ],
           stops: const [0.0, 0.24, 0.5, 0.76, 1.0],
         ),
+      ),
+    ),
+  );
+}
+
+/// The wordmark: "Phily" in the editorial serif, paper melting into gold along
+/// a top-left → bottom-right sweep (board 1f). The branded loader and the
+/// first-launch screen both draw this one object, so the loading moment and
+/// the first screen read as one. Size, weight and tracking are the caller's;
+/// the gilding is not.
+class GildedWordmark extends StatelessWidget {
+  final double size;
+  final FontWeight weight;
+  final double letterSpacing;
+  const GildedWordmark({
+    super.key,
+    this.size = 44,
+    this.weight = FontWeight.w300,
+    this.letterSpacing = -0.5,
+  });
+
+  @override
+  Widget build(BuildContext context) => ShaderMask(
+    shaderCallback: (r) => const LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [kPaper, kGold],
+      stops: [0.35, 1.0],
+    ).createShader(r),
+    child: Text(
+      'Phily',
+      style: brandDisplay(
+        size: size,
+        weight: weight,
+        color: Colors.white, // recoloured by the shader
+        letterSpacing: letterSpacing,
       ),
     ),
   );
@@ -372,7 +418,6 @@ class _GlassRimPainter extends CustomPainter {
   bool shouldRepaint(_GlassRimPainter old) => old.radius != radius;
 }
 
-
 // ── Interaction ──────────────────────────────────────────────────────────────
 
 /// Tap feedback for the app's small chrome controls, camera and gallery alike:
@@ -384,7 +429,21 @@ class PopTap extends StatefulWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final Widget child;
-  const PopTap({super.key, this.onTap, this.onLongPress, required this.child});
+
+  /// VoiceOver name for icon-only controls. Text children announce
+  /// themselves (their label merges into this node), so leave it null there.
+  final String? semanticLabel;
+
+  /// On/off controls (grid toggle, favourite) announce their state.
+  final bool? toggled;
+  const PopTap({
+    super.key,
+    this.onTap,
+    this.onLongPress,
+    required this.child,
+    this.semanticLabel,
+    this.toggled,
+  });
 
   @override
   State<PopTap> createState() => _PopTapState();
@@ -397,15 +456,17 @@ class _PopTapState extends State<PopTap> with SingleTickerProviderStateMixin {
   );
   late final Animation<double> _scale = TweenSequence<double>([
     TweenSequenceItem(
-      tween: Tween(begin: 1.0, end: 1.14).chain(
-        CurveTween(curve: Curves.easeOutBack),
-      ),
+      tween: Tween(
+        begin: 1.0,
+        end: 1.14,
+      ).chain(CurveTween(curve: Curves.easeOutBack)),
       weight: 40,
     ),
     TweenSequenceItem(
-      tween: Tween(begin: 1.14, end: 1.0).chain(
-        CurveTween(curve: Curves.easeOutCubic),
-      ),
+      tween: Tween(
+        begin: 1.14,
+        end: 1.0,
+      ).chain(CurveTween(curve: Curves.easeOutCubic)),
       weight: 60,
     ),
   ]).animate(_ctrl);
@@ -418,29 +479,41 @@ class _PopTapState extends State<PopTap> with SingleTickerProviderStateMixin {
 
   void _pop() {
     HapticFeedback.selectionClick();
-    _ctrl.forward(from: 0);
+    // The tick stays under Reduce Motion; only the bubble is motion.
+    if (!reduceMotionOf(context)) _ctrl.forward(from: 0);
   }
 
   @override
   Widget build(BuildContext context) {
     final bool enabled = widget.onTap != null || widget.onLongPress != null;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: widget.onTap == null
-          ? null
-          : () {
-              _pop();
-              widget.onTap!();
-            },
-      onLongPress: widget.onLongPress == null
-          ? null
-          : () {
-              _pop();
-              widget.onLongPress!();
-            },
-      child: Opacity(
-        opacity: enabled ? 1.0 : 0.4,
-        child: ScaleTransition(scale: _scale, child: widget.child),
+    // One semantics node per control — the button trait, its name and its
+    // state — merged with whatever the child says, so VoiceOver reads
+    // "Share, button" for an icon and "GOT IT, button" for a text chip.
+    return MergeSemantics(
+      child: Semantics(
+        button: enabled,
+        enabled: enabled,
+        label: widget.semanticLabel,
+        toggled: widget.toggled,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap == null
+              ? null
+              : () {
+                  _pop();
+                  widget.onTap!();
+                },
+          onLongPress: widget.onLongPress == null
+              ? null
+              : () {
+                  _pop();
+                  widget.onLongPress!();
+                },
+          child: Opacity(
+            opacity: enabled ? 1.0 : 0.4,
+            child: ScaleTransition(scale: _scale, child: widget.child),
+          ),
+        ),
       ),
     );
   }
@@ -455,6 +528,8 @@ class GlassRoundButton extends StatelessWidget {
   final bool active;
   final double size;
   final double iconSize;
+  final String? semanticLabel; // icon-only: name it for VoiceOver
+  final bool? toggled; // on/off controls announce their state
   const GlassRoundButton({
     super.key,
     required this.icon,
@@ -462,13 +537,17 @@ class GlassRoundButton extends StatelessWidget {
     this.active = false,
     this.size = 46,
     this.iconSize = 20,
+    this.semanticLabel,
+    this.toggled,
   });
 
   @override
   Widget build(BuildContext context) => PopTap(
     onTap: onTap,
+    semanticLabel: semanticLabel,
+    toggled: toggled,
     child: AnimatedContainer(
-      duration: kDurFast,
+      duration: motionOf(context, kDurFast),
       curve: Curves.easeOut,
       width: size,
       height: size,
@@ -489,18 +568,21 @@ class GlassSquareButton extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final bool active;
+  final String? semanticLabel; // glyph-only: name it for VoiceOver
   const GlassSquareButton({
     super.key,
     required this.child,
     required this.onTap,
     this.onLongPress,
     this.active = false,
+    this.semanticLabel,
   });
 
   @override
   Widget build(BuildContext context) => PopTap(
     onTap: onTap,
     onLongPress: onLongPress,
+    semanticLabel: semanticLabel,
     child: Container(
       width: 48,
       height: 48,
@@ -508,6 +590,208 @@ class GlassSquareButton extends StatelessWidget {
       decoration: glassChipDecoration(radius: 16, active: active),
       child: child,
     ),
+  );
+}
+
+/// The app's switch — a gilded track with a polished thumb, in the same
+/// gold-and-glass language as every other control. Replaces
+/// `Switch.adaptive`, whose iOS-green track was the one place the app showed
+/// a platform default instead of its own palette.
+///
+/// A [PopTap] underneath gives it the shared tick, bubble and button trait;
+/// [semanticLabel] names it, and the on/off state is announced.
+class GildedSwitch extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  final String? semanticLabel;
+  const GildedSwitch({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.semanticLabel,
+  });
+
+  static const double _w = 46;
+  static const double _h = 27;
+  static const double _pad = 3;
+
+  @override
+  Widget build(BuildContext context) {
+    const double thumb = _h - _pad * 2;
+    return PopTap(
+      onTap: onChanged == null ? null : () => onChanged!(!value),
+      semanticLabel: semanticLabel,
+      toggled: value,
+      child: AnimatedContainer(
+        duration: motionOf(context, kDurFast),
+        curve: kEaseOut,
+        width: _w,
+        height: _h,
+        padding: const EdgeInsets.all(_pad),
+        alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(_h / 2),
+          // On: lit gilt melting to gold, the paywall CTA's metal. Off: the
+          // same smoked glass as an inactive chip.
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: value
+                ? const [kGoldLit, kGold, kGoldDeep]
+                : [
+                    Colors.white.withValues(alpha: 0.10),
+                    Colors.white.withValues(alpha: 0.03),
+                    kSmoke.withValues(alpha: 0.52),
+                  ],
+            stops: const [0.0, 0.5, 1.0],
+          ),
+          border: Border.all(
+            color: value
+                ? kGold.withValues(alpha: 0.9)
+                : Colors.white.withValues(alpha: 0.22),
+            width: value ? 1.0 : 0.8,
+          ),
+          boxShadow: value
+              ? [
+                  BoxShadow(
+                    color: kGold.withValues(alpha: 0.22),
+                    blurRadius: 10,
+                  ),
+                ]
+              : null,
+        ),
+        child: Container(
+          width: thumb,
+          height: thumb,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: value ? kSmoke : kPaper.withValues(alpha: 0.82),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x40000000),
+                blurRadius: 4,
+                offset: Offset(0, 1),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The breathing half of an emphasised [HintPill]: the gold rim and glow whose
+/// alpha rides the pulse. Painted *over* an already-built pill, so a 60fps
+/// breathe costs one decoration rebuild per frame instead of re-shaping text
+/// over the live preview. Non-hit-testing — the pill beneath keeps its taps.
+class _PulseOverlay extends StatelessWidget {
+  final double pulse;
+  final Widget child;
+  const _PulseOverlay({required this.pulse, required this.child});
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    ignoring: true,
+    child: DecoratedBox(
+      position: DecorationPosition.foreground,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(kRadiusLg),
+        border: Border.all(
+          color: kGold.withValues(alpha: 0.5 + 0.4 * pulse),
+          width: 1.0,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: kGold.withValues(alpha: 0.10 + 0.20 * pulse),
+            blurRadius: 14,
+          ),
+        ],
+      ),
+      child: child,
+    ),
+  );
+}
+
+/// The warm gold aura that sits behind a brand moment — the loader's mark, the
+/// first-launch wordmark, the paywall's crown. A soft radial bloom of [kGold]
+/// fading to nothing, so those screens read as lit from within by the same
+/// light.
+///
+/// Was hand-written three times with the brand gold spelled as raw hex
+/// (`0x2EE5C158`), which had already drifted apart in alpha (0x2E vs 0x33).
+/// [strength] is the centre alpha; [radius] how far the bloom reaches.
+class GoldAura extends StatelessWidget {
+  final double height;
+  final double strength;
+  final double radius;
+  const GoldAura({
+    super.key,
+    required this.height,
+    this.strength = 0.18,
+    this.radius = 0.75,
+  });
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    child: Container(
+      height: height,
+      decoration: BoxDecoration(
+        gradient: RadialGradient(
+          radius: radius,
+          colors: [
+            kGold.withValues(alpha: strength),
+            kGold.withValues(alpha: 0),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// Present [child] as a centred card that fades up in place.
+///
+/// The app's one modal gesture for *reference* surfaces — the composition
+/// guide, the level-line preferences. Both are cards about the frame you are
+/// already looking at, so they arrive **over** the shot rather than travelling
+/// across it: a slide-up drags the eye down and away from the thing being
+/// explained.
+///
+/// Deliberately NOT used by the paywall, which is a destination rather than a
+/// reference, or by the debug menu, which is a list of actions — a docked
+/// sheet is the right shape for both.
+///
+/// Honours Reduce Motion: the card appears with no transition at all.
+Future<T?> showGildedCard<T>({
+  required BuildContext context,
+  required WidgetBuilder builder,
+  String barrierLabel = 'Dismiss',
+}) {
+  final bool still = reduceMotionOf(context);
+  return showGeneralDialog<T>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: barrierLabel,
+    barrierColor: Colors.black.withValues(alpha: 0.56),
+    transitionDuration: still ? Duration.zero : kDurMed,
+    pageBuilder: (ctx, _, _) => builder(ctx),
+    transitionBuilder: (context, anim, _, child) {
+      final curved = CurvedAnimation(
+        parent: anim,
+        curve: kEaseOut,
+        reverseCurve: Curves.easeInCubic,
+      );
+      return FadeTransition(
+        opacity: curved,
+        // A whisper of scale so it *settles* into place rather than blinking
+        // on — the same arrival the rest of the app's chrome uses.
+        child: still
+            ? child
+            : ScaleTransition(
+                scale: Tween<double>(begin: 0.96, end: 1.0).animate(curved),
+                child: child,
+              ),
+      );
+    },
   );
 }
 
@@ -525,7 +809,11 @@ class HintPill extends StatelessWidget {
   final Widget? below; // optional second line (e.g. the time)
   final bool emphasis;
   final double pulse;
-  final double maxWidth;
+
+  /// Cap on the pill's width. Defaults to null, meaning "as wide as the
+  /// screen sensibly allows" — see [build]. Pass a number only where a
+  /// narrower pill is the design.
+  final double? maxWidth;
   const HintPill({
     super.key,
     this.icon,
@@ -534,8 +822,49 @@ class HintPill extends StatelessWidget {
     this.below,
     this.emphasis = false,
     this.pulse = 0,
-    this.maxWidth = 260,
+    this.maxWidth,
   });
+
+  /// Widest the pill may get regardless of screen — beyond this a single line
+  /// of chrome copy becomes a wall of text rather than a glance.
+  static const double _kCap = 340;
+
+  /// Kept clear at each side so the pill reads as a floating dock, not a bar.
+  static const double _kSideInset = 24;
+
+  /// A breathing pill, without rebuilding the pill.
+  ///
+  /// [pulse] only drives three alpha values — the glyph tint, the rim and the
+  /// glow. Everything else (the text, its layout, the whole child subtree) is
+  /// identical on every frame, so driving a [HintPill] straight from a 60fps
+  /// animation re-ran text shaping 60×/second over the live preview. This
+  /// builds the pill once and rebuilds only the decoration around it.
+  ///
+  /// [listenable] ticks the animation; [pulseOf] reads 0..1 from it.
+  static Widget breathing({
+    Key? key,
+    IconData? icon,
+    Widget? leading,
+    required String text,
+    Widget? below,
+    double maxWidth = double.nan,
+    required Listenable listenable,
+    required double Function() pulseOf,
+  }) => AnimatedBuilder(
+    key: key,
+    animation: listenable,
+    // Built once: the costly half (text shaping, layout, the child subtree).
+    child: HintPill(
+      icon: icon,
+      leading: leading,
+      text: text,
+      below: below,
+      emphasis: true,
+      maxWidth: maxWidth.isNaN ? null : maxWidth,
+      pulse: 0,
+    ),
+    builder: (context, child) => _PulseOverlay(pulse: pulseOf(), child: child!),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -550,8 +879,15 @@ class HintPill extends StatelessWidget {
                   alpha: emphasis ? 0.75 + 0.25 * pulse : 0.85,
                 ),
               ));
+    // A fixed 260pt cap ignored the screen it was docked on: the same pill on
+    // a 430pt Pro Max used the same 260pt, and at accessibility text sizes it
+    // grew *downward* instead — 620pt tall at AX5, a tower over the
+    // viewfinder where board 1b asks for one docked strip. Take the width
+    // that is actually there, then cap it.
+    final double available = MediaQuery.sizeOf(context).width - _kSideInset * 2;
+    final double limit = maxWidth ?? available.clamp(200.0, _kCap);
     return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxWidth, minHeight: 38),
+      constraints: BoxConstraints(maxWidth: limit, minHeight: 38),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
         decoration: BoxDecoration(

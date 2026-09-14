@@ -1,0 +1,584 @@
+{
+  "pass": 41,
+  "updated": "2026-09-12T14:37:51+0100",
+  "branch": "overnight-polish",
+  "rotation": [
+    "performance",
+    "compatibility",
+    "design-system",
+    "design-board"
+  ],
+  "next_type": "performance",
+  "gates": {
+    "flutter_analyze_issues": 0,
+    "flutter_test_passed": 278,
+    "flutter_test_failed": 0,
+    "flutter_build_ios_simulator": "ok"
+  },
+  "metrics": {
+    "gallery_grid_thumb_request_px": {
+      "before": {
+        "fixed": 300
+      },
+      "after": {
+        "iphone_se_375pt_2x": 225,
+        "iphone_15_pro_393pt_3x": 355,
+        "iphone_pro_max_430pt_3x": 392,
+        "landscape_or_tablet_cap": 420,
+        "floor": 160
+      },
+      "decode_px_per_cell_se": {
+        "before": 90000,
+        "after": 50625,
+        "delta_pct": -43.75
+      },
+      "upscale_factor_15_pro": {
+        "before": 1.18,
+        "after": 1.0
+      }
+    },
+    "welcome_bottom_overflow_px": {
+      "before": {
+        "se_375x667_1.3x": 191,
+        "15pro_393x852_1.3x": 30,
+        "15pro_landscape_1.0x": 23,
+        "15pro_landscape_1.3x": 92
+      },
+      "after": {
+        "se_375x667_1.3x": 0,
+        "15pro_393x852_1.3x": 0,
+        "15pro_landscape_1.0x": 0,
+        "15pro_landscape_1.3x": 0
+      },
+      "portrait_1x_scroll_extent": 0
+    },
+    "breakpoint_configs_under_test": {
+      "before": 80,
+      "after": 104,
+      "text_scales": [
+        1.0,
+        1.3,
+        2.0,
+        3.1
+      ]
+    },
+    "guide_sheet_modes_x_configs_no_overflow": 64,
+    "guide_sheet_dismiss": {
+      "tap_target_pt": {
+        "before": 33,
+        "after": 44
+      },
+      "visible_chip_pt": {
+        "before": 33,
+        "after": 40,
+        "matches": "gallery _FilterChip",
+        "note": "pass #6: was accidentally full-width from pass #3 to #6; now shrink-wrapped"
+      },
+      "raw_gesture_detector_controls_in_composition_guide": {
+        "before": 1,
+        "after": 0
+      },
+      "uses_poptap": true
+    },
+    "reduce_motion_honoured_sites": {
+      "before": 7,
+      "after": 9,
+      "sites": [
+        "PopTap",
+        "GlassRoundButton",
+        "gallery _FilterChip",
+        "grid thumb fade-in",
+        "grid selection scale",
+        "viewer zoom-open (crossfade)",
+        "branded loader (spin, aura, entrance)",
+        "paywall CTA (shimmer + press scale)",
+        "paywall tier-row selection glide"
+      ],
+      "default_motion_unchanged": true
+    },
+    "gallery_grid_scrollback": {
+      "platform_thumb_requests_per_reentered_cell": {
+        "before": 1,
+        "after": 0,
+        "when": "cell id in 300-entry LRU"
+      },
+      "repeat_fade_ins_per_reentered_cell": {
+        "before": 1,
+        "after": 0
+      },
+      "first_load_unchanged": true,
+      "measured": "analytical"
+    },
+    "ax_text_defects": {
+      "guide_eyebrow_h_overflow_px_se_3.1x": {
+        "before": 127,
+        "after": 0
+      },
+      "welcome_cta_label_spill_configs": {
+        "before": 7,
+        "after": 0
+      },
+      "guide_dismiss_width_pt_se_1x": {
+        "before": 327,
+        "after": "~124",
+        "note": "pass #3 regression: full-width bar \u2192 chip"
+      }
+    },
+    "wordmark_recipes": {
+      "before": 2,
+      "after": 1,
+      "shader_masks_outside_theme": {
+        "before": 2,
+        "after": 0
+      }
+    },
+    "guide_overlay_repaints_per_noop_rebuild": {
+      "before": 1,
+      "after": 0,
+      "asserted_modes": "all"
+    },
+    "voiceover": {
+      "icon_only_controls_named": {
+        "before": "0/6",
+        "after": "6/6"
+      },
+      "controls_with_button_trait": {
+        "before": 0,
+        "after": "every PopTap"
+      },
+      "toggles_announcing_state": {
+        "before": 0,
+        "after": 2
+      },
+      "semantics_widgets_in_lib": {
+        "before": 0,
+        "after": 1
+      }
+    },
+    "paywall_design_system": {
+      "raw_gesture_detector_controls": {
+        "before": 3,
+        "after": 1,
+        "note": "CTA keeps its own detector for press scale + shimmer; has the button trait"
+      },
+      "controls_under_44pt": {
+        "before": 2,
+        "after": 0
+      },
+      "voiceover_named_controls": {
+        "before": 0,
+        "after": 5
+      }
+    },
+    "camera_chrome_voiceover": {
+      "unnamed_controls": {
+        "before": 3,
+        "after": 0
+      },
+      "belt_pills_conveying_selection": {
+        "before": 0,
+        "after": 16
+      },
+      "gestures_with_spoken_hint": {
+        "before": 0,
+        "after": 2
+      },
+      "verified": "analyzer + build only; camera page cannot be pumped in tests"
+    },
+    "belt_label_layouts_per_scroll_frame": {
+      "before": "~5 (one per visible pill)",
+      "after": 0,
+      "note": "label hoisted into AnimatedBuilder.child; built once per pill",
+      "measured": "structural test, not a device trace"
+    },
+    "empty_gallery_bottom_overflow_px": {
+      "before": {
+        "se_3.1x_by_phily": 238,
+        "se_3.1x_all": 90,
+        "15pro_landscape_3.1x_by_phily": 106
+      },
+      "after": {
+        "se_3.1x_by_phily": 0,
+        "se_3.1x_all": 0,
+        "15pro_landscape_3.1x_by_phily": 0
+      },
+      "ordinary_sizes_unchanged": true
+    },
+    "platform_default_controls": {
+      "before": 1,
+      "after": 0,
+      "note": "SwitchListTile.adaptive in the level-line sheet \u2192 GildedSwitch"
+    },
+    "guide_caption_semantics_nodes": {
+      "before": 3,
+      "after": 1,
+      "overflows_found": 0
+    },
+    "gallery_overlay_repaint_isolation": {
+      "sibling_repaints_over_12_overlay_frames": {
+        "before": 12,
+        "after": 0
+      },
+      "boundaried": [
+        "fast-scroll thumb + date bubble",
+        "pull-to-dismiss dim"
+      ],
+      "measured": "behavioural test counting CustomPainter.paint calls"
+    },
+    "detection_cadence_coverage": {
+      "assertions": {
+        "before": 0,
+        "after": 10
+      },
+      "verified": [
+        "floor held on fast devices",
+        "backs off proportionally",
+        "caps at ceiling",
+        "outlier-resistant",
+        "recovers",
+        "eases, never jumps",
+        "ignores bad readings"
+      ],
+      "behaviour_change": "none \u2014 arithmetic relocated and named"
+    },
+    "gesture_detector_audit": {
+      "controls_needing_poptap": {
+        "before": 1,
+        "after": 0
+      },
+      "unnamed_grid_cells": {
+        "before": "all",
+        "after": 0
+      },
+      "duplicate_haptic_calls": {
+        "before": 1,
+        "after": 0
+      },
+      "raw_detectors_remaining": 21,
+      "note": "remaining are gesture handlers or controls with richer feedback; audit closed"
+    },
+    "hint_pill_height_pt": {
+      "measured_with": "Tilt left until the horizon meets the guide",
+      "screen_375": {
+        "1.0x": {
+          "before": 84,
+          "after": 68
+        },
+        "2.0x": {
+          "before": 284,
+          "after": 185
+        },
+        "3.1x": {
+          "before": 620,
+          "after": 420
+        }
+      },
+      "screen_430": {
+        "1.0x": {
+          "before": 84,
+          "after": 68
+        },
+        "2.0x": {
+          "before": 284,
+          "after": 185
+        },
+        "3.1x": {
+          "before": 620,
+          "after": 420
+        }
+      },
+      "width": {
+        "before": "260 fixed",
+        "after": "screen \u2212 48, clamped 200\u2013340"
+      }
+    },
+    "breathing_pill_rebuilds": {
+      "subtree_per_frame": {
+        "before": "whole HintPill",
+        "after": "rim + glow only"
+      },
+      "text_shaping_per_second_during_breathe": {
+        "before": 60,
+        "after": 0
+      },
+      "measured": "element identity across 20 pumped frames"
+    },
+    "day_header_overflow_px": {
+      "before": {
+        "3.1x_long_date": 24
+      },
+      "after": {
+        "3.1x_long_date": 0
+      },
+      "height_at_ordinary_sizes": {
+        "before": 30,
+        "after": 30
+      }
+    },
+    "gold_aura_duplication": {
+      "hand_written_auras": {
+        "before": 3,
+        "after": 1
+      },
+      "kgold_hex_literals_outside_theme": {
+        "before": 6,
+        "after": 0
+      },
+      "redundant_ignorepointer_wrappers": {
+        "before": 3,
+        "after": 0
+      },
+      "alpha_drift_found": "paywall 0x33 vs 0x2E elsewhere \u2014 preserved per screen"
+    },
+    "bubble_level_target": {
+      "radius_pt": {
+        "before": 4.6,
+        "after": 8.84
+      },
+      "ratio_to_bubble": {
+        "before": 1.35,
+        "after": 2.6
+      },
+      "visible_gap_at_full_bloom_pt": {
+        "before": 0.18,
+        "after": 4.42
+      },
+      "alpha": {
+        "before": 0.3,
+        "after": 0.52
+      },
+      "stroke_pt": {
+        "before": 0.55,
+        "after": 0.9
+      },
+      "reported_by": "Lucas \u2014 flat/birds-eye centre alignment hard to see"
+    },
+    "guide_reveal_repaint_isolation": {
+      "photo_repaints_over_15_frames": {
+        "before": 15,
+        "after": 0
+      },
+      "measured": "behavioural test counting CustomPainter.paint calls",
+      "note": "audit of same-session work; same defect shape as pass #17"
+    },
+    "guide_card_geometry": {
+      "landscape_card_width_pt": {
+        "before": 816,
+        "after": 460
+      },
+      "frame_visible_each_side_pt": {
+        "before": 18,
+        "after": 196
+      },
+      "vertical_inset": {
+        "before": "padding.vertical (sums top+bottom)",
+        "after": "max(top, bottom)"
+      },
+      "portrait_unchanged": true
+    },
+    "modal_presentation_consistency": {
+      "reference_surface_presentations": {
+        "before": 2,
+        "after": 1
+      },
+      "hand_rolled_dialog_configs": {
+        "before": 1,
+        "after": 0
+      },
+      "intentionally_left_as_sheets": [
+        "paywall (a destination)",
+        "debug menu (a list of actions)"
+      ]
+    },
+    "guide_draw_on_coverage": {
+      "modes_animating": {
+        "before": "1/16",
+        "after": "16/16"
+      },
+      "modes_given_fabricated_stroke_order": 0,
+      "canvas_balance_combinations_tested": 119,
+      "negative_test": "restore() deleted on purpose; the test failed as required"
+    },
+    "preview_offscreen_layers": {
+      "live_preview_savelayers": {
+        "before": 0,
+        "after": 0,
+        "note": "protects the zero rather than improving it"
+      },
+      "modes_test_pinned": {
+        "before": 0,
+        "after": 17
+      },
+      "untestable_inline_gates": {
+        "before": 1,
+        "after": 0
+      }
+    },
+    "guide_diagram_a11y": {
+      "modes_with_described_diagram": {
+        "before": "0/16",
+        "after": "16/16"
+      },
+      "diagram_semantics_nodes_per_card": {
+        "before": 0,
+        "after": 1
+      },
+      "covers": [
+        "bundled example photo",
+        "painted fallback scene"
+      ]
+    },
+    "paywall_breakpoints": {
+      "configs_without_overflow": {
+        "before": "0/12",
+        "after": "12/12"
+      },
+      "worst_clip_pt": {
+        "before": 233,
+        "after": 0,
+        "device": "iPhone SE @1.0x"
+      },
+      "purchase_buttons_reachable_on_se": {
+        "before": false,
+        "after": true
+      },
+      "root_cause": "no scroll view \u2014 content was a fixed Column",
+      "storekit_logic": "untouched"
+    },
+    "level_line_card_breakpoints": {
+      "configs_without_overflow": {
+        "before": "2/4",
+        "after": "4/4"
+      },
+      "worst_clip_pt": {
+        "before": 239,
+        "after": 0,
+        "device": "landscape @AX5"
+      },
+      "modal_cards_with_unscrollable_fixed_content": {
+        "before": 2,
+        "after": 0
+      }
+    },
+    "guide_card_height_budget": {
+      "scroll_extent_pt": {
+        "se": {
+          "before": 256,
+          "after": 216
+        },
+        "pro_max": {
+          "before": 60,
+          "after": 12
+        }
+      },
+      "diagram_height_pt": {
+        "se": {
+          "before": 200,
+          "after": 160
+        },
+        "pro_max": {
+          "before": 200,
+          "after": 220
+        }
+      },
+      "known_remaining": "dismiss chip below the fold \u2014 scoped, not started"
+    },
+    "guide_dismiss_reachability": {
+      "configs_visible_without_scrolling": {
+        "before": "0/4",
+        "after": "4/4"
+      },
+      "se_at_ax5_chip_top_pt": {
+        "before": 4444,
+        "after": 562,
+        "screen_height": 667
+      },
+      "note": "the item pass #33 failed to land; succeeded via hand edits, not scripted restructure"
+    },
+    "disproved_assumptions": {
+      "backdropfilter_resamples_on_scroll": false,
+      "controller_value_assignment_leaves_it_running": false,
+      "stale_settle_beat_can_restart_a_complete_draw": false,
+      "method": "each fix removed; test still passed \u2192 the defect was imaginary"
+    },
+    "gallery_filter_row": {
+      "configs_clean": {
+        "before": "8/12",
+        "after": "12/12"
+      },
+      "worst_overflow_px": {
+        "before": 132,
+        "after": 0,
+        "at": "375pt @AX5"
+      },
+      "rows_at_default_text": {
+        "before_fix": 1,
+        "after_wrap_regression": 2,
+        "final": 1
+      },
+      "note": "Wrap gave chips unbounded width; IntrinsicWidth restored Row-like sizing"
+    },
+    "paywall_cta_label": {
+      "clipped_px_at_ax5": {
+        "before": 86,
+        "after": 0
+      },
+      "button_height_at_1x": {
+        "before": 52,
+        "after": 52
+      },
+      "secondary_fix": "Stack used StackFit.expand so nothing could size it; label is now the sizing child, shimmer Positioned.fill",
+      "negative_test": "reintroduced height:52 \u2192 new test failed as required"
+    },
+    "filter_chip_tap_target": {
+      "target_height_pt": {
+        "before": 40,
+        "after": 44
+      },
+      "visible_chip_height_pt": {
+        "before": 40,
+        "after": 40
+      },
+      "hig_minimum": 44,
+      "note": "the guide card's dismiss chip already used this 2pt pad; the filter chips never got it"
+    },
+    "guide_recall_pill_tap_target": {
+      "target_height_pt": {
+        "before": 38,
+        "after": 44
+      },
+      "visible_pill_height_pt": {
+        "before": 38,
+        "after": 38
+      },
+      "controls_under_44pt_app_wide": {
+        "before": 1,
+        "after": 0
+      },
+      "note": "pad at the call site, not in HintPill \u2014 most pills are passive labels"
+    },
+    "radius_token_discipline": {
+      "literals_duplicating_a_token": {
+        "before": 4,
+        "after": 0
+      },
+      "token_references_in_lib": {
+        "before": 27,
+        "after": 31
+      },
+      "found_by_manual_sweep": 3,
+      "found_by_the_new_test": 1,
+      "visual_change": "none \u2014 every replacement is the same number"
+    },
+    "colour_token_discipline": {
+      "literals_duplicating_a_token": {
+        "before": 1,
+        "after": 0
+      },
+      "palette_tokens_under_test": 5,
+      "excluded": "kBackground (0xFF000000) \u2014 pure black is a legitimate literal",
+      "visual_change": "none"
+    }
+  },
+  "last_pass_outcome": "shipped"
+}
