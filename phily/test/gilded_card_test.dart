@@ -159,6 +159,26 @@ void main() {
     expect(find.byType(Scrollable), findsWidgets);
   });
 
+  testWidgets('text is not marked as unstyled (the yellow double underline)', (
+    tester,
+  ) async {
+    // Flutter paints a yellow DOUBLE UNDERLINE under any Text that has no
+    // Material ancestor. A bottom sheet supplies one implicitly; a general
+    // dialog does not — so when the guide and level-line cards became dialogs,
+    // every line of their copy picked up the marker.
+    await _open(tester);
+    await tester.pumpAndSettle();
+
+    final text = tester.element(find.text('card'));
+    expect(
+      text.findAncestorWidgetOfExactType<Material>(),
+      isNotNull,
+      reason:
+          'no Material ancestor — every Text in the card will render '
+          'with the yellow double underline',
+    );
+  });
+
   testWidgets('tapping the barrier dismisses it', (tester) async {
     await _open(tester);
     await tester.pumpAndSettle();

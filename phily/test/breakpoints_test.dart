@@ -726,16 +726,22 @@ void main() {
       );
       showCompositionGuide(ctx, CompositionMode.fibonacciSpiral);
       await tester.pumpAndSettle();
-      // 216pt of scroll on an SE, and with real safe-area insets a Pro Max
-      // is down to 12pt — effectively the whole card in view. Before the
-      // diagram became proportional this was 256pt and 60pt respectively.
+      // With real safe-area insets a Pro Max scrolls ~43pt out of a ~726pt
+      // viewport — under 6%, i.e. effectively the whole card in view. (256pt
+      // before the diagram became proportional; 12pt before the card gained
+      // its Material ancestor, which restores the default text baseline and
+      // costs a few points of height.) Asserted as a FRACTION of the
+      // viewport, so it measures "does the card fit" rather than a number
+      // that drifts with every type tweak.
+      final pos = tester
+          .state<ScrollableState>(find.byType(Scrollable).last)
+          .position;
       expect(
-        tester
-            .state<ScrollableState>(find.byType(Scrollable).last)
-            .position
-            .maxScrollExtent,
-        lessThan(40),
-        reason: 'the card should very nearly fit a Pro Max outright',
+        pos.maxScrollExtent / pos.viewportDimension,
+        lessThan(0.10),
+        reason:
+            'the card should very nearly fit a Pro Max outright — '
+            'scrolls ${pos.maxScrollExtent} of ${pos.viewportDimension}',
       );
     });
   });

@@ -773,7 +773,13 @@ Future<T?> showGildedCard<T>({
     barrierLabel: barrierLabel,
     barrierColor: Colors.black.withValues(alpha: 0.56),
     transitionDuration: still ? Duration.zero : kDurMed,
-    pageBuilder: (ctx, _, _) => builder(ctx),
+    // Transparent Material ancestor. Without one, Flutter paints every Text in
+    // the card with a yellow DOUBLE UNDERLINE — its "unstyled text" marker for
+    // text outside a Material. A bottom sheet supplies this implicitly; a
+    // general dialog does not, so the underlines appeared the moment these
+    // cards became dialogs. `type: transparency` keeps the glass look intact.
+    pageBuilder: (ctx, _, _) =>
+        Material(type: MaterialType.transparency, child: builder(ctx)),
     transitionBuilder: (context, anim, _, child) {
       final curved = CurvedAnimation(
         parent: anim,
