@@ -4914,14 +4914,6 @@ class _CameraPageState extends State<CameraPage>
     );
   }
 
-  /// The preview-facing "glass lip" — a whisper of paper-white where the chrome
-  /// meets the live preview. Kept very faint: the statement edge is the
-  /// [GildedHairline] laid along it — gold leaf catching light on the glass rim.
-  static const BorderSide _kChromeLip = BorderSide(
-    color: Color(0x14F6F1E7),
-    width: 0.8,
-  );
-
   /// Whether the camera chrome uses a real [BackdropFilter] frost (true frosted
   /// glass, but re-blurs the live preview every frame) or stays gradient-only.
   /// Off by default: the live blur caused jank, so we keep the FPS-safe gradient
@@ -4955,10 +4947,10 @@ class _CameraPageState extends State<CameraPage>
       ],
       stops: const [0.0, 0.55, 1.0],
     ),
-    border: Border(
-      top: top ? BorderSide.none : _kChromeLip,
-      bottom: top ? _kChromeLip : BorderSide.none,
-    ),
+    // No border. The chrome's preview-facing edge is the [GildedHairline] laid
+    // along it — one line. The old _kChromeLip sat directly beside that
+    // hairline, so every edge drew TWO parallel rules a pixel apart, which read
+    // as a doubled underline rather than a single gilded lip.
   );
 
   /// Top chrome, per the redesign's board 1b: no slab, no hairline — a soft

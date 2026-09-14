@@ -132,8 +132,12 @@ const List<CompositionSpec> kCompositionSpecs = [
   CompositionSpec(
     mode: CompositionMode.goldenTriangles,
     label: 'Golden Triangles',
-    tip: 'Roads, stairs, reclining poses.',
-    orientation: CompoOrientation.landscape,
+    tip: 'Roads, stairs, tall buildings.',
+    // Portrait: the diagonal works either way, but the subjects people
+    // actually shoot on it — converging verticals, a staircase, a figure —
+    // are usually framed tall. A landscape card cropped half the height off
+    // an upward shot.
+    orientation: CompoOrientation.portrait,
     controls: {CompoControl.flip},
     how:
         'Lay the strongest line in your scene — a road, a staircase, someone lying down — along the long diagonal. Put your subject where the short lines meet it. If the slope runs the other way, hit flip.',

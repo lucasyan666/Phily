@@ -1014,6 +1014,172 @@ class _LevelDialPainter extends CustomPainter {
 bool guideFadesIn(CompositionMode mode, double reveal) =>
     reveal < 0.999 && mode != CompositionMode.fibonacciSpiral;
 
+/// A canvas that draws every straight line only partway along its own length.
+///
+/// The guide sheet animates its diagram on. The spiral can trace itself because
+/// it is one continuous path; the grid modes are sets of straight lines, and
+/// each of those *does* have a natural direction — from where the painter
+/// starts it to where it ends. Forwarding `drawLine` through this proxy grows
+/// them all together, so a grid is struck onto the photo rather than fading up
+/// like a decal.
+///
+/// Arcs, circles, paths and text forward untouched: shapes with no single
+/// stroke direction still fade, which is what the enclosing `saveLayer` does.
+///
+/// `Canvas` is a native interface, so every member is forwarded by hand —
+/// `noSuchMethod` cannot proxy it (established in pass #29).
+class _GrowingLineCanvas implements Canvas {
+  _GrowingLineCanvas(this._inner, this._t);
+  final Canvas _inner;
+
+  /// 0 = nothing drawn, 1 = every line at full length.
+  final double _t;
+
+  @override
+  void drawLine(Offset p1, Offset p2, Paint paint) {
+    if (_t <= 0) return;
+    _inner.drawLine(p1, _t >= 1 ? p2 : Offset.lerp(p1, p2, _t)!, paint);
+  }
+
+  @override
+  void save() => _inner.save();
+  @override
+  void saveLayer(Rect? bounds, Paint paint) => _inner.saveLayer(bounds, paint);
+  @override
+  void restore() => _inner.restore();
+  @override
+  void restoreToCount(int count) => _inner.restoreToCount(count);
+  @override
+  int getSaveCount() => _inner.getSaveCount();
+  @override
+  void translate(double dx, double dy) => _inner.translate(dx, dy);
+  @override
+  void scale(double sx, [double? sy]) => _inner.scale(sx, sy);
+  @override
+  void rotate(double radians) => _inner.rotate(radians);
+  @override
+  void skew(double sx, double sy) => _inner.skew(sx, sy);
+  @override
+  void transform(Float64List matrix4) => _inner.transform(matrix4);
+  @override
+  Float64List getTransform() => _inner.getTransform();
+  @override
+  void clipRect(
+    Rect rect, {
+    ui.ClipOp clipOp = ui.ClipOp.intersect,
+    bool doAntiAlias = true,
+  }) => _inner.clipRect(rect, clipOp: clipOp, doAntiAlias: doAntiAlias);
+  @override
+  void clipRRect(RRect rrect, {bool doAntiAlias = true}) =>
+      _inner.clipRRect(rrect, doAntiAlias: doAntiAlias);
+  @override
+  void clipRSuperellipse(RSuperellipse rse, {bool doAntiAlias = true}) =>
+      _inner.clipRSuperellipse(rse, doAntiAlias: doAntiAlias);
+  @override
+  void clipPath(Path path, {bool doAntiAlias = true}) =>
+      _inner.clipPath(path, doAntiAlias: doAntiAlias);
+  @override
+  Rect getLocalClipBounds() => _inner.getLocalClipBounds();
+  @override
+  Rect getDestinationClipBounds() => _inner.getDestinationClipBounds();
+  @override
+  void drawColor(Color color, BlendMode blendMode) =>
+      _inner.drawColor(color, blendMode);
+  @override
+  void drawPaint(Paint paint) => _inner.drawPaint(paint);
+  @override
+  void drawRect(Rect rect, Paint paint) => _inner.drawRect(rect, paint);
+  @override
+  void drawRRect(RRect rrect, Paint paint) => _inner.drawRRect(rrect, paint);
+  @override
+  void drawRSuperellipse(RSuperellipse rse, Paint paint) =>
+      _inner.drawRSuperellipse(rse, paint);
+  @override
+  void drawDRRect(RRect outer, RRect inner, Paint paint) =>
+      _inner.drawDRRect(outer, inner, paint);
+  @override
+  void drawOval(Rect rect, Paint paint) => _inner.drawOval(rect, paint);
+  @override
+  void drawCircle(Offset c, double radius, Paint paint) =>
+      _inner.drawCircle(c, radius, paint);
+  @override
+  void drawArc(
+    Rect rect,
+    double startAngle,
+    double sweepAngle,
+    bool useCenter,
+    Paint paint,
+  ) => _inner.drawArc(rect, startAngle, sweepAngle, useCenter, paint);
+  @override
+  void drawPath(Path path, Paint paint) => _inner.drawPath(path, paint);
+  @override
+  void drawImage(ui.Image image, Offset offset, Paint paint) =>
+      _inner.drawImage(image, offset, paint);
+  @override
+  void drawImageRect(ui.Image image, Rect src, Rect dst, Paint paint) =>
+      _inner.drawImageRect(image, src, dst, paint);
+  @override
+  void drawImageNine(ui.Image image, Rect center, Rect dst, Paint paint) =>
+      _inner.drawImageNine(image, center, dst, paint);
+  @override
+  void drawPicture(ui.Picture picture) => _inner.drawPicture(picture);
+  @override
+  void drawParagraph(ui.Paragraph paragraph, Offset offset) =>
+      _inner.drawParagraph(paragraph, offset);
+  @override
+  void drawPoints(ui.PointMode pointMode, List<Offset> points, Paint paint) =>
+      _inner.drawPoints(pointMode, points, paint);
+  @override
+  void drawRawPoints(ui.PointMode pointMode, Float32List points, Paint paint) =>
+      _inner.drawRawPoints(pointMode, points, paint);
+  @override
+  void drawVertices(ui.Vertices vertices, BlendMode blendMode, Paint paint) =>
+      _inner.drawVertices(vertices, blendMode, paint);
+  @override
+  void drawAtlas(
+    ui.Image atlas,
+    List<RSTransform> transforms,
+    List<Rect> rects,
+    List<Color>? colors,
+    BlendMode? blendMode,
+    Rect? cullRect,
+    Paint paint,
+  ) => _inner.drawAtlas(
+    atlas,
+    transforms,
+    rects,
+    colors,
+    blendMode,
+    cullRect,
+    paint,
+  );
+  @override
+  void drawRawAtlas(
+    ui.Image atlas,
+    Float32List rstTransforms,
+    Float32List rects,
+    Int32List? colors,
+    BlendMode? blendMode,
+    Rect? cullRect,
+    Paint paint,
+  ) => _inner.drawRawAtlas(
+    atlas,
+    rstTransforms,
+    rects,
+    colors,
+    blendMode,
+    cullRect,
+    paint,
+  );
+  @override
+  void drawShadow(
+    Path path,
+    Color color,
+    double elevation,
+    bool transparentOccluder,
+  ) => _inner.drawShadow(path, color, elevation, transparentOccluder);
+}
+
 /// Test seam: paint one composition's guide at a given draw-on [reveal], so
 /// the save/restore balance of the reveal's conditional `saveLayer` can be
 /// checked for every mode. See `test/guide_reveal_modes_test.dart`.
@@ -1243,21 +1409,27 @@ class _CompositionPainter extends CustomPainter {
       canvas.clipRect(Rect.fromLTWH(0, 0, grid.width, grid.height));
     }
     // The guide sheet draws its diagram on as the card settles. The spiral
-    // traces itself from the eye outward (it is a single continuous line, so
-    // it *can*); every other mode is a set of straight lines with no natural
-    // start point, so forcing a stroke order on them would invent a reading
-    // direction the composition does not have. They fade up together instead —
-    // one gesture, honestly applied to two different kinds of shape.
+    // traces itself from the eye outward; every other mode is a set of straight
+    // lines, and each line grows from its own start point to its end, so a grid
+    // is *struck onto* the photo rather than fading up like a decal. The
+    // enclosing layer still eases the alpha, which carries the shapes that have
+    // no single stroke direction (power-point dots, arcs, scrims).
     final bool fadeIn = guideFadesIn(mode, reveal);
     if (fadeIn) {
       canvas.saveLayer(
         Rect.fromLTWH(0, 0, grid.width, grid.height),
         Paint()
           ..color = Colors.white.withValues(
-            alpha: Curves.easeOut.transform(reveal.clamp(0.0, 1.0)),
+            // Alpha leads the stroke slightly, so a line is already visible as
+            // it extends rather than arriving fully opaque at the end.
+            alpha: Curves.easeOut.transform((reveal * 1.6).clamp(0.0, 1.0)),
           ),
       );
     }
+    // Lines grow on the eased reveal; everything else is untouched.
+    final Canvas drawTo = fadeIn
+        ? _GrowingLineCanvas(canvas, Curves.easeOutCubic.transform(reveal))
+        : canvas;
     switch (mode) {
       case CompositionMode.none:
         break;
@@ -1266,10 +1438,10 @@ class _CompositionPainter extends CustomPainter {
         // like the face boxes), so nothing to draw inside the banded clip.
         break;
       case CompositionMode.ruleOfThirds:
-        _drawRuleOfThirds(canvas, grid);
+        _drawRuleOfThirds(drawTo, grid);
         break;
       case CompositionMode.goldenSection:
-        _drawGoldenSection(canvas, grid);
+        _drawGoldenSection(drawTo, grid);
         break;
       case CompositionMode.goldenTriangles:
         // One set of golden triangles; the flip button mirrors it across the
@@ -1278,50 +1450,50 @@ class _CompositionPainter extends CustomPainter {
           canvas.save();
           canvas.translate(grid.width, 0);
           canvas.scale(-1, 1);
-          _drawGoldenTriangles(canvas, grid);
+          _drawGoldenTriangles(drawTo, grid);
           canvas.restore();
         } else {
-          _drawGoldenTriangles(canvas, grid);
+          _drawGoldenTriangles(drawTo, grid);
         }
         break;
       case CompositionMode.fibonacciSpiral:
-        _drawGoldenSpiral(canvas, grid);
+        _drawGoldenSpiral(drawTo, grid);
         break;
       case CompositionMode.cross:
-        _drawCross(canvas, grid);
+        _drawCross(drawTo, grid);
         break;
       case CompositionMode.focalMass:
-        _drawOriented(canvas, grid, _drawFocalMass);
+        _drawOriented(drawTo, grid, _drawFocalMass);
         break;
       case CompositionMode.vArrangement:
-        _drawOriented(canvas, grid, _drawVArrangement);
+        _drawOriented(drawTo, grid, _drawVArrangement);
         break;
       case CompositionMode.diagonal:
-        _drawDiagonal(canvas, grid);
+        _drawDiagonal(drawTo, grid);
         break;
       case CompositionMode.radial:
-        _drawRadial(canvas, grid);
+        _drawRadial(drawTo, grid);
         break;
       case CompositionMode.lArrangement:
-        _drawOriented(canvas, grid, _drawLArrangement);
+        _drawOriented(drawTo, grid, _drawLArrangement);
         break;
       case CompositionMode.compoundCurve:
-        _drawOriented(canvas, grid, _drawCompoundCurve);
+        _drawOriented(drawTo, grid, _drawCompoundCurve);
         break;
       case CompositionMode.pyramid:
-        _drawOriented(canvas, grid, _drawPyramid);
+        _drawOriented(drawTo, grid, _drawPyramid);
         break;
       case CompositionMode.circular:
-        _drawCircular(canvas, grid);
+        _drawCircular(drawTo, grid);
         break;
       case CompositionMode.symmetry:
-        _drawSymmetry(canvas, grid);
+        _drawSymmetry(drawTo, grid);
         break;
       case CompositionMode.aspectRatio:
         // The crop keeps its ratio's natural shape (16:9 wide, 4:5 tall) and
         // _drawOriented rotates it with the device: 16:9 is a wide letterbox in
         // portrait and a tall frame in landscape (dark bands rotate left/right).
-        _drawOriented(canvas, grid, _drawAspectRatio);
+        _drawOriented(drawTo, grid, _drawAspectRatio);
         break;
     }
 
