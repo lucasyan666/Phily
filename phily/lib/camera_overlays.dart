@@ -695,6 +695,48 @@ debugBubbleGeometry() => (
   targetStroke: _LevelDialPainter.kBubbleTargetStroke,
 );
 
+/// Test seam: paint the level dial at a given attitude, so the save/restore
+/// balance of its layered fades can be checked directly. The dial takes an
+/// early `return` on some paths (fully hidden, bubble not yet faded in), and
+/// an unbalanced one silently corrupts everything drawn afterwards.
+/// See `test/level_dial_test.dart`.
+/// Test seam: the bounding box of the morphing ring at a given [overhead],
+/// straight from the painter's own geometry. Rasterising the dial and
+/// measuring ink is too slow and flaky in the test harness, and recomputing
+/// the formula inside the test would pass even if the painter changed — so
+/// the painter exposes the shape it actually builds.
+@visibleForTesting
+Size debugLevelRingExtent(double overhead, {double halfLength = 100}) {
+  final r = _LevelDialPainter.levelRingGeometry(overhead, halfLength);
+  return Size(r.halfWidth * 2, r.apex * 2);
+}
+
+@visibleForTesting
+void debugPaintLevelDial(
+  Canvas canvas,
+  Size size, {
+  required double roll,
+  required double vert,
+  required double overhead,
+  required double visible,
+  double bubbleX = 0,
+  double bubbleY = 0,
+}) {
+  final n = ValueNotifier<LevelReading?>((
+    roll: roll,
+    vert: vert,
+    level: false,
+    visible: visible,
+    tone: 0.0,
+    snap: false,
+    overhead: overhead,
+    bubbleX: bubbleX,
+    bubbleY: bubbleY,
+  ));
+  _LevelDialPainter(n, 0).paint(canvas, size);
+  n.dispose();
+}
+
 class _LevelDialPainter extends CustomPainter {
   final ValueNotifier<LevelReading?> attitude;
   final double bottomInset;
@@ -729,6 +771,26 @@ class _LevelDialPainter extends CustomPainter {
   /// universal "warning → good" read on a spirit level.
   static const Color _amber = Color(0xFFFFB020);
   static const Color _levelGreen = Color(0xFF4CD97B);
+
+  /// The morphing ring's shape at a given [overhead] (0 = straight bar,
+  /// 1 = closed circle), for a bar of half-length [L].
+  ///
+  /// Half-width eases from the bar's L to the ring's radius while the Bézier
+  /// control rises to twice that radius — a quadratic's apex sits at half its
+  /// control height, so width and height converge on the same value and the
+  /// shape ARRIVES as a circle.
+  ///
+  /// It used to hold half-width at L and bow two curves toward each other: at
+  /// full morph that is a lens 3.2x wider than tall (the "squashed eye"),
+  /// which then snapped to a true circle at ov >= 0.999.
+  static ({double halfWidth, double apex, double bow, double radius})
+  levelRingGeometry(double overhead, double L) {
+    final double ov = overhead.clamp(0.0, 1.0);
+    final double radius = L * 0.78;
+    final double halfWidth = L + (radius - L) * ov;
+    final double bow = 2 * radius * ov;
+    return (halfWidth: halfWidth, apex: bow / 2, bow: bow, radius: radius);
+  }
 
   // ── Bubble level geometry (flat / overhead framing) ──
   // The bubble is the only instrument for a birds-eye shot, so its target has
@@ -860,17 +922,27 @@ class _LevelDialPainter extends CustomPainter {
       canvas.translate(cx, cy);
       canvas.rotate(rollEx * (1 - ov)); // roll fades out as it becomes a ring
       canvas.translate(0, pitchPx * (1 - ov));
-      final double bow = ov * L * 0.62;
+
+      // Half-width shrinks from the bar's L to the ring's radius, so the shape
+      // ARRIVES as a circle instead of snapping to one at the last moment.
+      //
+      // It used to hold half-width L throughout and bow two quadratic Béziers
+      // toward each other: at full morph that is a lens 3.2× wider than tall —
+      // the "squashed eye" — which then jumped to a true circle at ov ≥ 0.999.
+      // A fast tilt simply makes the frames where it is still easing visible.
+      final g = levelRingGeometry(ov, L);
+      final double halfW = g.halfWidth;
+      final double bow = g.bow;
       final Path bar = Path()
-        ..moveTo(-L, 0)
-        ..quadraticBezierTo(0, bow, L, 0);
+        ..moveTo(-halfW, 0)
+        ..quadraticBezierTo(0, bow, halfW, 0);
       canvas.drawPath(bar, halo);
       canvas.drawPath(bar, stroke);
       // Mirror arc grows in as the ring closes, completing the circle.
       if (ov > 0.001) {
         final Path top = Path()
-          ..moveTo(-L, 0)
-          ..quadraticBezierTo(0, -bow, L, 0);
+          ..moveTo(-halfW, 0)
+          ..quadraticBezierTo(0, -bow, halfW, 0);
         // Separate paints — mutating the shared ones would leak this fade into
         // everything drawn afterwards.
         canvas.drawPath(
@@ -902,7 +974,19 @@ class _LevelDialPainter extends CustomPainter {
     // ── Bubble ──
     // Rides inside the ring, fading in with the morph. Its own soft halo keeps
     // it legible over a bright scene, matching the line's treatment.
-    if (ov > 0.02) {
+    // Eased, and held back until the ring has started closing. Scaling the
+    // bubble's alpha by raw `ov` off a hard `ov > 0.02` cutoff meant it
+    // arrived at 2% opacity on the very frame the gate opened — a visible pop
+    // against the dial's smooth fade, especially on a fast tilt where the
+    // morph crosses that threshold in a single frame.
+    //
+    // Gated on the EASED value, not on `ov`: an early `return` here would sit
+    // inside the visibility saveLayer and leave it unbalanced (caught by
+    // test/level_dial_test.dart).
+    final double bubFade = Curves.easeInOut.transform(
+      ((ov - 0.08) / 0.55).clamp(0.0, 1.0),
+    );
+    if (bubFade > 0.0) {
       final double ringR = L * 0.78;
       final double bx = (a.bubbleX).clamp(-1.0, 1.0) * ringR * 0.72;
       final double by = (a.bubbleY).clamp(-1.0, 1.0) * ringR * 0.72;
@@ -927,7 +1011,7 @@ class _LevelDialPainter extends CustomPainter {
         targetR,
         Paint()
           ..color = tone.withValues(
-            alpha: (kBubbleTargetAlpha + 0.34 * lit) * ov,
+            alpha: (kBubbleTargetAlpha + 0.34 * lit) * bubFade,
           )
           ..style = PaintingStyle.stroke
           ..strokeWidth = kBubbleTargetStroke + 0.35 * lit
@@ -947,7 +1031,7 @@ class _LevelDialPainter extends CustomPainter {
         bub,
         rad * (2.0 + 0.6 * lit),
         Paint()
-          ..color = tone.withValues(alpha: (0.16 + 0.10 * lit) * ov)
+          ..color = tone.withValues(alpha: (0.16 + 0.10 * lit) * bubFade)
           ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 2 * lit),
       );
       // Body: lit upper-left, deepening to the lower-right.
@@ -959,9 +1043,17 @@ class _LevelDialPainter extends CustomPainter {
             bub.translate(-rad * 0.35, -rad * 0.35),
             rad * 1.5,
             [
-              Color.lerp(kGoldLit, tone, 0.35)!.withValues(alpha: 0.98 * ov),
-              tone.withValues(alpha: 0.95 * ov),
-              Color.lerp(tone, kGoldDeep, 0.45)!.withValues(alpha: 0.90 * ov),
+              Color.lerp(
+                kGoldLit,
+                tone,
+                0.35,
+              )!.withValues(alpha: 0.98 * bubFade),
+              tone.withValues(alpha: 0.95 * bubFade),
+              Color.lerp(
+                tone,
+                kGoldDeep,
+                0.45,
+              )!.withValues(alpha: 0.90 * bubFade),
             ],
             const [0.0, 0.55, 1.0],
           )
@@ -972,7 +1064,7 @@ class _LevelDialPainter extends CustomPainter {
         bub.translate(-rad * 0.34, -rad * 0.34),
         rad * 0.26,
         Paint()
-          ..color = kGoldLit.withValues(alpha: 0.75 * ov)
+          ..color = kGoldLit.withValues(alpha: 0.75 * bubFade)
           ..isAntiAlias = true,
       );
     }
