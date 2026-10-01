@@ -4,8 +4,13 @@ import { FieldValue, Firestore, Timestamp, getFirestore } from "firebase-admin/f
 import { logger } from "firebase-functions";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 
-import { CALLMEBOT_APIKEY, CALLMEBOT_PHONE, REGION } from "./config";
-import { pingWhatsApp } from "./notify";
+import {
+  ENFORCE_APP_CHECK,
+  REGION,
+  TELEGRAM_BOT_TOKEN,
+  TELEGRAM_CHAT_ID,
+} from "./config";
+import { pingTelegram } from "./notify";
 import { InvalidInput, formatNotification, parseFeedback } from "./rules";
 
 /** How long feedback is kept before Firestore's TTL policy deletes it. */
@@ -15,9 +20,9 @@ const RETENTION_DAYS = 730;
 const PER_HOUR = 6;
 
 /**
- * WhatsApp pings per day, across everyone. Past this, feedback is still
- * stored, just not forwarded. It keeps a flood from getting your number
- * throttled by CallMeBot, and your phone from buzzing all night.
+ * Telegram pings per day, across everyone. Past this, feedback is still
+ * stored, just not forwarded, so a flood can't keep your phone buzzing all
+ * night.
  */
 const PINGS_PER_DAY = 60;
 
@@ -25,16 +30,17 @@ const DAY_MS = 86_400_000;
 
 /**
  * The app's feedback form posts here. Stores the message in Firestore, then
- * forwards it to your WhatsApp.
+ * forwards it to your Telegram.
  *
- * App Check is enforced, so only genuine copies of Phily can call it. A
- * leaked URL or config file can't be scripted into spamming your phone.
+ * With App Check enforced, only genuine copies of Phily can call it, so a
+ * leaked URL or config file can't be scripted into spamming your phone (see
+ * ENFORCE_APP_CHECK for when it's off).
  */
 export const submitFeedback = onCall(
   {
     region: REGION,
-    enforceAppCheck: true,
-    secrets: [CALLMEBOT_PHONE, CALLMEBOT_APIKEY],
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    secrets: [TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID],
     maxInstances: 5,
     timeoutSeconds: 20,
   },
@@ -78,14 +84,14 @@ export const submitFeedback = onCall(
     });
 
     if (await takePing(db, now)) {
-      const sent = await pingWhatsApp(
-        CALLMEBOT_PHONE.value(),
-        CALLMEBOT_APIKEY.value(),
+      const sent = await pingTelegram(
+        TELEGRAM_BOT_TOKEN.value(),
+        TELEGRAM_CHAT_ID.value(),
         formatNotification(input, ref.id.slice(0, 8)),
       );
       if (sent) await ref.update({ notified: true });
     } else {
-      logger.info("Daily WhatsApp cap reached; stored without a ping", { id: ref.id });
+      logger.info("Daily ping cap reached; stored without a ping", { id: ref.id });
     }
 
     return { id: ref.id };
@@ -139,7 +145,7 @@ async function enforceRateLimit(
   }
 }
 
-/** Claims one of today's WhatsApp pings; false once the cap is used up. */
+/** Claims one of today's Telegram pings; false once the cap is used up. */
 async function takePing(
   db: Firestore,
   now: number,

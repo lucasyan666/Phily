@@ -51,9 +51,13 @@ Firebase's configure raises an Objective-C exception Dart can't catch. Keep
 Firebase off the camera's cold start: the account starts when the gallery's
 button first builds, and the DeviceCheck call waits 4s after launch.
 
-The functions enforce **App Check**, so a debug build's calls are refused until
-its debug token (printed in the Xcode console) is registered in the Firebase
-console. See `firebase/README.md`.
+**App Check is off for now** (`ENFORCE_APP_CHECK=false` in
+`firebase/functions/.env`): the app is built with a free Apple team, which
+can't use App Attest. Before release, with a paid team, delete that line and
+redeploy, so only genuine copies of Phily can call the functions. Release
+builds attest; debug and profile builds use the debug provider, whose token
+(printed in the Xcode console) must then be registered in the Firebase
+console. Feedback pings arrive by Telegram bot. See `firebase/README.md`.
 
 Firebase and Google Sign-In arrive through Swift Package Manager, while ML Kit
 can only use CocoaPods. Both bring `GTMSessionFetcher` and `GoogleUtilities`,

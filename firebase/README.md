@@ -5,7 +5,7 @@ Firestore database closed to clients, and Firebase Auth.
 
 | Function | Called by | Does |
 |---|---|---|
-| `submitFeedback` | Feedback sheet | Validates, stores in `feedback/`, pings your WhatsApp via CallMeBot |
+| `submitFeedback` | Feedback sheet | Validates, stores in `feedback/`, pings your Telegram |
 | `claimTrial` | `PhilyPro` (once per device) | Asks Apple DeviceCheck whether this phone already had a trial |
 | `deleteAccount` | Account sheet | Deletes the user's feedback and their Auth account |
 
@@ -37,9 +37,9 @@ at this scale. Secret Manager's free tier covers six secrets; this uses five.
 **Set a budget alert** (Google Cloud console → Billing → Budgets, e.g. £1) so any
 surprise emails you.
 
-CallMeBot is free. It's an unofficial service, personal use only, with no uptime
-guarantee. Every message is saved in Firestore before the ping is attempted, so
-a failed ping loses nothing; look for `notified: false`.
+Telegram's bot API is free and official. Every message is saved in Firestore
+before the ping is attempted, so a failed ping loses nothing; look for
+`notified: false`.
 
 ## One-time setup
 
@@ -70,26 +70,30 @@ and the Firebase CLI (`npm i -g firebase-tools`, then `firebase login`).
 5. **Apple key**: developer.apple.com → Certificates, IDs & Profiles → Keys → +.
    Enable **DeviceCheck** and **Sign in with Apple** on the one key and download
    the `.p8`. Apple lets you download it only once, so store it somewhere safe.
-6. **CallMeBot**: add the bot's WhatsApp number listed at
-   callmebot.com/blog/free-api-whatsapp-messages (it changes now and then), send
-   it `I allow callmebot to send me messages`, and wait for your API key.
-7. **Secrets** (each command prompts for the value), from this folder:
+6. **Telegram bot**: in Telegram, message **@BotFather**, send `/newbot`, pick
+   any name. It replies with a **token**: keep it private. Open your new bot and
+   press **Start**, so it's allowed to message you.
+7. **Secrets** (each `set` prompts for the value; run them in your own
+   Terminal so the token never lands anywhere else), from this folder:
    ```sh
-   firebase use --add                                      # pick the project
-   firebase functions:secrets:set CALLMEBOT_PHONE          # +447700900123
-   firebase functions:secrets:set CALLMEBOT_APIKEY
+   firebase functions:secrets:set TELEGRAM_BOT_TOKEN       # paste the token
+   ./tools/telegram-chat-id.sh                             # finds + stores your chat id, sends a test
+   # later, with a paid Apple team:
    firebase functions:secrets:set APPLE_TEAM_ID            # your paid Team ID
    firebase functions:secrets:set APPLE_DEVICECHECK_KEY_ID
    firebase functions:secrets:set APPLE_DEVICECHECK_KEY < AuthKey_XXXXXXXXXX.p8
    ```
-8. **App Check** → Apps → your iOS app → **App Attest** → Save. The functions
-   enforce it, so until this is done every call is refused.
-   For debug builds (`flutter run`), the app uses the debug provider: run it from
-   Xcode, copy the `Firebase App Check debug token` line from the console, and
+8. **App Check** (with a paid team, before release) → Apps → your iOS app →
+   **App Attest** → Save, then delete `ENFORCE_APP_CHECK=false` from
+   `functions/.env` and redeploy. From then on only genuine copies of Phily can
+   call the functions. Debug and profile builds use the debug provider instead:
+   run from Xcode, copy the `App Check debug token` line from the console, and
    add it under App Check → Apps → ⋮ → *Manage debug tokens*.
 9. **Deploy**:
    ```sh
    cd functions && npm install && npm test && cd ..
+   firebase deploy --only firestore,functions:submitFeedback,functions:deleteAccount
+   # with the Apple secrets set (paid team), everything:
    firebase deploy --only functions,firestore
    ```
 10. **Retention** (turns the `expireAt` fields into automatic deletion):
@@ -97,8 +101,8 @@ and the Firebase CLI (`npm i -g firebase-tools`, then `firebase login`).
     gcloud firestore fields ttls update expireAt --collection-group=feedback --enable-ttl
     gcloud firestore fields ttls update expireAt --collection-group=rateLimits --enable-ttl
     ```
-11. **Try it**: send feedback from the app. It should appear in Firestore and on
-    your WhatsApp within a few seconds. Logs: `firebase functions:log`.
+11. **Try it**: send feedback from the app. It should appear in Firestore and in
+    your Telegram within a few seconds. Logs: `firebase functions:log`.
 
 ## Replying to people
 
@@ -119,8 +123,8 @@ Not legal advice, but what a small UK app like this needs:
       data almost certainly has to pay it: tier 1, about £52 a year, at ico.org.uk.
 - [ ] **Privacy policy** (`lucasyan666.github.io/phily-legal`). Add:
       what the table above says; that feedback is stored by Google (Firebase) in
-      London and forwarded to the developer's WhatsApp through CallMeBot and
-      Meta; that account data is held by Google under its data-processing terms
+      London and forwarded to the developer through Telegram (a bot message,
+      including the reply email if given); that account data is held by Google under its data-processing terms
       (international transfers covered by the UK–US data bridge); retention (24
       months); that email is collected only with consent and used only to reply;
       how to delete (in-app **Delete account**, or ask by email for feedback sent

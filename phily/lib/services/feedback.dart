@@ -18,7 +18,7 @@ class FeedbackError implements Exception {
 }
 
 /// Sends feedback to the `submitFeedback` function, which stores it in
-/// Firestore and forwards it to the developer's WhatsApp.
+/// Firestore and forwards it to the developer's Telegram.
 class FeedbackService {
   FeedbackService._();
 

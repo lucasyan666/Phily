@@ -7,6 +7,7 @@ import {
   APPLE_DEVICECHECK_KEY,
   APPLE_DEVICECHECK_KEY_ID,
   APPLE_TEAM_ID,
+  ENFORCE_APP_CHECK,
   REGION,
 } from "./config";
 import { TwoBits, isMonth, trialVerdict } from "./rules";
@@ -33,7 +34,7 @@ const HOSTS = [
 export const claimTrial = onCall(
   {
     region: REGION,
-    enforceAppCheck: true,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     secrets: [APPLE_TEAM_ID, APPLE_DEVICECHECK_KEY_ID, APPLE_DEVICECHECK_KEY],
     maxInstances: 5,
     timeoutSeconds: 20,

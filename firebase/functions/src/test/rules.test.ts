@@ -5,6 +5,7 @@ import {
   CONSENT,
   InvalidInput,
   LIMITS,
+  escapeHtml,
   formatNotification,
   monthOf,
   parseFeedback,
@@ -66,9 +67,25 @@ describe("formatNotification", () => {
     assert.ok(!formatNotification(no, "abc").includes("@"));
   });
 
-  it("truncates long messages for the ping", () => {
+  it("sends the whole message: the 2,000 cap fits Telegram's 4,096", () => {
     const f = parseFeedback({ kind: "issue", message: "y".repeat(LIMITS.messageMax) });
-    assert.ok(formatNotification(f, "abc").length < LIMITS.messageMax);
+    const text = formatNotification(f, "abc");
+    assert.ok(text.includes("y".repeat(LIMITS.messageMax)));
+    assert.ok(text.length < 4096);
+  });
+
+  it("escapes what the user typed, so Telegram's HTML can't break", () => {
+    const f = parseFeedback({
+      kind: "idea",
+      message: "Make <b>this</b> & that",
+      contact: true,
+      email: "a<b>@c.co",
+      consentVersion: 1,
+    });
+    const text = formatNotification(f, "abc");
+    assert.ok(text.includes("Make &lt;b&gt;this&lt;/b&gt; &amp; that"));
+    assert.ok(!text.includes("<b>this</b>"));
+    assert.equal(escapeHtml("a<b>&"), "a&lt;b&gt;&amp;");
   });
 });
 

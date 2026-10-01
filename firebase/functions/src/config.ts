@@ -12,10 +12,21 @@ export const REGION = "europe-west2";
 // shipped in the binary can be extracted, and these would let a stranger
 // message your phone or impersonate the app to Apple.
 
-/** Your WhatsApp number in international form, e.g. +447700900123. */
-export const CALLMEBOT_PHONE = defineSecret("CALLMEBOT_PHONE");
-/** The key CallMeBot sends back after you message its bot. */
-export const CALLMEBOT_APIKEY = defineSecret("CALLMEBOT_APIKEY");
+/** The token @BotFather gave your feedback bot. */
+export const TELEGRAM_BOT_TOKEN = defineSecret("TELEGRAM_BOT_TOKEN");
+/** Your own chat with that bot (find it with tools/telegram-chat-id.sh). */
+export const TELEGRAM_CHAT_ID = defineSecret("TELEGRAM_CHAT_ID");
+
+/**
+ * Whether the functions refuse calls without a valid App Check token.
+ *
+ * Off (`ENFORCE_APP_CHECK=false` in functions/.env) only while the app is
+ * built with a free Apple team: App Attest needs a paid one, and debug and
+ * profile builds would otherwise need a registered debug token. Until then
+ * the rate limits are the only guard. Delete the line before release, so
+ * only genuine copies of Phily can call in.
+ */
+export const ENFORCE_APP_CHECK = process.env.ENFORCE_APP_CHECK !== "false";
 
 /** Apple developer Team ID (10 characters, top-right of developer.apple.com). */
 export const APPLE_TEAM_ID = defineSecret("APPLE_TEAM_ID");

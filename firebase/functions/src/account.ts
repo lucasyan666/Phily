@@ -2,7 +2,7 @@ import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 
-import { REGION } from "./config";
+import { ENFORCE_APP_CHECK, REGION } from "./config";
 
 /**
  * Deletes the caller's account and everything linked to it: required by App
@@ -14,7 +14,7 @@ import { REGION } from "./config";
  * accounts, the app revokes the Apple token before calling this.
  */
 export const deleteAccount = onCall(
-  { region: REGION, enforceAppCheck: true, maxInstances: 5, timeoutSeconds: 60 },
+  { region: REGION, enforceAppCheck: ENFORCE_APP_CHECK, maxInstances: 5, timeoutSeconds: 60 },
   async (request) => {
     const uid = request.auth?.uid;
     if (!uid) throw new HttpsError("unauthenticated", "Sign in first.");

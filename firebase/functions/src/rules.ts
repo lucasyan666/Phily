@@ -9,9 +9,6 @@ export const LIMITS = {
   messageMax: 2000,
   emailMax: 254,
   contextValueMax: 64,
-  // WhatsApp gets a preview, not the essay: a CallMeBot request is a GET, so
-  // the whole message rides in the URL. The full text is always in Firestore.
-  notifyPreviewMax: 900,
 } as const;
 
 /**
@@ -105,19 +102,27 @@ export function parseFeedback(data: unknown): FeedbackInput {
 }
 
 const HEADLINE: Record<Kind, string> = {
-  idea: "💡 *Idea*",
-  issue: "🛠️ *Something's off*",
-  composition: "📐 *Composition request*",
+  idea: "💡 <b>Idea</b>",
+  issue: "🛠️ <b>Something's off</b>",
+  composition: "📐 <b>Composition request</b>",
 };
 
-/** The WhatsApp message you receive. Plain text with WhatsApp's *bold*. */
+/**
+ * Makes user text safe inside Telegram's HTML. Without this, a message
+ * containing "<" or "&" makes Telegram reject the whole ping.
+ */
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * The Telegram message you receive, in Telegram's HTML subset. A whole
+ * message always fits: feedback is capped at 2,000 characters and Telegram
+ * allows 4,096.
+ */
 export function formatNotification(input: FeedbackInput, ref: string): string {
-  const body =
-    input.message.length > LIMITS.notifyPreviewMax
-      ? `${input.message.slice(0, LIMITS.notifyPreviewMax).trimEnd()}… (full text in Firestore)`
-      : input.message;
   const reply = input.contact
-    ? `↩︎ Reply OK: ${input.contact.email}`
+    ? `↩︎ Reply OK: ${escapeHtml(input.contact.email)}`
     : "— no reply requested";
   const c = input.context;
   const meta = [
@@ -130,13 +135,13 @@ export function formatNotification(input: FeedbackInput, ref: string): string {
   return [
     `${HEADLINE[input.kind]} · Phily`,
     "",
-    body,
+    escapeHtml(input.message),
     "",
     reply,
-    meta,
-    `ref ${ref}`,
+    meta && `<i>${escapeHtml(meta)}</i>`,
+    `<code>ref ${escapeHtml(ref)}</code>`,
   ]
-    .filter((line, i, all) => !(line === "" && all[i - 1] === ""))
+    .filter((line) => line !== undefined)
     .join("\n")
     .trim();
 }

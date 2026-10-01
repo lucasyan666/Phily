@@ -41,12 +41,13 @@ class Backend {
       await Firebase.initializeApp();
       // App Check proves each call comes from a genuine copy of Phily on a
       // real device (App Attest), which is what stops a script from flooding
-      // the feedback relay. Debug builds use a debug token instead — register
+      // the feedback relay. Only release builds (TestFlight, App Store) can
+      // attest; debug and profile builds use a debug token instead — register
       // the one printed in the Xcode console (see firebase/README.md).
       await FirebaseAppCheck.instance.activate(
-        providerApple: kDebugMode
-            ? const AppleDebugProvider()
-            : const AppleAppAttestWithDeviceCheckFallbackProvider(),
+        providerApple: kReleaseMode
+            ? const AppleAppAttestWithDeviceCheckFallbackProvider()
+            : const AppleDebugProvider(),
       );
       return true;
     } catch (e) {
