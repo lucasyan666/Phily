@@ -75,6 +75,30 @@ void main() {
     expect(find.text('Sign in, if you like.'), findsOneWidget);
   });
 
+  testWidgets('both provider buttons show a logo and share one label style', (
+    tester,
+  ) async {
+    await pumpSheet(tester);
+    // The painted Google "G" once rendered at 0×0 — invisible — because a
+    // bare CustomPaint in a loose Stack has no size of its own.
+    final g = find.byWidgetPredicate(
+      (w) =>
+          w is CustomPaint &&
+          w.painter.runtimeType.toString() == '_GoogleGPainter',
+    );
+    expect(g, findsOneWidget);
+    expect(tester.getSize(g), const Size(20, 20));
+    expect(tester.getSize(find.byIcon(Icons.apple)).width, greaterThan(0));
+
+    final apple = tester.widget<Text>(find.text('Continue with Apple')).style!;
+    final google = tester
+        .widget<Text>(find.text('Continue with Google'))
+        .style!;
+    expect(google.fontFamily, apple.fontFamily);
+    expect(google.fontSize, apple.fontSize);
+    expect(google.fontWeight, apple.fontWeight);
+  });
+
   for (final scale in [1.0, 2.0, 3.1]) {
     testWidgets('fits an iPhone SE at ${scale}x text', (tester) async {
       final errors = <String>[];

@@ -3,14 +3,21 @@ import { randomUUID, sign } from "node:crypto";
 import { logger } from "firebase-functions";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 
-import {
-  APPLE_DEVICECHECK_KEY,
-  APPLE_DEVICECHECK_KEY_ID,
-  APPLE_TEAM_ID,
-  ENFORCE_APP_CHECK,
-  REGION,
-} from "./config";
+import { defineSecret } from "firebase-functions/params";
+
+import { ENFORCE_APP_CHECK, REGION } from "./config";
 import { TwoBits, isMonth, trialVerdict } from "./rules";
+
+// Declared here, not in config.ts: declaring a secret is enough for the CLI
+// to demand it on every deploy, and these only exist once there's a paid
+// Apple team. This file is loaded only when DEVICECHECK_ENABLED=true (see
+// index.ts).
+/** Apple developer Team ID (10 characters, top-right of developer.apple.com). */
+const APPLE_TEAM_ID = defineSecret("APPLE_TEAM_ID");
+/** Key ID of the DeviceCheck key (Certificates, IDs & Profiles → Keys). */
+const APPLE_DEVICECHECK_KEY_ID = defineSecret("APPLE_DEVICECHECK_KEY_ID");
+/** Full contents of that key's AuthKey_XXXXXXXXXX.p8 file. */
+const APPLE_DEVICECHECK_KEY = defineSecret("APPLE_DEVICECHECK_KEY");
 
 /**
  * Production first. A token from a development-signed build (Xcode, `flutter

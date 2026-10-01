@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:phily/debug.dart';
@@ -41,6 +42,12 @@ class PhilyPro extends ChangeNotifier {
   static const String _kSubscribed = 'phily_subscribed';
   static const String _kLifetime = 'phily_lifetime';
   static const String _kLastVerified = 'phily_last_verified_ms';
+  static const String _kDeviceCheckRetry = 'phily_devicecheck_retry_ms';
+
+  /// How long to wait before asking again when the server has no trial check
+  /// (claimTrial isn't deployed until there's a paid Apple team). Without
+  /// this, every launch made a pointless network call.
+  static const Duration _deviceCheckBackoff = Duration(days: 3);
 
   /// How often to re-check an active subscription against the store. A lapsed
   /// subscription only clears client-side on a verify, so this bounds how long
@@ -219,6 +226,9 @@ class PhilyPro extends ChangeNotifier {
   Future<void> _confirmTrialWithApple() async {
     if (_subscribed || _lifetime) return; // nothing a trial could change
     if (await TrialAnchor.instance.deviceChecked()) return;
+    final prefs = await SharedPreferences.getInstance();
+    final int? retryAt = prefs.getInt(_kDeviceCheckRetry);
+    if (retryAt != null && clock().millisecondsSinceEpoch < retryAt) return;
     if (!await Backend.ensure()) return;
     final String? token = await Backend.deviceCheckToken();
     if (token == null) return;
@@ -236,7 +246,6 @@ class PhilyPro extends ChangeNotifier {
         final parts = since.split('-').map(int.tryParse).toList();
         if (parts.length == 2 && parts[0] != null && parts[1] != null) {
           _firstLaunch = DateTime.utc(parts[0]!, parts[1]!).toLocal();
-          final prefs = await SharedPreferences.getInstance();
           await prefs.setInt(
             _kFirstLaunch,
             _firstLaunch.millisecondsSinceEpoch,
@@ -248,8 +257,17 @@ class PhilyPro extends ChangeNotifier {
       if (verdict is String) {
         await TrialAnchor.instance.markDeviceChecked(verdict);
       }
+    } on FirebaseFunctionsException catch (e) {
+      if (e.code == 'not-found') {
+        await prefs.setInt(
+          _kDeviceCheckRetry,
+          clock().add(_deviceCheckBackoff).millisecondsSinceEpoch,
+        );
+      }
+      debugLog('[PhilyPro] DeviceCheck deferred: ${e.code}');
     } catch (e) {
-      debugLog('[PhilyPro] DeviceCheck deferred: $e');
+      // Offline or similar: try again next launch.
+      debugLog('[PhilyPro] DeviceCheck deferred: ${e.runtimeType}');
     }
   }
 

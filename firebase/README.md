@@ -92,10 +92,11 @@ and the Firebase CLI (`npm i -g firebase-tools`, then `firebase login`).
 9. **Deploy**:
    ```sh
    cd functions && npm install && npm test && cd ..
-   firebase deploy --only firestore,functions:submitFeedback,functions:deleteAccount
-   # with the Apple secrets set (paid team), everything:
    firebase deploy --only functions,firestore
    ```
+   `claimTrial` (the DeviceCheck trial check) is left out until you set the
+   three `APPLE_*` secrets and change `DEVICECHECK_ENABLED` to `true` in
+   `functions/.env`; then deploy again.
 10. **Retention** (turns the `expireAt` fields into automatic deletion):
     ```sh
     gcloud firestore fields ttls update expireAt --collection-group=feedback --enable-ttl

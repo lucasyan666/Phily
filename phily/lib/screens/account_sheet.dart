@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:path_parsing/path_parsing.dart';
 import 'package:phily/screens/feedback_sheet.dart';
 import 'package:phily/screens/paywall.dart';
@@ -288,16 +287,8 @@ class _AccountSheetState extends State<AccountSheet> {
         FadeUp(
           delay: const Duration(milliseconds: 120),
           child: _ProviderButton(
-            logo: const Icon(Icons.apple, color: Colors.black, size: 21),
-            // Apple's sign-in button guidelines ask for the system font.
+            logo: const Icon(Icons.apple, color: Colors.black, size: 20),
             label: 'Continue with Apple',
-            labelStyle: const TextStyle(
-              fontFamily: 'CupertinoSystemText',
-              fontSize: 16.5,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.2,
-              color: Colors.black,
-            ),
             busy: _busy == 'apple',
             onTap: idle ? () => _run('apple', _acct.signInWithApple) : null,
           ),
@@ -308,12 +299,6 @@ class _AccountSheetState extends State<AccountSheet> {
           child: _ProviderButton(
             logo: const CustomPaint(painter: _GoogleGPainter()),
             label: 'Continue with Google',
-            // Google's branding guidelines ask for Roboto Medium.
-            labelStyle: GoogleFonts.roboto(
-              fontSize: 15.5,
-              fontWeight: FontWeight.w500,
-              color: const Color(0xFF1F1F1F),
-            ),
             busy: _busy == 'google',
             onTap: idle ? () => _run('google', _acct.signInWithGoogle) : null,
           ),
@@ -687,22 +672,39 @@ class _Body extends StatelessWidget {
   Widget build(BuildContext context) => Text(text, style: style);
 }
 
-/// A sign-in provider's own button: white, with its logo and label in the
-/// face its guidelines ask for — the one place the app steps out of gold,
-/// because a sign-in button has to be recognisable at a glance.
+/// A sign-in provider's button: white, with the provider's logo — the one
+/// place the app steps out of gold, because a sign-in button has to be
+/// recognisable at a glance.
+///
+/// Apple and Google buttons share one label style. Each provider's own
+/// guidelines name a different face (system font, Roboto), but stacked
+/// together the mismatch read as a mistake. The system font satisfies Apple
+/// and is an accepted substitute for Google.
 class _ProviderButton extends StatelessWidget {
   final Widget logo;
   final String label;
-  final TextStyle labelStyle;
   final bool busy;
   final VoidCallback? onTap;
   const _ProviderButton({
     required this.logo,
     required this.label,
-    required this.labelStyle,
     required this.busy,
     required this.onTap,
   });
+
+  @visibleForTesting
+  static const TextStyle labelStyle = TextStyle(
+    fontFamily: 'CupertinoSystemText',
+    fontSize: 16,
+    fontWeight: FontWeight.w600,
+    letterSpacing: -0.2,
+    color: Color(0xFF1F1F1F),
+  );
+
+  /// Every logo gets the same square. It also gives the painted Google "G"
+  /// a size: a bare CustomPaint inside the switcher's loose Stack was laid
+  /// out at 0×0 and drew nothing.
+  static const double _logoSize = 20;
 
   @override
   Widget build(BuildContext context) {
@@ -729,19 +731,28 @@ class _ProviderButton extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             SizedBox.square(
-              dimension: 20,
+              dimension: _logoSize,
               child: AnimatedSwitcher(
                 duration: motionOf(context, kDurFast),
                 child: busy
-                    ? const Padding(
+                    ? const SizedBox.square(
                         key: ValueKey('busy'),
-                        padding: EdgeInsets.all(2),
-                        child: CircularProgressIndicator(
-                          strokeWidth: 1.8,
-                          color: Color(0xCC000000),
+                        dimension: _logoSize,
+                        child: Padding(
+                          padding: EdgeInsets.all(2),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.8,
+                            color: Color(0xCC000000),
+                          ),
                         ),
                       )
-                    : KeyedSubtree(key: const ValueKey('logo'), child: logo),
+                    : SizedBox.square(
+                        key: const ValueKey('logo'),
+                        dimension: _logoSize,
+                        // Fill, not Center: a painted logo has no size of
+                        // its own and would collapse again.
+                        child: SizedBox.expand(child: logo),
+                      ),
               ),
             ),
             const SizedBox(width: 12),
@@ -749,7 +760,7 @@ class _ProviderButton extends StatelessWidget {
               child: Text(
                 label,
                 textAlign: TextAlign.center,
-                style: labelStyle,
+                style: _ProviderButton.labelStyle,
               ),
             ),
           ],

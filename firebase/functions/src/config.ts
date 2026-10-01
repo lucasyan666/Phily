@@ -28,9 +28,3 @@ export const TELEGRAM_CHAT_ID = defineSecret("TELEGRAM_CHAT_ID");
  */
 export const ENFORCE_APP_CHECK = process.env.ENFORCE_APP_CHECK !== "false";
 
-/** Apple developer Team ID (10 characters, top-right of developer.apple.com). */
-export const APPLE_TEAM_ID = defineSecret("APPLE_TEAM_ID");
-/** Key ID of the DeviceCheck key (Certificates, IDs & Profiles → Keys). */
-export const APPLE_DEVICECHECK_KEY_ID = defineSecret("APPLE_DEVICECHECK_KEY_ID");
-/** Full contents of that key's AuthKey_XXXXXXXXXX.p8 file. */
-export const APPLE_DEVICECHECK_KEY = defineSecret("APPLE_DEVICECHECK_KEY");
