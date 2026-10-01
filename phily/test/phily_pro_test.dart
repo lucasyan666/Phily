@@ -8,7 +8,26 @@
 // it talks to the real IAP plugin and can only be exercised on-device.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:phily/services/phily_pro.dart';
+import 'package:phily/services/trial_anchor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// The Keychain, in memory: tests have no platform channels.
+class _MemoryAnchor extends TrialAnchor {
+  DateTime? start;
+  String? verdict;
+
+  @override
+  Future<DateTime?> readStart() async => start;
+
+  @override
+  Future<void> writeStart(DateTime s) async => start = s;
+
+  @override
+  Future<bool> deviceChecked() async => verdict != null;
+
+  @override
+  Future<void> markDeviceChecked(String v) async => verdict = v;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -19,6 +38,7 @@ void main() {
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
+    TrialAnchor.instance = _MemoryAnchor();
     PhilyPro.clock = () => t0;
     await pro.debugSetTrial(expired: false); // first launch = t0
     await pro.debugSetSubscribed(false); // clears the lifetime flag too
@@ -117,10 +137,50 @@ void main() {
     test('the trial clock is persisted on (debug) reset', () async {
       await pro.debugSetTrial(expired: false);
       final prefs = await SharedPreferences.getInstance();
-      expect(
-        prefs.getInt('phily_first_launch_ms'),
-        t0.millisecondsSinceEpoch,
-      );
+      expect(prefs.getInt('phily_first_launch_ms'), t0.millisecondsSinceEpoch);
+    });
+
+    test('a (debug) reset reaches the Keychain too', () async {
+      // Otherwise init() would pick the older Keychain date back up on the
+      // next launch and quietly undo the reset.
+      final anchor = TrialAnchor.instance as _MemoryAnchor;
+      anchor.start = t0.subtract(const Duration(days: 90));
+      await pro.debugSetTrial(expired: false);
+      expect(anchor.start, t0);
+    });
+  });
+
+  // Reinstalling used to mean a new seven days: SharedPreferences goes with
+  // the app. The Keychain doesn't, and whichever date is earlier wins.
+  group('trial start survives a reinstall', () {
+    final now = DateTime(2026, 9, 28);
+    final june = DateTime(2026, 6, 1);
+    final sept = DateTime(2026, 9, 20);
+
+    test('first launch ever: the trial starts now', () {
+      expect(PhilyPro.trialStart(saved: null, anchored: null, now: now), now);
+    });
+
+    test('reinstall: prefs empty, the Keychain date stands', () {
+      expect(PhilyPro.trialStart(saved: null, anchored: june, now: now), june);
+    });
+
+    test('installed before the Keychain was used: prefs date stands', () {
+      expect(PhilyPro.trialStart(saved: sept, anchored: null, now: now), sept);
+    });
+
+    test('both present: the earlier one wins', () {
+      expect(PhilyPro.trialStart(saved: sept, anchored: june, now: now), june);
+      expect(PhilyPro.trialStart(saved: june, anchored: sept, now: now), june);
+    });
+  });
+
+  group('monthOf', () {
+    // DeviceCheck stamps its bits by UTC month; a local-time month would
+    // disagree with Apple for a few hours either side of midnight on the 1st.
+    test('is the UTC month', () {
+      expect(PhilyPro.monthOf(DateTime.utc(2026, 9, 30, 23, 59)), '2026-09');
+      expect(PhilyPro.monthOf(DateTime.utc(2027, 1, 1)), '2027-01');
     });
   });
 }

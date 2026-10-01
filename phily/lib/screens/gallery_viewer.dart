@@ -9,7 +9,9 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
+import 'package:phily/screens/account_sheet.dart';
 import 'package:phily/screens/branded_loader.dart';
+import 'package:phily/services/review_prompt.dart';
 import 'package:phily/services/shot_guide_log.dart';
 import 'package:phily/theme.dart';
 import 'dart:io' show Platform;
@@ -602,6 +604,15 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
     if (_loadStarted) return;
     _loadStarted = true;
     _load();
+    // The App Store rating, if it's time (see ReviewPrompt). Asked here, a
+    // beat after the grid is up, rather than at the shutter: the sheet never
+    // lands over a shot being framed, and this is where the LANDED figure
+    // shows the app working. Skipped if they've already opened a photo.
+    Future<void>.delayed(const Duration(milliseconds: 1500), () {
+      if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+        ReviewPrompt.maybeAsk();
+      }
+    });
   }
 
   @override
@@ -1141,24 +1152,35 @@ class _GalleryGridPageState extends State<GalleryGridPage> {
         builder: (_, _) {
           final int? pct = ShotGuideLog.instance.onGuidePercent;
           return Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(
-                'Gallery',
-                style: brandDisplay(size: 24, weight: FontWeight.w300),
-              ),
-              const Spacer(),
-              if (pct != null)
-                Text(
-                  'LANDED $pct%',
-                  style: brandLabel(
-                    size: 9.5,
-                    weight: FontWeight.w500,
-                    color: kGold.withValues(alpha: 0.8),
-                    letterSpacing: 1.52,
-                  ),
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text(
+                      'Gallery',
+                      style: brandDisplay(size: 24, weight: FontWeight.w300),
+                    ),
+                    const Spacer(),
+                    if (pct != null)
+                      Text(
+                        'LANDED $pct%',
+                        style: brandLabel(
+                          size: 9.5,
+                          weight: FontWeight.w500,
+                          color: kGold.withValues(alpha: 0.8),
+                          letterSpacing: 1.52,
+                        ),
+                      ),
+                  ],
                 ),
+              ),
+              // The way in to the account, feedback and composition
+              // requests. The gallery is the app's one calm room, so it
+              // lives here rather than in the camera's top bar.
+              const SizedBox(width: 14),
+              const AccountButton(size: 38),
             ],
           );
         },

@@ -50,6 +50,15 @@ dependencies:
   # Pure-Dart JPEG decode/crop/encode — used off-isolate to trim each capture
   # down to the on-screen composition frame (see cropToCompositionFrame).
   image: ^4.3.0
+  firebase_core: ^4.15.0
+  firebase_auth: ^6.7.0
+  cloud_functions: ^6.5.0
+  firebase_app_check: ^0.4.8
+  google_sign_in: ^7.2.0
+  flutter_secure_storage: ^10.3.4
+  package_info_plus: ^9.0.1
+  path_parsing: ^1.1.0
+  in_app_review: ^2.0.12
 
 dev_dependencies:
   flutter_test:

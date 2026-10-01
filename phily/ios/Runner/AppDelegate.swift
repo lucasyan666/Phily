@@ -1,6 +1,64 @@
 import Flutter
 import UIKit
 import AVFoundation
+import DeviceCheck
+
+// MARK: - Incoming universal links
+
+/// Universal links (the email sign-in link) handed to Dart.
+///
+/// The app runs on UIScene, so links arrive at the scene, not the app
+/// delegate: in the connection options when a link launches the app, or as a
+/// continued user activity while it runs. Registered as a scene delegate
+/// through the plugin registrar, so `SceneDelegate` stays Flutter's own.
+/// Links that land before Dart is listening wait in `pending` until Dart
+/// calls `initialLink`.
+final class IncomingLinks: NSObject, FlutterSceneLifeCycleDelegate {
+  static let shared = IncomingLinks()
+
+  private var channel: FlutterMethodChannel?
+  private var pending: URL?
+
+  /// Dart is listening: returns the link that launched the app, if any; later
+  /// links go straight to the channel.
+  func attach(_ channel: FlutterMethodChannel) -> String? {
+    self.channel = channel
+    defer { pending = nil }
+    return pending?.absoluteString
+  }
+
+  private func receive(_ url: URL) {
+    if let channel = channel {
+      channel.invokeMethod("link", arguments: url.absoluteString)
+    } else {
+      pending = url
+    }
+  }
+
+  // Explicit selectors: these are optional protocol methods, so a Swift name
+  // that drifted from the Objective-C one would compile and never be called.
+  @objc(scene:willConnectToSession:options:)
+  func scene(
+    _ scene: UIScene,
+    willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions?
+  ) -> Bool {
+    if let url = connectionOptions?.userActivities
+      .first(where: { $0.activityType == NSUserActivityTypeBrowsingWeb })?
+      .webpageURL {
+      receive(url)
+    }
+    return false // let anything else registered see it too
+  }
+
+  @objc(scene:continueUserActivity:)
+  func scene(_ scene: UIScene, continue userActivity: NSUserActivity) -> Bool {
+    guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+          let url = userActivity.webpageURL else { return false }
+    receive(url)
+    return false
+  }
+}
 
 // MARK: - Comparable convenience clamp
 private extension Comparable {
@@ -84,6 +142,38 @@ private extension Comparable {
       default: result(FlutterMethodNotImplemented); return
       }
       result(nil)
+    }
+
+    // ── Platform channel: backend config, DeviceCheck, incoming links ─────────
+    let platformRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "PhilyPlatformPlugin")!
+    let platformChannel = FlutterMethodChannel(
+      name: "phily/platform",
+      binaryMessenger: platformRegistrar.messenger()
+    )
+    platformRegistrar.addSceneDelegate(IncomingLinks.shared)
+    platformChannel.setMethodCallHandler { call, result in
+      switch call.method {
+      // Asked before Firebase starts: without the plist, FirebaseApp.configure()
+      // raises an Objective-C exception that would take the app down.
+      case "hasFirebaseConfig":
+        result(Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil)
+      case "deviceCheckToken":
+        AppDelegate.handleDeviceCheckToken(result: result)
+      case "initialLink":
+        result(IncomingLinks.shared.attach(platformChannel))
+      default: result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  // MARK: - DeviceCheck (trial lock)
+
+  /// A one-off token the server trades with Apple for this device's two
+  /// DeviceCheck bits. Nil where DeviceCheck isn't supported (the Simulator).
+  private static func handleDeviceCheckToken(result: @escaping FlutterResult) {
+    guard DCDevice.current.isSupported else { result(nil); return }
+    DCDevice.current.generateToken { data, _ in
+      DispatchQueue.main.async { result(data?.base64EncodedString()) }
     }
   }
 

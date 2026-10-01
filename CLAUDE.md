@@ -43,6 +43,27 @@ live in the UI** — i.e. a paywall bypass.
   the trial instead of waiting seven days).
 - External TestFlight and App Store: **must be `false`.**
 
+### The backend is optional at runtime
+Without `ios/Runner/GoogleService-Info.plist` the app runs normally; sign-in
+and feedback just report that they aren't connected. `Backend.ensure()` asks
+native code whether the plist exists *before* starting Firebase, because
+Firebase's configure raises an Objective-C exception Dart can't catch. Keep
+Firebase off the camera's cold start: the account starts when the gallery's
+button first builds, and the DeviceCheck call waits 4s after launch.
+
+The functions enforce **App Check**, so a debug build's calls are refused until
+its debug token (printed in the Xcode console) is registered in the Firebase
+console. See `firebase/README.md`.
+
+Firebase and Google Sign-In arrive through Swift Package Manager, while ML Kit
+can only use CocoaPods. Both bring `GTMSessionFetcher` and `GoogleUtilities`,
+so the app currently links **two copies** of each (same or patch-close
+versions). It builds and should run, but watch the Xcode console for
+`Class … is implemented in both`. The fix is CocoaPods for everything
+(`enable-swift-package-manager: false` under `flutter: config:` in
+`pubspec.yaml`), which means verifying the vendored camera plugin still builds
+that way.
+
 ### Preview FPS is a first-class concern
 Frame rate matters more here than in a typical app. Two structural decisions
 follow from it:
@@ -88,7 +109,18 @@ will not feel like a current Pro even with the adaptive cadence.
   camera writes it after each save; the gallery reads it for the gold lozenge on landed shots, the LANDED
   percentage and the viewer's guide recall. (The BY PHILY filter is the app's
   album — every in-app capture, landed or not.)
-- `lib/services/phily_pro.dart` — trial clock and StoreKit entitlement.
+- `lib/services/phily_pro.dart` — trial clock and StoreKit entitlement;
+  `trial_anchor.dart` keeps the trial start in the Keychain.
+- `lib/services/backend.dart` — Firebase bootstrap (optional at runtime; see
+  below), the `phily/platform` channel (DeviceCheck token, incoming universal
+  links) and callable-function access. `account.dart` is the optional sign-in
+  (Apple, Google, email link); `feedback.dart` sends to `submitFeedback`.
+- `lib/screens/account_sheet.dart` / `feedback_sheet.dart` — the account sheet
+  (opened from the gallery header's round button) and the feedback form (also
+  opened from each guide card's "Missing a composition?" link).
+- `../firebase/` — Cloud Functions, Firestore rules, and the setup, cost and
+  legal checklist in its README. `tool/wire_firebase_ios.sh` finishes the iOS
+  side after `flutterfire configure`.
 - `lib/theme.dart` — the single definition of the app's gold/glass language.
   Prefer reusing `GlassSurface`, `glassChipDecoration`, `MetalRingPainter`,
   `GildedHairline`, `brandDisplay`/`brandLabel` over new one-off styling.
@@ -97,7 +129,9 @@ will not feel like a current Pro even with the adaptive cadence.
   share/favourite/delete) or `GlassSquareButton` (48pt, radius 16 — the guide
   "i", the gallery back button); every text bubble is `HintPill`. The camera
   and gallery are built from the same objects — keep it that way rather than
-  restyling one side.
+  restyling one side. Docked sheets (paywall, account, feedback) share
+  `showGildedSheet`, `GildedSheet`, `SheetHandle`, `GoldEyebrow`,
+  `GildedButton` (the gold CTA), `GildedField`, `GildedSegments` and `FadeUp`.
 
 ## Redesign (Sept 2026)
 
@@ -116,8 +150,13 @@ First launch is gated by `LaunchGate` in `main.dart` (`phily_onboarded` pref).
 
 ## Trial and paywall
 
-The trial clock is **local only** — `SharedPreferences`, 7 days from first
-launch, no server involvement. Deleting and reinstalling resets it.
+The trial is 7 days from first launch, and **reinstalling does not reset it**.
+The start date is kept in both `SharedPreferences` and the Keychain
+(`TrialAnchor`), and the earlier one wins; the Keychain survives uninstall.
+Once per device, after launch, `claimTrial` asks Apple DeviceCheck whether the
+phone had a trial before a wipe. That check fails open: offline, no backend, or
+the Simulator all leave the Keychain's answer standing. To get back to day one
+while testing, use DBG → *Start a fresh trial*; reinstalling no longer works.
 
 TestFlight builds run against the **StoreKit sandbox**: purchases are free, and
 sandbox subscriptions expire in minutes rather than months. IAP product IDs

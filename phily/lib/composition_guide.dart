@@ -11,18 +11,31 @@ part of 'camera_page.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Present the guide sheet for [mode]. No-op for [CompositionMode.none].
-Future<void> showCompositionGuide(BuildContext context, CompositionMode mode) {
-  if (mode == CompositionMode.none) return Future.value();
+Future<void> showCompositionGuide(
+  BuildContext context,
+  CompositionMode mode,
+) async {
+  if (mode == CompositionMode.none) return;
   hapticTap();
+  final CompositionSpec spec = kCompositionByMode[mode]!;
   // The app's shared reference-card presentation: fades up in place rather
   // than sliding in from the bottom edge. See [showGildedCard] — the
   // level-line preferences, opened by long-pressing the same button, use it
   // too, so one control never produces two different modal gestures.
-  return showGildedCard<void>(
+  final bool? request = await showGildedCard<bool>(
     context: context,
     barrierLabel: 'Dismiss guide',
-    builder: (_) => _CompositionGuideSheet(spec: kCompositionByMode[mode]!),
+    builder: (_) => _CompositionGuideSheet(spec: spec),
   );
+  // "Request one" closes the card first, so the form arrives on its own
+  // rather than stacked over a card about something else.
+  if (request == true && context.mounted) {
+    await showFeedbackSheet(
+      context,
+      kind: FeedbackKind.composition,
+      mode: spec.label,
+    );
+  }
 }
 
 class _CompositionGuideSheet extends StatefulWidget {
@@ -144,6 +157,35 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
         );
     }
   }
+
+  /// Dismiss — the gallery's gilded filter chip (PopTap, 40pt, radius 20),
+  /// so the card's main control is the same object as the rest of the app's
+  /// chrome. The 2pt vertical pad lifts the tap target to 44pt without
+  /// changing the chip; minHeight (not height) lets large type grow it.
+  Widget _gotItChip(BuildContext context) => PopTap(
+    onTap: () => Navigator.of(context).pop(),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 40),
+        padding: const EdgeInsets.symmetric(horizontal: 22),
+        decoration: glassChipDecoration(radius: kRadiusLg, active: true),
+        child: Center(
+          widthFactor: 1,
+          heightFactor: 1,
+          child: Text(
+            'GOT IT',
+            style: brandLabel(
+              size: 10.5,
+              weight: FontWeight.w600,
+              color: kGold,
+              letterSpacing: 2.4,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 
   /// Gold tracked section header over calm paper body text.
   Widget _section(String title, String body) => Column(
@@ -446,48 +488,41 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
                           ),
                         ),
                       ),
-                      // Dismiss — the gallery's gilded filter chip (PopTap, 40pt,
-                      // radius 20), so the sheet's one control is the same object
-                      // as the rest of the app's chrome. The 2pt vertical pad
-                      // lifts the tap target to 44pt without changing the chip.
-                      // Shrink-wrapped explicitly: a Container with `alignment`
-                      // inside a bounded Center expands to the full width, and
-                      // minHeight (not height) lets large type grow the chip
-                      // instead of spilling out of it.
+                      // Docked foot: GOT IT (see _gotItChip) and, beside it,
+                      // the way to ask for a composition the app
+                      // doesn't have — here rather than in the scrolling
+                      // copy, so it costs the card no height and is always
+                      // in view. One row, the link wrapping inside its own
+                      // share of it; at accessibility text sizes the pair
+                      // stacks, dismiss first.
                       Padding(
                         padding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
-                        child: Center(
-                          child: PopTap(
-                            onTap: () => Navigator.of(context).pop(),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 2),
-                              child: Container(
-                                constraints: const BoxConstraints(
-                                  minHeight: 40,
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 22,
-                                ),
-                                decoration: glassChipDecoration(
-                                  radius: kRadiusLg,
-                                  active: true,
-                                ),
-                                child: Center(
-                                  widthFactor: 1,
-                                  heightFactor: 1,
-                                  child: Text(
-                                    'GOT IT',
-                                    style: brandLabel(
-                                      size: 10.5,
-                                      weight: FontWeight.w600,
-                                      color: kGold,
-                                      letterSpacing: 2.4,
-                                    ),
+                        child: Builder(
+                          builder: (context) {
+                            final Widget link = _RequestCompositionLink(
+                              onTap: () => Navigator.of(context).pop(true),
+                            );
+                            final Widget gotIt = _gotItChip(context);
+                            if (MediaQuery.textScalerOf(context).scale(10) >
+                                13.5) {
+                              return Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [gotIt, link],
+                              );
+                            }
+                            return Row(
+                              children: [
+                                Expanded(
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: link,
                                   ),
                                 ),
-                              ),
-                            ),
-                          ),
+                                const SizedBox(width: 12),
+                                gotIt,
+                              ],
+                            );
+                          },
                         ),
                       ),
                     ],
@@ -496,6 +531,44 @@ class _CompositionGuideSheetState extends State<_CompositionGuideSheet>
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// "Missing a composition?" — the guide card's way to ask for the one the
+/// user actually shoots, offered at the moment they're thinking about
+/// compositions. A quiet text link beside the gold GOT IT: it's there when
+/// wanted and never competes with the teaching above it.
+class _RequestCompositionLink extends StatelessWidget {
+  final VoidCallback onTap;
+  const _RequestCompositionLink({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return PopTap(
+      onTap: onTap,
+      semanticLabel: 'Missing a composition? Request one',
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 44),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                'Missing a composition?',
+                style: brandLabel(
+                  size: 12.5,
+                  weight: FontWeight.w400,
+                  color: kPaper.withValues(alpha: 0.62),
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ),
+            const SizedBox(width: 5),
+            const Icon(Icons.arrow_forward_rounded, color: kGold, size: 13),
+          ],
         ),
       ),
     );

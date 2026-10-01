@@ -16,7 +16,9 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'package:gal/gal.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:phily/screens/branded_loader.dart';
+import 'package:phily/screens/feedback_sheet.dart';
 import 'package:phily/screens/gallery_viewer.dart';
+import 'package:phily/services/feedback.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:phily/level_line_state.dart';
 import 'package:phily/screens/paywall.dart';
@@ -654,6 +656,20 @@ class _CameraPageState extends State<CameraPage>
               onTap: () {
                 pro.debugSetSubscribed(false);
                 pro.debugSetTrial(expired: true);
+                Navigator.pop(sheetCtx);
+              },
+            ),
+            // Reinstalling no longer resets the trial (it's anchored in the
+            // Keychain), so this is now the only way back to day one.
+            ListTile(
+              leading: const Icon(Icons.restart_alt_rounded, color: kGold),
+              title: const Text(
+                'Start a fresh trial',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                pro.debugSetSubscribed(false);
+                pro.debugSetTrial(expired: false);
                 Navigator.pop(sheetCtx);
               },
             ),

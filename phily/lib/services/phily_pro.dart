@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:phily/debug.dart';
+import 'package:phily/services/backend.dart';
+import 'package:phily/services/trial_anchor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Entitlement + subscription manager for **Phily Pro**.
@@ -70,14 +73,13 @@ class PhilyPro extends ChangeNotifier {
   /// Localised monthly price (e.g. "$2.99"), or empty until the store responds.
   String get priceLabel => _products[monthlyId]?.price ?? '';
 
-  bool get trialActive =>
-      clock().difference(_firstLaunch).inDays < trialDays;
+  bool get trialActive => clock().difference(_firstLaunch).inDays < trialDays;
 
   int get trialDaysLeft =>
-      (trialDays - clock().difference(_firstLaunch).inDays).clamp(
-        0,
-        trialDays,
-      );
+      (trialDays - clock().difference(_firstLaunch).inDays).clamp(0, trialDays);
+
+  /// When the app was first opened on this device (the trial's start).
+  DateTime get firstLaunch => _firstLaunch;
 
   /// Calendar date the trial lapses — for the on-screen trial signal.
   DateTime get trialEndDate =>
@@ -93,12 +95,17 @@ class PhilyPro extends ChangeNotifier {
   /// Call once at launch. Loads the trial clock + wires the store.
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
-    final ms = prefs.getInt(_kFirstLaunch);
-    if (ms == null) {
-      _firstLaunch = clock();
+    final int? ms = prefs.getInt(_kFirstLaunch);
+    final DateTime? local = ms == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(ms);
+    final DateTime? anchored = await TrialAnchor.instance.readStart();
+    _firstLaunch = trialStart(saved: local, anchored: anchored, now: clock());
+    if (local != _firstLaunch) {
       await prefs.setInt(_kFirstLaunch, _firstLaunch.millisecondsSinceEpoch);
-    } else {
-      _firstLaunch = DateTime.fromMillisecondsSinceEpoch(ms);
+    }
+    if (anchored != _firstLaunch) {
+      await TrialAnchor.instance.writeStart(_firstLaunch);
     }
     _subscribed = prefs.getBool(_kSubscribed) ?? false;
     _lifetime = prefs.getBool(_kLifetime) ?? false;
@@ -107,6 +114,10 @@ class PhilyPro extends ChangeNotifier {
         ? null
         : DateTime.fromMillisecondsSinceEpoch(verifiedMs);
     notifyListeners();
+
+    // A beat after launch, so Firebase starting up never competes with the
+    // camera warming.
+    unawaited(Future<void>.delayed(_deviceCheckDelay, _confirmTrialWithApple));
 
     _storeReady = await _iap.isAvailable();
     if (!_storeReady) return;
@@ -170,6 +181,78 @@ class PhilyPro extends ChangeNotifier {
     }
   }
 
+  /// When the trial began, from the two places it's kept.
+  ///
+  /// The earliest date wins. After a reinstall, SharedPreferences ([saved])
+  /// is empty but the Keychain ([anchored]) still holds the original date.
+  /// For anyone who installed before the Keychain was used, it's the other
+  /// way round, and their saved date gets copied into the Keychain. With
+  /// neither, this is a first launch and the trial starts [now].
+  @visibleForTesting
+  static DateTime trialStart({
+    required DateTime? saved,
+    required DateTime? anchored,
+    required DateTime now,
+  }) {
+    if (saved == null) return anchored ?? now;
+    if (anchored == null) return saved;
+    return saved.isBefore(anchored) ? saved : anchored;
+  }
+
+  /// How long after launch the DeviceCheck confirmation waits.
+  static const Duration _deviceCheckDelay = Duration(seconds: 4);
+
+  /// "YYYY-MM" in UTC, the granularity DeviceCheck stamps its bits with.
+  @visibleForTesting
+  static String monthOf(DateTime d) {
+    final u = d.toUtc();
+    return '${u.year}-${u.month.toString().padLeft(2, '0')}';
+  }
+
+  /// Asks Apple, once per device, whether this device has had a trial
+  /// before. The Keychain covers reinstalls; this covers a wiped phone,
+  /// and any future iOS that starts clearing the Keychain on uninstall.
+  ///
+  /// It fails open: offline, no server, or no DeviceCheck (the Simulator)
+  /// all leave the Keychain's answer standing, and the check tries again
+  /// on the next launch.
+  Future<void> _confirmTrialWithApple() async {
+    if (_subscribed || _lifetime) return; // nothing a trial could change
+    if (await TrialAnchor.instance.deviceChecked()) return;
+    if (!await Backend.ensure()) return;
+    final String? token = await Backend.deviceCheckToken();
+    if (token == null) return;
+    try {
+      final res = await Backend.call('claimTrial').call<Map<Object?, Object?>>({
+        'deviceToken': token,
+        'startMonth': monthOf(_firstLaunch),
+      });
+      final Object? verdict = res.data['verdict'];
+      final Object? since = res.data['since'];
+      if (verdict == 'used' && since is String) {
+        // This device's trial began in an earlier month, before the phone
+        // was wiped. Start the clock from then, which is always more than
+        // seven days ago.
+        final parts = since.split('-').map(int.tryParse).toList();
+        if (parts.length == 2 && parts[0] != null && parts[1] != null) {
+          _firstLaunch = DateTime.utc(parts[0]!, parts[1]!).toLocal();
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setInt(
+            _kFirstLaunch,
+            _firstLaunch.millisecondsSinceEpoch,
+          );
+          await TrialAnchor.instance.writeStart(_firstLaunch);
+          notifyListeners();
+        }
+      }
+      if (verdict is String) {
+        await TrialAnchor.instance.markDeviceChecked(verdict);
+      }
+    } catch (e) {
+      debugLog('[PhilyPro] DeviceCheck deferred: $e');
+    }
+  }
+
   /// Start the purchase flow for a tier (monthly/yearly subscription or the
   /// one-time lifetime unlock). Returns false if the product isn't loaded.
   Future<bool> buy(ProductDetails product) {
@@ -221,6 +304,9 @@ class PhilyPro extends ChangeNotifier {
         : clock();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_kFirstLaunch, _firstLaunch.millisecondsSinceEpoch);
+    // Both stores, or init() would pick the earlier Keychain date back up on
+    // the next launch and undo a "fresh trial".
+    await TrialAnchor.instance.writeStart(_firstLaunch);
     notifyListeners();
   }
 

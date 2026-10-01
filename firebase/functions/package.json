@@ -1,0 +1,23 @@
+{
+  "name": "phily-functions",
+  "private": true,
+  "description": "Phily's server side: feedback relay, trial check and account deletion.",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test lib/test/",
+    "deploy": "firebase deploy --only functions,firestore",
+    "logs": "firebase functions:log"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.4.0",
+    "firebase-functions": "^6.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.0"
+  }
+}

@@ -1,5 +1,3 @@
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:phily/services/phily_pro.dart';
@@ -14,12 +12,8 @@ const String kTermsOfUseUrl =
 
 /// Present the Phily Pro paywall as a frosted bottom sheet.
 Future<void> showPhilyProPaywall(BuildContext context) {
-  return showModalBottomSheet(
+  return showGildedSheet(
     context: context,
-    backgroundColor: Colors.transparent,
-    isScrollControlled: true,
-    // Named for assistive tech, like the guide and level-line cards. Without
-    // it VoiceOver announces an anonymous region.
     barrierLabel: 'Dismiss Phily Pro',
     builder: (_) => const _PaywallSheet(),
   );
@@ -100,256 +94,202 @@ class _PaywallSheetState extends State<_PaywallSheet> {
       builder: (context, _) {
         final bool active = pro.subscribed || pro.lifetime;
         final ProductDetails? selProduct = pro.productFor(_selectedId);
-        return ClipRRect(
-          borderRadius: const BorderRadius.vertical(
-            top: Radius.circular(kRadiusLg + 8),
-          ),
-          child: BackdropFilter(
-            // Deep frost — the camera scene melts into smoked glass behind the
-            // sheet (blur is fine here: this is a modal, not the live chrome).
-            filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.12),
-                    Colors.black.withValues(alpha: 0.62),
-                    Colors.black.withValues(alpha: 0.82),
+        // The shared frosted sheet: the camera scene melts into smoked glass
+        // behind it, under the gold aura and gold-leaf edge.
+        return GildedSheet(
+          // Scrolls when it must: the content is a fixed Column, so on
+          // any phone shorter than it the paywall simply CLIPPED —
+          // 233pt off the bottom of an SE at the default text size,
+          // taking the purchase buttons with it. A user could not buy.
+          child: GildedSheetBody(
+            padding: EdgeInsets.fromLTRB(24, 0, 24, 18 + bottom),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.workspace_premium_rounded,
+                      color: kGold,
+                      size: 26,
+                    ),
+                    const SizedBox(width: 10),
+                    // Flexible: the wordmark grows with the text size
+                    // and pushed this row 215pt past the edge at AX2.
+                    Flexible(
+                      child:
+                          // Gilded wordmark — paper melting into gold, like the loader.
+                          ShaderMask(
+                            shaderCallback: (r) => const LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [kPaper, kGold],
+                              stops: [0.35, 1.0],
+                            ).createShader(r),
+                            child: Text(
+                              'Phily Pro',
+                              style: brandDisplay(
+                                size: 28,
+                                weight: FontWeight.w500,
+                                color: Colors.white, // recoloured by the shader
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                          ),
+                    ),
                   ],
-                  stops: const [0.0, 0.4, 1.0],
                 ),
-              ),
-              child: Stack(
-                children: [
-                  // Warm gold aura glowing up from behind the header — the
-                  // sheet feels lit by the brand, not just tinted.
-                  Positioned(
-                    top: -100,
-                    left: -40,
-                    right: -40,
-                    child: const GoldAura(height: 260, strength: 0.20),
+                const SizedBox(height: 4),
+                Text(
+                  active
+                      ? (pro.lifetime
+                            ? 'Lifetime unlock active — thank you!'
+                            : 'Your subscription is active.')
+                      : pro.trialActive
+                      ? '${pro.trialDaysLeft} day(s) left in your free trial'
+                      : 'Unlock every composition tool.',
+                  style: TextStyle(
+                    color: kGold.withValues(alpha: 0.85),
+                    fontSize: 13,
                   ),
-                  // Gold-leaf top edge, burning brightest at the centre.
-                  const Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: GildedHairline(height: 1.2),
-                  ),
-                  // Scrolls when it must: the content is a fixed Column, so on
-                  // any phone shorter than it the paywall simply CLIPPED —
-                  // 233pt off the bottom of an SE at the default text size,
-                  // taking the purchase buttons with it. A user could not buy.
-                  SingleChildScrollView(
-                    padding: EdgeInsets.fromLTRB(24, 14, 24, 18 + bottom),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                ),
+                const SizedBox(height: 16),
+                for (final b in _benefits)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Grab handle.
-                        Center(
-                          child: Container(
-                            width: 38,
-                            height: 4,
-                            margin: const EdgeInsets.only(bottom: 16),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.25),
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
-                        ),
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.workspace_premium_rounded,
-                              color: kGold,
-                              size: 26,
-                            ),
-                            const SizedBox(width: 10),
-                            // Flexible: the wordmark grows with the text size
-                            // and pushed this row 215pt past the edge at AX2.
-                            Flexible(
-                              child:
-                                  // Gilded wordmark — paper melting into gold, like the loader.
-                                  ShaderMask(
-                                    shaderCallback: (r) => const LinearGradient(
-                                      begin: Alignment.topLeft,
-                                      end: Alignment.bottomRight,
-                                      colors: [kPaper, kGold],
-                                      stops: [0.35, 1.0],
-                                    ).createShader(r),
-                                    child: Text(
-                                      'Phily Pro',
-                                      style: brandDisplay(
-                                        size: 28,
-                                        weight: FontWeight.w500,
-                                        color: Colors
-                                            .white, // recoloured by the shader
-                                        letterSpacing: 0.2,
-                                      ),
-                                    ),
-                                  ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          active
-                              ? (pro.lifetime
-                                    ? 'Lifetime unlock active — thank you!'
-                                    : 'Your subscription is active.')
-                              : pro.trialActive
-                              ? '${pro.trialDaysLeft} day(s) left in your free trial'
-                              : 'Unlock every composition tool.',
-                          style: TextStyle(
-                            color: kGold.withValues(alpha: 0.85),
-                            fontSize: 13,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        for (final b in _benefits)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                // Gold-ringed check chip — a jewelled tick, not a stock icon.
-                                Container(
-                                  width: 20,
-                                  height: 20,
-                                  margin: const EdgeInsets.only(top: 1),
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    gradient: LinearGradient(
-                                      begin: Alignment.topLeft,
-                                      end: Alignment.bottomRight,
-                                      colors: [
-                                        kGold.withValues(alpha: 0.30),
-                                        kGold.withValues(alpha: 0.06),
-                                      ],
-                                    ),
-                                    border: Border.all(
-                                      color: kGold.withValues(alpha: 0.55),
-                                      width: 0.8,
-                                    ),
-                                  ),
-                                  child: const Icon(
-                                    Icons.check_rounded,
-                                    color: kGoldLit,
-                                    size: 13,
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    b,
-                                    style: TextStyle(
-                                      color: kPaper.withValues(alpha: 0.86),
-                                      fontSize: 13,
-                                      height: 1.3,
-                                    ),
-                                  ),
-                                ),
+                        // Gold-ringed check chip — a jewelled tick, not a stock icon.
+                        Container(
+                          width: 20,
+                          height: 20,
+                          margin: const EdgeInsets.only(top: 1),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                kGold.withValues(alpha: 0.30),
+                                kGold.withValues(alpha: 0.06),
                               ],
                             ),
-                          ),
-                        const SizedBox(height: 8),
-
-                        if (active)
-                          _PrimaryButton(
-                            label: 'Done',
-                            onTap: () => Navigator.of(context).maybePop(),
-                          )
-                        else ...[
-                          for (final t in _tiers)
-                            _TierRow(
-                              tier: t,
-                              price: pro.productFor(t.id)?.price,
-                              selected: _selectedId == t.id,
-                              onTap: () => setState(() => _selectedId = t.id),
-                            ),
-                          const SizedBox(height: 6),
-                          _PrimaryButton(
-                            label: _busy
-                                ? 'Please wait…'
-                                : selProduct == null
-                                ? 'Continue'
-                                : _selectedIsSub
-                                ? 'Subscribe — ${selProduct.price}'
-                                : 'Unlock — ${selProduct.price}',
-                            onTap: (_busy || selProduct == null)
-                                ? null
-                                : _purchase,
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            _selectedIsSub
-                                ? 'Auto-renews until cancelled. Manage or cancel anytime '
-                                      'in Settings › Apple ID › Subscriptions.'
-                                : 'One-time purchase — unlocks Phily Pro forever.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.45),
-                              fontSize: 10.5,
-                              height: 1.35,
+                            border: Border.all(
+                              color: kGold.withValues(alpha: 0.55),
+                              width: 0.8,
                             ),
                           ),
-                        ],
-                        const SizedBox(height: 2),
-                        Center(
-                          child: TextButton(
-                            onPressed: _busy ? null : _restore,
-                            child: Text(
-                              'Restore purchases',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.6),
-                                fontSize: 12.5,
-                              ),
-                            ),
+                          child: const Icon(
+                            Icons.check_rounded,
+                            color: kGoldLit,
+                            size: 13,
                           ),
                         ),
-                        if (!active && selProduct == null && pro.storeReady)
-                          Center(
-                            child: Text(
-                              'Pricing unavailable — check back shortly.',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.4),
-                                fontSize: 11,
-                              ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            b,
+                            style: TextStyle(
+                              color: kPaper.withValues(alpha: 0.86),
+                              fontSize: 13,
+                              height: 1.3,
                             ),
                           ),
-                        // Apple-required legal links. A Wrap, not a Row: both
-                        // links carry a 44pt minimum tap target, so on a
-                        // narrow phone the pair plus its separator overflowed
-                        // the row — they drop to a second line instead.
-                        Wrap(
-                          alignment: WrapAlignment.center,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          children: [
-                            _LegalLink(
-                              label: 'Terms of Use',
-                              onTap: () => _openUrl(kTermsOfUseUrl),
-                            ),
-                            Text(
-                              '  ·  ',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.3),
-                                fontSize: 11,
-                              ),
-                            ),
-                            _LegalLink(
-                              label: 'Privacy Policy',
-                              onTap: () => _openUrl(kPrivacyPolicyUrl),
-                            ),
-                          ],
                         ),
                       ],
                     ),
                   ),
+                const SizedBox(height: 8),
+
+                if (active)
+                  GildedButton(
+                    label: 'Done',
+                    onTap: () => Navigator.of(context).maybePop(),
+                  )
+                else ...[
+                  for (final t in _tiers)
+                    _TierRow(
+                      tier: t,
+                      price: pro.productFor(t.id)?.price,
+                      selected: _selectedId == t.id,
+                      onTap: () => setState(() => _selectedId = t.id),
+                    ),
+                  const SizedBox(height: 6),
+                  GildedButton(
+                    label: _busy
+                        ? 'Please wait…'
+                        : selProduct == null
+                        ? 'Continue'
+                        : _selectedIsSub
+                        ? 'Subscribe — ${selProduct.price}'
+                        : 'Unlock — ${selProduct.price}',
+                    onTap: (_busy || selProduct == null) ? null : _purchase,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    _selectedIsSub
+                        ? 'Auto-renews until cancelled. Manage or cancel anytime '
+                              'in Settings › Apple ID › Subscriptions.'
+                        : 'One-time purchase — unlocks Phily Pro forever.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.45),
+                      fontSize: 10.5,
+                      height: 1.35,
+                    ),
+                  ),
                 ],
-              ),
+                const SizedBox(height: 2),
+                Center(
+                  child: TextButton(
+                    onPressed: _busy ? null : _restore,
+                    child: Text(
+                      'Restore purchases',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.6),
+                        fontSize: 12.5,
+                      ),
+                    ),
+                  ),
+                ),
+                if (!active && selProduct == null && pro.storeReady)
+                  Center(
+                    child: Text(
+                      'Pricing unavailable — check back shortly.',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                // Apple-required legal links. A Wrap, not a Row: both
+                // links carry a 44pt minimum tap target, so on a
+                // narrow phone the pair plus its separator overflowed
+                // the row — they drop to a second line instead.
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    LegalLink(
+                      label: 'Terms of Use',
+                      onTap: () => _openUrl(kTermsOfUseUrl),
+                    ),
+                    Text(
+                      '  ·  ',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.3),
+                        fontSize: 11,
+                      ),
+                    ),
+                    LegalLink(
+                      label: 'Privacy Policy',
+                      onTap: () => _openUrl(kPrivacyPolicyUrl),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         );
@@ -538,196 +478,6 @@ class _TierRow extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-/// A small, muted underlined text link for the legal (Terms / Privacy) row.
-class _LegalLink extends StatelessWidget {
-  final String label;
-  final VoidCallback onTap;
-  const _LegalLink({required this.label, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    // A link, but still a tap target: PopTap for the tick + button trait, and
-    // a 44pt minimum box around the 11px text.
-    return PopTap(
-      onTap: onTap,
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
-        alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.55),
-            fontSize: 11,
-            decoration: TextDecoration.underline,
-            decorationColor: Colors.white.withValues(alpha: 0.35),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// The gilded CTA bar — polished metal under moving light. A champagne lit lip
-/// melts through gold to an antique base; every ~2.8s a soft diagonal light
-/// band sweeps across (the "jewellery counter" shimmer), and the bar presses
-/// in with a gentle scale. The shimmer lives only on this modal sheet — never
-/// over the live camera chrome.
-class _PrimaryButton extends StatefulWidget {
-  final String label;
-  final VoidCallback? onTap;
-  const _PrimaryButton({required this.label, this.onTap});
-
-  @override
-  State<_PrimaryButton> createState() => _PrimaryButtonState();
-}
-
-class _PrimaryButtonState extends State<_PrimaryButton>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _sweep = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 2800),
-  );
-  bool _pressed = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // The shimmer is decoration: a light band crossing the bar every 2.8s,
-    // forever. Under Reduce Motion the bar rests as polished metal instead.
-    final still = reduceMotionOf(context);
-    if (still && _sweep.isAnimating) {
-      _sweep.stop();
-    } else if (!still && !_sweep.isAnimating) {
-      _sweep.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    _sweep.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bool enabled = widget.onTap != null;
-    // The CTA is a bare GestureDetector (it owns a press scale and a shimmer,
-    // so it is not a PopTap); it still has to announce itself as a button.
-    return Semantics(
-      button: enabled,
-      enabled: enabled,
-      child: GestureDetector(
-        onTap: widget.onTap,
-        onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
-        onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
-        onTapCancel: () => setState(() => _pressed = false),
-        child: AnimatedScale(
-          scale: _pressed ? 0.97 : 1.0,
-          duration: motionOf(context, kDurFast),
-          curve: kEaseOut,
-          child: Container(
-            // minHeight, not height: at accessibility text sizes the label
-            // wraps and a fixed 52pt box clipped it by 86pt — on the button a
-            // user taps to pay. Exactly 52pt at ordinary sizes, as before.
-            //
-            // The Stack below holds a full-bleed shimmer, which cannot size
-            // itself, so the label is the Stack's sizing child (see
-            // `StackFit.loose` + the label first in the children list) — that
-            // is what gives this Container a finite height to grow with.
-            constraints: const BoxConstraints(minHeight: 52),
-            clipBehavior: Clip.antiAlias,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(kRadiusMd),
-              // Metallic gilt: a bright lit lip up top melting through gold into a
-              // deeper antique-gold base — a polished bar, not a flat fill.
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: enabled
-                    ? [kGoldLit, kGold, kGoldDeep]
-                    : [
-                        kGold.withValues(alpha: 0.32),
-                        kGold.withValues(alpha: 0.26),
-                      ],
-                stops: enabled ? const [0.0, 0.5, 1.0] : null,
-              ),
-              boxShadow: enabled
-                  ? [
-                      BoxShadow(
-                        color: kGold.withValues(alpha: 0.38),
-                        blurRadius: 20,
-                        offset: const Offset(0, 7),
-                      ),
-                    ]
-                  : null,
-            ),
-            child: Stack(
-              children: [
-                // The label is FIRST and unpositioned, so it is the Stack's
-                // sizing child — that is what lets the button grow with the
-                // text instead of clipping it. The shimmer is Positioned.fill
-                // around it (a full-bleed child cannot size a Stack).
-                Center(
-                  child: Padding(
-                    // Breathing room for a label that wraps to two or three
-                    // lines at accessibility text sizes, so it never runs into
-                    // the gilt edge.
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
-                    ),
-                    child: Text(
-                      widget.label,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.black,
-                        fontSize: 15.5,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                  ),
-                ),
-                // Light sweep: a soft white band gliding across the metal.
-                if (enabled)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: AnimatedBuilder(
-                        animation: _sweep,
-                        builder: (_, _) => FractionalTranslation(
-                          translation: Offset(
-                            -1.0 +
-                                2.0 * Curves.easeInOut.transform(_sweep.value),
-                            0,
-                          ),
-                          child: const DecoratedBox(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.centerLeft,
-                                end: Alignment.centerRight,
-                                colors: [
-                                  Color(0x00FFFFFF),
-                                  Color(0x59FFFFFF),
-                                  Color(0x00FFFFFF),
-                                ],
-                                stops: [0.35, 0.5, 0.65],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
         ),
       ),
     );
