@@ -336,4 +336,56 @@ void _overheadTests() {
       expect(m.bubbleX.abs(), lessThan(0.2));
     });
   });
+
+  // The straight-buildings guide is this same machine fed the camera's
+  // up/down aim (LevelLineConfig.verticals). Aimed up at a building, its walls
+  // lean inward in the photo; the guide should help while you correct that,
+  // and leave a deliberate upward angle alone.
+  group('straight-buildings guide', () {
+    LevelLineMachine verticals() =>
+        LevelLineMachine(config: LevelLineConfig.verticals);
+
+    test('appears while you tip a phone aimed up back toward upright', () {
+      final m = verticals();
+      run(m, fromDeg: 12, toDeg: 6, durationMs: 400, startMs: 1000);
+      expect(m.state, LevelLineState.active);
+    });
+
+    test('turns gold within a degree of upright, and pings once', () {
+      final m = verticals();
+      run(m, fromDeg: 12, toDeg: 6, durationMs: 400, startMs: 1000);
+      final pinged = run(
+        m,
+        fromDeg: 6,
+        toDeg: 0.5,
+        durationMs: 400,
+        startMs: 1400,
+      );
+      expect(pinged, isTrue);
+      expect(m.levelTone, 1.0);
+      expect(m.snapToCentre, isTrue, reason: 'the uprights stand parallel');
+    });
+
+    test('is stricter than the horizon line', () {
+      // 1.3° counts as level for the horizon (1.5°) but walls still visibly
+      // converge at that aim, so the guide holds out for 1°.
+      final m = verticals();
+      run(m, fromDeg: 10, toDeg: 1.3, durationMs: 400, startMs: 1000);
+      expect(m.state, LevelLineState.active);
+    });
+
+    test('leaves a steep, deliberate upward shot alone', () {
+      final m = verticals();
+      run(m, fromDeg: 35, toDeg: 25, durationMs: 400, startMs: 1000);
+      expect(m.state, LevelLineState.idle);
+    });
+
+    test('lets go of an angle held still on purpose', () {
+      final m = verticals();
+      run(m, fromDeg: 12, toDeg: 8, durationMs: 300, startMs: 1000);
+      expect(m.state, LevelLineState.active);
+      run(m, fromDeg: 8, toDeg: 8, durationMs: 1600, startMs: 1300);
+      expect(m.state, LevelLineState.idle);
+    });
+  });
 }

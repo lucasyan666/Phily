@@ -107,6 +107,9 @@ class _CameraPageState extends State<CameraPage>
     overhead: 0.0,
     bubbleX: 0.0,
     bubbleY: 0.0,
+    verticalsVisible: 1.0,
+    verticalsTone: 0.0,
+    verticalsLean: 4.0,
   ));
   final Stopwatch _recordingStopwatch = Stopwatch();
   Timer? _recordingTimer;
@@ -1139,6 +1142,7 @@ class _CameraPageState extends State<CameraPage>
     _hzLevel.dispose();
     _levelAttitude.dispose();
     _warmAttitude.dispose();
+    _verticalsCue.dispose();
     _faceDetector.close();
     _stopImageStream();
     _controller?.dispose();
@@ -2132,6 +2136,7 @@ class _CameraPageState extends State<CameraPage>
     if (_deviceTurns != _levelLineTurns) {
       _levelLineTurns = _deviceTurns;
       _levelLine.reset();
+      _verticals.reset();
     }
     // Physical pitch (unscaled) decides when the horizon line hands over to the
     // bubble; the smoothed gravity vector positions the bubble itself.
@@ -2147,12 +2152,31 @@ class _CameraPageState extends State<CameraPage>
       gz: _gravZ,
     );
 
+    // Straight buildings: the same machine, watching up/down aim. Not in
+    // Horizon Grid, where aiming up or down is how you place the horizon.
+    final bool verticalsOn = m != CompositionMode.horizonGrid;
+    if (verticalsOn) {
+      _verticals.update(tiltDeg: physPitchDeg, nowMs: nowMs);
+    }
+
     // The machine owns the level confirmation now, so the haptic is simply its
     // one-tick [justLeveled] edge — no separate arming latch to keep in sync.
     // Horizon Grid still owns its own stricter "Level" ping.
     if (_levelLine.justLeveled && m != CompositionMode.horizonGrid) {
       _haptic('alignmentPing', intensity: 0.7);
+    } else if (verticalsOn && _verticals.justLeveled) {
+      // A softer tap than the horizon's, so the two confirmations feel
+      // different; and never both on the same tick.
+      _haptic('soft');
     }
+
+    final double vVis = verticalsOn ? _verticals.opacityTarget : 0.0;
+    final double vTone = _verticals.levelTone;
+    final double vLean = _verticals.snapToCentre ? 0.0 : physPitchDeg;
+    final int cue = verticalsOn && _verticals.state == LevelLineState.active
+        ? (physPitchDeg > 0 ? 1 : -1)
+        : 0;
+    if (cue != _verticalsCue.value) _verticalsCue.value = cue;
     final double vis = _levelLine.opacityTarget;
     final double tone = _levelLine.levelTone;
     final bool snap = _levelLine.snapToCentre;
@@ -2168,7 +2192,10 @@ class _CameraPageState extends State<CameraPage>
         prev.snap != snap ||
         (prev.overhead - ovh).abs() > 0.002 ||
         (prev.bubbleX - bx).abs() > 0.004 ||
-        (prev.bubbleY - by).abs() > 0.004) {
+        (prev.bubbleY - by).abs() > 0.004 ||
+        prev.verticalsVisible != vVis ||
+        prev.verticalsTone != vTone ||
+        (prev.verticalsLean - vLean).abs() > 0.15) {
       _levelAttitude.value = (
         roll: roll,
         vert: vert,
@@ -2179,6 +2206,9 @@ class _CameraPageState extends State<CameraPage>
         overhead: ovh,
         bubbleX: bx,
         bubbleY: by,
+        verticalsVisible: vVis,
+        verticalsTone: vTone,
+        verticalsLean: vLean,
       );
     }
   }
@@ -2501,6 +2531,17 @@ class _CameraPageState extends State<CameraPage>
 
   /// Drives when the gravity line is shown — see [LevelLineMachine].
   final LevelLineMachine _levelLine = LevelLineMachine();
+
+  /// The straight-buildings guide: the same machine, fed the camera's up/down
+  /// aim. See [LevelLineConfig.verticals].
+  final LevelLineMachine _verticals = LevelLineMachine(
+    config: LevelLineConfig.verticals,
+  );
+
+  /// Which way the hint dock should ask you to tilt to straighten verticals:
+  /// 1 = tilt down (aimed up), -1 = tilt up (aimed down), 0 = no request.
+  /// A notifier so only the dock rebuilds when it changes, not the page.
+  final ValueNotifier<int> _verticalsCue = ValueNotifier(0);
 
   /// "Always show level line" setting; persisted, bypasses the state machine.
   bool _alwaysShowLevel = false;
@@ -3801,54 +3842,67 @@ class _CameraPageState extends State<CameraPage>
           // with the "best for" tip bubble, so it CROSS-FADES in as the tip
           // retracts (gated on !_showTip via the switcher child, not the `if`) —
           // a hard pop-in here used to mask the tip's upward retract animation.
-          if ((_modePowerPoints != null ||
-                  _compositionMode == CompositionMode.horizonGrid) &&
-              !_isRecording &&
+          if (!_isRecording &&
               !_modeLocked && // locked → the Pro card is the message, not a hint
               _gridVisible)
             Positioned.fill(
-              child: IgnorePointer(
-                // The hint has ONE fixed dock: centred above the gilded lip,
-                // never floating over the subject (redesign board 1b). In a
-                // landscape hold it follows the rotation to the edge that has
-                // become the user's bottom, mirroring the tip bubble's logic.
-                child: AnimatedAlign(
-                  alignment: _userBottomAlign,
-                  duration: const Duration(milliseconds: 340),
-                  curve: Curves.easeOutCubic,
-                  child: AnimatedPadding(
-                    // 26px above the hairline (which sits above the measured
-                    // bottom panel); 160 approximates the panel before its
-                    // first measurement, like the grid toggle does.
-                    padding: _dockInset(
-                      (_bottomInset > 0 ? _bottomInset : 160) + 1 + 26,
-                    ),
-                    duration: const Duration(milliseconds: 340),
-                    curve: Curves.easeOutCubic,
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 280),
-                      transitionBuilder: (child, anim) =>
-                          FadeTransition(opacity: anim, child: child),
-                      // No keys — the types differ, and explicit keys crash the
-                      // switcher with "Duplicate keys" if _showTip flips twice
-                      // within 280ms (fast belt scrolling).
-                      child: _showTip
-                          ? const SizedBox.shrink()
-                          : RepaintBoundary(
-                              child: ValueListenableBuilder<int>(
-                                valueListenable:
-                                    _compositionMode ==
-                                        CompositionMode.horizonGrid
-                                    ? _hzLevel
-                                    : _alignLevel,
-                                builder: (_, level, _) => _bannerRotated(
-                                  _buildCompositionHint(level),
+              // Listens to the straight-buildings cue so the dock can appear
+              // for it in modes that otherwise have no dock (None, Aspect),
+              // without rebuilding the whole page when it changes.
+              child: ValueListenableBuilder<int>(
+                valueListenable: _verticalsCue,
+                builder: (_, cue, _) {
+                  final bool dock =
+                      _modePowerPoints != null ||
+                      _compositionMode == CompositionMode.horizonGrid ||
+                      cue != 0;
+                  if (!dock) return const SizedBox.shrink();
+                  return IgnorePointer(
+                    // The hint has ONE fixed dock: centred above the gilded
+                    // lip, never floating over the subject (redesign board
+                    // 1b). In a landscape hold it follows the rotation to the
+                    // edge that has become the user's bottom, mirroring the
+                    // tip bubble's logic.
+                    child: AnimatedAlign(
+                      alignment: _userBottomAlign,
+                      duration: const Duration(milliseconds: 340),
+                      curve: Curves.easeOutCubic,
+                      child: AnimatedPadding(
+                        // 26px above the hairline (which sits above the
+                        // measured bottom panel); 160 approximates the panel
+                        // before its first measurement, like the grid toggle.
+                        padding: _dockInset(
+                          (_bottomInset > 0 ? _bottomInset : 160) + 1 + 26,
+                        ),
+                        duration: const Duration(milliseconds: 340),
+                        curve: Curves.easeOutCubic,
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 280),
+                          transitionBuilder: (child, anim) =>
+                              FadeTransition(opacity: anim, child: child),
+                          // No keys — the types differ, and explicit keys
+                          // crash the switcher with "Duplicate keys" if
+                          // _showTip flips twice within 280ms (fast belt
+                          // scrolling).
+                          child: _showTip
+                              ? const SizedBox.shrink()
+                              : RepaintBoundary(
+                                  child: ValueListenableBuilder<int>(
+                                    valueListenable:
+                                        _compositionMode ==
+                                            CompositionMode.horizonGrid
+                                        ? _hzLevel
+                                        : _alignLevel,
+                                    builder: (_, level, _) => _bannerRotated(
+                                      _buildCompositionHint(level, cue),
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            ),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                },
               ),
             ),
 
@@ -4190,11 +4244,15 @@ class _CameraPageState extends State<CameraPage>
   ///   0 — translucent instruction pill
   ///   1 — "Almost" (subject's box is on a point, but off-centre)
   ///   2 — "Perfect" (point near the box centre), ambient breathing gold glow.
-  Widget _buildCompositionHint(int level) {
+  /// [verticals] is the straight-buildings cue (see [_verticalsCue]). It
+  /// outranks only the standing instruction: an alignment message (Perfect,
+  /// eye level, Almost) is about the subject and always wins the one slot.
+  Widget _buildCompositionHint(int level, [int verticals = 0]) {
     if (level != _hintLastLevel) {
       _hintLastLevel = level;
       _hintSeq++;
     }
+    final int cue = level == 0 ? verticals : 0;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 340),
       switchInCurve: Curves.easeOut,
@@ -4207,11 +4265,12 @@ class _CameraPageState extends State<CameraPage>
         ),
       ),
       child: KeyedSubtree(
-        key: ValueKey('hint-$level#$_hintSeq'),
+        key: ValueKey('hint-$level/$cue#$_hintSeq'),
         child: switch (level) {
           2 => _perfectBadge(),
           3 => _eyeLevelBadge(),
           1 => _almostBadge(),
+          _ when cue != 0 => _verticalsPill(cue),
           _ => _instructionPill(),
         },
       ),
@@ -4296,6 +4355,16 @@ class _CameraPageState extends State<CameraPage>
   /// shows where the subject goes, the dots light up live as you approach, and
   /// the "Almost"/"Perfect" badges still fire — a standing instruction over the
   /// viewfinder was just one more thing competing with the shot.
+  /// The straight-buildings request. Aimed up, a building's walls lean in at
+  /// the top of the photo; aimed down, they splay out.
+  Widget _verticalsPill(int cue) => _glassPill(
+    key: ValueKey('hint-verticals-$cue'),
+    icon: Icons.apartment_rounded,
+    text: cue > 0
+        ? 'Tilt down a little to keep buildings straight'
+        : 'Tilt up a little to keep buildings straight',
+  );
+
   Widget _instructionPill() {
     final (IconData, String)? content = switch (_compositionMode) {
       CompositionMode.fibonacciSpiral => (

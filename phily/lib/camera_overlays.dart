@@ -696,6 +696,12 @@ debugBubbleGeometry() => (
 Offset debugBubbleOffset(double bubbleX, double bubbleY, double lit) =>
     _LevelDialPainter.bubbleOffset(bubbleX, bubbleY, lit);
 
+/// Test seam: the straight-buildings guide's two lines, as (top, bottom)
+/// offsets from centre, for a given aim — the painter's own geometry.
+@visibleForTesting
+({Offset top, Offset bottom}) debugVerticalsLine(double side, double leanDeg) =>
+    _LevelDialPainter.verticalsLine(side, leanDeg);
+
 /// Test seam: paint the level dial at a given attitude, so the save/restore
 /// balance of its layered fades can be checked directly. The dial takes an
 /// early `return` when fully hidden, and an unbalanced save silently corrupts
@@ -711,6 +717,9 @@ void debugPaintLevelDial(
   double bubbleX = 0,
   double bubbleY = 0,
   double tone = 0,
+  double verticalsVisible = 0,
+  double verticalsTone = 0,
+  double verticalsLean = 0,
 }) {
   final n = ValueNotifier<LevelReading?>((
     roll: roll,
@@ -722,6 +731,9 @@ void debugPaintLevelDial(
     overhead: overhead,
     bubbleX: bubbleX,
     bubbleY: bubbleY,
+    verticalsVisible: verticalsVisible,
+    verticalsTone: verticalsTone,
+    verticalsLean: verticalsLean,
   ));
   _LevelDialPainter(n, 0).paint(canvas, size);
   n.dispose();
@@ -740,6 +752,12 @@ void debugPaintLevelDial(
 ///  * **Bubble level**, for a flat overhead shot, where roll means nothing: a
 ///    fixed ring at the centre and a matching ring that drifts with the tilt.
 ///    Bring them together and they become one gold ring.
+///
+/// Beside either one, when you're aiming up or down at something tall, the
+/// straight-buildings guide: two short uprights that lean the way the
+/// building's walls will in the photo, and stand parallel and gold once the
+/// phone is upright. It has its own machine and fades on its own, so it can
+/// show without the horizon line and vice versa.
 ///
 /// They used to morph, the bar bowing into a ring over ~0.16s; every frame of
 /// that was a squashed, eye-shaped ellipse. An instant swap reads cleaner.
@@ -766,6 +784,9 @@ class _LevelDialPainter extends CustomPainter {
   // whether the line has any business being on screen); the painter only
   // smooths the approach to it.
   double _visE = 0.0;
+  // The straight-buildings guide's own eased visibility and tone.
+  double _vertVisE;
+  double _vertLitE;
   int _lastPaintMs = 0; // wall-clock ms of the previous paint, for dt easing
   _LevelDialPainter(
     this.attitude,
@@ -776,6 +797,8 @@ class _LevelDialPainter extends CustomPainter {
     this.fadeOutTau = 0.05,
   }) : _litE = attitude.value?.tone ?? 0.0,
        _visE = attitude.value?.visible ?? 0.0,
+       _vertVisE = attitude.value?.verticalsVisible ?? 0.0,
+       _vertLitE = attitude.value?.verticalsTone ?? 0.0,
        super(repaint: attitude);
 
   static const Color _offTone = Colors.white;
@@ -813,6 +836,35 @@ class _LevelDialPainter extends CustomPainter {
     return Offset(bx.clamp(-1.0, 1.0) * t, by.clamp(-1.0, 1.0) * t);
   }
 
+  // ── Straight-buildings guide geometry ──
+
+  /// How far each upright sits from centre: just outside the horizon bar's
+  /// ends, so the two instruments read as one reticle, not a collision.
+  static const double kVerticalsX = 84;
+
+  /// Half the length of each upright.
+  static const double kVerticalsHalf = 28;
+
+  /// One upright's (top, bottom) ends relative to centre. [side] is -1 for
+  /// the left, 1 for the right; [leanDeg] is the camera's aim (+ = up).
+  ///
+  /// Aimed up, the tops lean in, which is exactly what the building's walls
+  /// will do in the photo; aimed down, they splay out. The lean is
+  /// exaggerated so 2° already shows, and capped so a steep aim can't throw
+  /// the lines across the frame.
+  static ({Offset top, Offset bottom}) verticalsLine(
+    double side,
+    double leanDeg,
+  ) {
+    final double lean = (leanDeg * 1.4).clamp(-16.0, 16.0) * math.pi / 180;
+    final Offset mid = Offset(side * kVerticalsX, 0);
+    final Offset up = Offset(
+      -side * math.sin(lean) * kVerticalsHalf,
+      -math.cos(lean) * kVerticalsHalf,
+    );
+    return (top: mid + up, bottom: mid - up);
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final a = attitude.value;
@@ -842,23 +894,22 @@ class _LevelDialPainter extends CustomPainter {
         ? 1 / 60
         : ((nowMs - _lastPaintMs) / 1000.0).clamp(0.0, 0.1);
     _lastPaintMs = nowMs;
-    final double visTargetV = a.visible;
-    final bool fadingIn = visTargetV > _visE;
-    final double tau = fadingIn ? fadeInTau : fadeOutTau;
-    // Frame-rate independent exponential approach.
-    _visE += (visTargetV - _visE) * (1 - math.exp(-dt / tau));
-    if (visTargetV >= 1.0 && _visE > 0.998) _visE = 1.0;
-    if (_visE < 0.02) {
-      _visE = 0.0;
-      return; // fully tucked away — skip all drawing
+    // Frame-rate independent exponential approach toward a 0/1 target.
+    double fade(double eased, double target) {
+      final double tau = target > eased ? fadeInTau : fadeOutTau;
+      double v = eased + (target - eased) * (1 - math.exp(-dt / tau));
+      if (target >= 1.0 && v > 0.998) v = 1.0;
+      return v < 0.02 ? 0.0 : v;
     }
-    // Everything below renders through one alpha layer, so the whole
-    // instrument fades as a single object. The bounds cover the bar's ends at
-    // full roll and pitch (~67pt out) and the bubble's glow at full travel.
-    canvas.saveLayer(
-      Rect.fromCircle(center: c, radius: 72),
-      Paint()..color = Colors.black.withValues(alpha: _visE),
-    );
+
+    _visE = fade(_visE, a.visible);
+    _vertVisE = fade(_vertVisE, a.verticalsVisible);
+    final double vTarget = a.verticalsTone;
+    _vertLitE += (vTarget - _vertLitE) * (1 - math.exp(-dt / 0.12));
+    if ((vTarget - _vertLitE).abs() < 0.01) _vertLitE = vTarget;
+    if (_visE == 0.0 && _vertVisE == 0.0) {
+      return; // both tucked away — skip all drawing
+    }
 
     // Ease the aligned state so the colour crossfades white→gold instead of
     // snapping (~100ms at the 50 Hz attitude stream). The target is the
@@ -879,6 +930,28 @@ class _LevelDialPainter extends CustomPainter {
     canvas.rotate(-t * math.pi / 2);
     canvas.translate(-cx, -cy);
 
+    if (_vertVisE > 0.0) {
+      _paintVerticals(
+        canvas,
+        c,
+        Color.lerp(_offTone, _levelTone, _vertLitE)!,
+        a.verticalsLean,
+        _vertVisE,
+      );
+    }
+
+    if (_visE == 0.0) {
+      canvas.restore(); // user-frame rotation
+      return;
+    }
+    // The horizon line or bubble renders through one alpha layer, so it fades
+    // as a single object. The bounds cover the bar's ends at full roll and
+    // pitch (~67pt out) and the bubble's glow at full travel.
+    canvas.saveLayer(
+      Rect.fromCircle(center: c, radius: 72),
+      Paint()..color = Colors.black.withValues(alpha: _visE),
+    );
+
     // One instrument or the other, never a shape in between. The machine
     // latches the choice with hysteresis, so it can't flicker at the boundary.
     if (a.overhead >= 0.5) {
@@ -898,8 +971,36 @@ class _LevelDialPainter extends CustomPainter {
       _paintLine(canvas, c, tone, rollEx, pitchPx);
     }
 
-    canvas.restore(); // user-frame rotation
     canvas.restore(); // visibility alpha layer
+    canvas.restore(); // user-frame rotation
+  }
+
+  /// The straight-buildings guide: two short uprights either side of the
+  /// horizon bar, leaning as the walls will (see [verticalsLine]). Two lines
+  /// need no layer, so the fade is folded straight into their alpha.
+  void _paintVerticals(
+    Canvas canvas,
+    Offset c,
+    Color tone,
+    double leanDeg,
+    double alpha,
+  ) {
+    final Paint halo = Paint()
+      ..color = Colors.black.withValues(alpha: 0.22 * alpha)
+      ..strokeWidth = 1.7
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 0.8);
+    final Paint line = Paint()
+      ..color = tone.withValues(alpha: 0.82 * alpha)
+      ..strokeWidth = 0.9
+      ..strokeCap = StrokeCap.round
+      ..isAntiAlias = true;
+    for (final side in const [-1.0, 1.0]) {
+      final ends = verticalsLine(side, leanDeg);
+      final Offset top = c + ends.top, bottom = c + ends.bottom;
+      canvas.drawLine(top, bottom, halo);
+      canvas.drawLine(top, bottom, line);
+    }
   }
 
   /// The horizon bar, rolled and raised with the phone, over two fixed stubs

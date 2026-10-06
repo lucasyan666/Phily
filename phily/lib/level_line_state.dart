@@ -30,6 +30,13 @@ typedef LevelReading = ({
   /// Bubble offset, -1..1 per axis (1 = ring edge).
   double bubbleX,
   double bubbleY,
+
+  /// The straight-buildings guide (see [LevelLineConfig.verticals]): where
+  /// its opacity is heading (0 or 1), its white→gold tone, and the up/down
+  /// aim it depicts, in degrees (+ = aimed up; 0 once straightened).
+  double verticalsVisible,
+  double verticalsTone,
+  double verticalsLean,
 });
 
 /// Tuning constants. All angles in DEGREES, all times in MILLISECONDS — the
@@ -102,6 +109,22 @@ class LevelLineConfig {
     this.bubbleToleranceDeg = 1.5,
     this.bubbleRangeDeg = 12.0,
   });
+
+  /// Tuning for the straight-buildings guide: a second machine fed the
+  /// camera's up/down aim instead of roll. Aim a phone up at a building and
+  /// its walls lean inward in the photo; the guide appears while you correct
+  /// that, and turns gold once the phone is upright.
+  ///
+  /// Tighter than the horizon line (1° rather than 1.5°): converging walls
+  /// show at a smaller error than a tilted horizon. Slower to decide a tilt
+  /// is deliberate (1.2s rather than 0.8s), since framing a tall building
+  /// takes longer than squaring a horizon.
+  static const LevelLineConfig verticals = LevelLineConfig(
+    correctionRangeDeg: 20.0,
+    levelToleranceDeg: 1.0,
+    settleDurationMs: 1200,
+    levelHoldMs: 700,
+  );
 }
 
 /// What the line is doing right now.

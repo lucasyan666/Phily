@@ -20,6 +20,7 @@ int netSaveDepth({
   double vert = 0,
   double tone = 0,
   double bubbleX = 0,
+  double verticals = 0,
 }) {
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
@@ -33,6 +34,8 @@ int netSaveDepth({
     visible: visible,
     tone: tone,
     bubbleX: bubbleX,
+    verticalsVisible: verticals,
+    verticalsLean: 8,
   );
   final after = canvas.getSaveCount();
   recorder.endRecording().dispose();
@@ -42,17 +45,26 @@ int netSaveDepth({
 void main() {
   group('canvas balance', () {
     test('every instrument, visibility and tone stays balanced', () {
+      // Includes the buildings guide showing on its own (verticals=1,
+      // visible=0): that path returns early from inside the rotation save.
       for (final vis in [0.0, 0.01, 0.3, 0.9, 1.0]) {
         for (final ov in [0.0, 0.49, 0.5, 1.0]) {
           for (final tone in [0.0, 0.5, 1.0]) {
-            expect(
-              netSaveDepth(overhead: ov, visible: vis, tone: tone),
-              0,
-              reason:
-                  'overhead=$ov visible=$vis tone=$tone left the canvas '
-                  'unbalanced — this silently corrupts everything drawn '
-                  'afterwards',
-            );
+            for (final vert in [0.0, 1.0]) {
+              expect(
+                netSaveDepth(
+                  overhead: ov,
+                  visible: vis,
+                  tone: tone,
+                  verticals: vert,
+                ),
+                0,
+                reason:
+                    'overhead=$ov visible=$vis tone=$tone verticals=$vert '
+                    'left the canvas unbalanced — this silently corrupts '
+                    'everything drawn afterwards',
+              );
+            }
           }
         }
       }
@@ -75,6 +87,42 @@ void main() {
           );
         }
       }
+    });
+  });
+
+  // The straight-buildings guide's uprights lean the way the building's walls
+  // will in the photo. Read from the painter's own geometry.
+  group('straight-buildings guide', () {
+    double gapAtTop(double lean) =>
+        debugVerticalsLine(1, lean).top.dx -
+        debugVerticalsLine(-1, lean).top.dx;
+    double gapAtBottom(double lean) =>
+        debugVerticalsLine(1, lean).bottom.dx -
+        debugVerticalsLine(-1, lean).bottom.dx;
+
+    test('aimed up, the tops lean in, like converging walls', () {
+      expect(gapAtTop(6), lessThan(gapAtBottom(6)));
+    });
+
+    test('aimed down, they splay out', () {
+      expect(gapAtTop(-6), greaterThan(gapAtBottom(-6)));
+    });
+
+    test('upright, they stand parallel', () {
+      expect(gapAtTop(0), closeTo(gapAtBottom(0), 0.001));
+    });
+
+    test('a small error already shows; a steep one stays on screen', () {
+      expect(
+        gapAtBottom(2) - gapAtTop(2),
+        greaterThan(2.0),
+        reason: '2° of aim must be visible at a glance',
+      );
+      expect(
+        gapAtTop(20),
+        closeTo(gapAtTop(40), 0.001),
+        reason: 'the lean is capped',
+      );
     });
   });
 }
