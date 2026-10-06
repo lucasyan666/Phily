@@ -2,46 +2,64 @@
 // horizon line has nothing to grip when the phone is face-down, so above
 // ~54° of pitch the state machine hands over to the bubble.
 //
-// That makes its proportions functional, not decorative: you have to be able
-// to see the bead sitting inside its target, over a live scene, at a glance.
-// The target used to be 4.6pt against a 3.4pt bead (1.35×) at 0.30 alpha —
-// barely larger than the thing it contained. These tests keep it legible.
+// Its design is two rings of the same size: one fixed at centre, one that
+// drifts with the tilt. Level is when they become one. That makes the
+// proportions functional, not decorative, and these tests hold them.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:phily/camera_page.dart';
 
 void main() {
-  group('bubble level target', () {
-    test('is comfortably larger than the bubble it must contain', () {
+  group('bubble level geometry', () {
+    test('the bubble and the centre ring are the same size', () {
       final g = debugBubbleGeometry();
       expect(
-        g.targetR / g.bubbleR,
-        greaterThanOrEqualTo(2.0),
+        g.bubbleR,
+        g.referenceR,
         reason:
-            'a target the bead nearly fills reads as "covered", not '
-            '"centred" — it was 1.35× and hard to judge',
+            'level is when the two coincide exactly — rings of different '
+            'sizes would never read as one',
       );
     });
 
-    test('leaves a visible gap around the bubble at rest', () {
+    test('a clearly tilted phone shows two separate rings', () {
       final g = debugBubbleGeometry();
-      // The bead blooms 30% when it lands, so check the gap at full bloom.
-      final double litBubble = g.bubbleR * 1.30;
       expect(
-        g.targetR - litBubble,
-        greaterThan(2.0),
-        reason: 'no daylight between bead and ring even when landed',
+        g.travel,
+        greaterThan(g.bubbleR * 2),
+        reason: 'at full range the bubble must clear the centre ring entirely',
       );
     });
 
-    test('is drawn to be found, not hinted at', () {
+    test('the centre ring is drawn to be found, not hinted at', () {
       final g = debugBubbleGeometry();
       // Over a live camera scene, a hairline below ~0.4 alpha disappears
       // against anything bright.
-      expect(g.targetAlpha, greaterThanOrEqualTo(0.45));
+      expect(g.referenceAlpha, greaterThanOrEqualTo(0.45));
       expect(
-        g.targetStroke,
+        g.referenceStroke,
         greaterThanOrEqualTo(0.8),
         reason: 'sub-pixel strokes vanish on a busy scene',
+      );
+    });
+  });
+
+  group('bubble position', () {
+    final travel = debugBubbleGeometry().travel;
+
+    test('follows the tilt, up to its travel', () {
+      expect(debugBubbleOffset(1, 0, 0), Offset(travel, 0));
+      expect(debugBubbleOffset(0, -0.5, 0), Offset(0, -travel / 2));
+      // The machine reports up to ±1.6; past the edge it stops, not flies off.
+      expect(debugBubbleOffset(1.6, 1.6, 0), Offset(travel, travel));
+    });
+
+    test('glides home as it turns level, then sits dead centre', () {
+      final half = debugBubbleOffset(1, 0, 0.5);
+      expect(half.dx, closeTo(travel / 2, 0.001));
+      expect(
+        debugBubbleOffset(1, 1, 1),
+        Offset.zero,
+        reason: 'once level the two rings must coincide exactly',
       );
     });
   });

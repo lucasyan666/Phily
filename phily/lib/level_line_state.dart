@@ -13,7 +13,7 @@ import 'dart:math' as math;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// What the painter needs each tick: the live angles, the level verdict, plus
-/// the state machine's outputs (visibility target, amber→green tone, and
+/// the state machine's outputs (visibility target, white→gold tone, and
 /// whether to snap to centre for the level confirmation).
 typedef LevelReading = ({
   double roll,
@@ -22,8 +22,11 @@ typedef LevelReading = ({
   double visible,
   double tone,
   bool snap,
-  /// 0 = horizon line, 1 = bubble level; eased, so the painter morphs.
+
+  /// 0 = horizon line, 1 = bubble level. Never in between: the swap is
+  /// instant (see [LevelLineMachine.overheadBlend]).
   double overhead,
+
   /// Bubble offset, -1..1 per axis (1 = ring edge).
   double bubbleX,
   double bubbleY,
@@ -106,10 +109,10 @@ enum LevelLineState {
   /// Hidden. Nothing to correct, or the user has settled on an angle.
   idle,
 
-  /// Visible and amber: the phone is near level and being actively adjusted.
+  /// Visible and white: the phone is near level and being actively adjusted.
   active,
 
-  /// Level just achieved — snapped to centre, green, briefly held before it
+  /// Level just achieved — snapped to centre, gold, briefly held before it
   /// fades away.
   leveled,
 }
@@ -149,7 +152,7 @@ class LevelLineMachine {
   /// confirmation), rather than tracking the live angle.
   bool get snapToCentre => _state == LevelLineState.leveled;
 
-  /// 1 when the line should read as "level" (green), 0 as "correcting" (amber).
+  /// 1 when the line should read as "level" (gold), 0 as "correcting" (white).
   double get levelTone => _state == LevelLineState.leveled ? 1.0 : 0.0;
 
   // Timestamps (ms). 0 = not started.
@@ -166,13 +169,17 @@ class LevelLineMachine {
   double get angularVelocityDegPerSec => _angVelDegPerSec;
 
   // ── Overhead / bubble mode ──
-  // `_overhead` is the latched decision (with hysteresis); `overheadBlend` is
-  // the eased 0..1 the painter morphs on, so the line becomes the bubble as one
-  // continuous instrument rather than a swap between two.
+  // `_overhead` is the latched decision, with hysteresis so it can't flicker
+  // at the boundary.
   bool _overhead = false;
-  double _overheadBlend = 0.0;
   bool get overhead => _overhead;
-  double get overheadBlend => _overheadBlend;
+
+  /// 1 while the bubble level shows, 0 for the horizon line — never in
+  /// between. It used to ease over ~0.16s while the painter bowed the bar
+  /// into a ring, and every frame of that bow was a squashed, eye-shaped
+  /// ellipse. Two instruments that swap instantly read more cleanly than one
+  /// that visibly deforms.
+  double get overheadBlend => _overhead ? 1.0 : 0.0;
 
   // Bubble offset, normalised to [-1, 1] per axis (1 = ring edge), plus its
   // own eased level verdict.
@@ -200,8 +207,8 @@ class LevelLineMachine {
     _lastAngleMs = 0;
     _angVelDegPerSec = 0;
     _justLeveled = false;
-    // Deliberately NOT clearing _overhead/_overheadBlend: a re-seed (hold
-    // change) shouldn't make the instrument pop between forms mid-morph.
+    // Deliberately NOT clearing _overhead: a re-seed (hold change) shouldn't
+    // flip the instrument between line and bubble.
   }
 
   /// Advance the machine.
@@ -212,8 +219,6 @@ class LevelLineMachine {
   ///              switch to bubble mode.
   /// [gx],[gy]  — in-plane gravity components, for the bubble's offset. Pass
   ///              the same smoothed vector the rest of the pipeline uses.
-  /// [dtSec]    — elapsed seconds since the last update, for frame-rate
-  ///              independent easing of the morph.
   void update({
     required double tiltDeg,
     required int nowMs,
@@ -221,10 +226,9 @@ class LevelLineMachine {
     double gx = 0,
     double gy = 0,
     double gz = 0,
-    double dtSec = 1 / 50,
   }) {
     _justLeveled = false;
-    _updateOverhead(pitchDeg: pitchDeg, gx: gx, gy: gy, gz: gz, dtSec: dtSec);
+    _updateOverhead(pitchDeg: pitchDeg, gx: gx, gy: gy, gz: gz);
 
     // ── 1. Angular velocity, from the change in angle over real elapsed time ──
     if (_lastAngleMs != 0) {
@@ -260,7 +264,7 @@ class LevelLineMachine {
 
     if (alwaysShow) {
       // Bypass: the line is pinned on, but keep the level verdict live so it
-      // still turns green and still confirms.
+      // still turns gold and still confirms.
       final bool lvl = _overhead
           ? _bubbleOffDeg <= config.bubbleToleranceDeg
           : tiltDeg.abs() <= config.levelToleranceDeg;
@@ -285,8 +289,7 @@ class LevelLineMachine {
     final bool isLevel = _overhead
         ? _bubbleOffDeg <= config.bubbleToleranceDeg
         : absTilt <= config.levelToleranceDeg;
-    final bool moving =
-        _angVelDegPerSec > config.stationaryThresholdDegPerSec;
+    final bool moving = _angVelDegPerSec > config.stationaryThresholdDegPerSec;
 
     // ── 2. Track how long we've been stationary ──
     if (moving) {
@@ -371,7 +374,6 @@ class LevelLineMachine {
     required double gx,
     required double gy,
     required double gz,
-    required double dtSec,
   }) {
     final double p = pitchDeg.abs();
     if (_overhead) {
@@ -379,12 +381,6 @@ class LevelLineMachine {
     } else {
       if (p > config.overheadEnterDeg) _overhead = true;
     }
-
-    // Ease the morph on wall-clock time so it's smooth at any sensor rate.
-    final double target = _overhead ? 1.0 : 0.0;
-    const double tau = 0.16;
-    _overheadBlend += (target - _overheadBlend) * (1 - math.exp(-dtSec / tau));
-    if ((target - _overheadBlend).abs() < 0.001) _overheadBlend = target;
 
     // Bubble offset: in-plane gravity, normalised so bubbleRangeDeg reaches the
     // ring's edge. g is ~9.81 at rest; using the magnitude keeps it correct

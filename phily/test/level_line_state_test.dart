@@ -67,16 +67,26 @@ void main() {
       expect(m.state, LevelLineState.active);
 
       // Bring it to level — the haptic fires once, during this sweep.
-      final bool pinged =
-          run(m, fromDeg: 6, toDeg: 0.5, durationMs: 200, startMs: 1400);
+      final bool pinged = run(
+        m,
+        fromDeg: 6,
+        toDeg: 0.5,
+        durationMs: 200,
+        startMs: 1400,
+      );
       expect(pinged, isTrue, reason: 'haptic fires on the level transition');
       expect(m.state, LevelLineState.leveled);
       expect(m.snapToCentre, isTrue);
       expect(m.levelTone, 1.0);
 
       // Hold level: after levelHoldMs it goes away, and never re-fires.
-      final bool pingedAgain =
-          run(m, fromDeg: 0.5, toDeg: 0.5, durationMs: 600, startMs: 1600);
+      final bool pingedAgain = run(
+        m,
+        fromDeg: 0.5,
+        toDeg: 0.5,
+        durationMs: 600,
+        startMs: 1600,
+      );
       expect(pingedAgain, isFalse, reason: 'exactly one ping per correction');
       expect(m.state, LevelLineState.idle);
       expect(m.opacityTarget, 0.0);
@@ -89,8 +99,11 @@ void main() {
 
       // Now hold 8° perfectly still — past SETTLE_DURATION it gives up.
       run(m, fromDeg: 8, toDeg: 8, durationMs: 1200, startMs: 1400);
-      expect(m.state, LevelLineState.idle,
-          reason: 'deliberate tilt should not be nagged');
+      expect(
+        m.state,
+        LevelLineState.idle,
+        reason: 'deliberate tilt should not be nagged',
+      );
     });
 
     test('re-appears when adjustment resumes after settling', () {
@@ -112,8 +125,11 @@ void main() {
 
       // A single 20ms blip just outside range must not drop it out.
       m.update(tiltDeg: 21, nowMs: 1420);
-      expect(m.state, LevelLineState.active,
-          reason: 'one tick past the edge is not a state change');
+      expect(
+        m.state,
+        LevelLineState.active,
+        reason: 'one tick past the edge is not a state change',
+      );
     });
 
     test('"always show" bypasses the machine but keeps the level verdict', () {
@@ -138,8 +154,11 @@ void main() {
 
       // One tick, huge jump straight through level to the other side.
       m.update(tiltDeg: -82, nowMs: 1420);
-      expect(m.justLeveled, isFalse,
-          reason: 'a frame change is not a correction');
+      expect(
+        m.justLeveled,
+        isFalse,
+        reason: 'a frame change is not a correction',
+      );
       expect(m.state, isNot(LevelLineState.leveled));
     });
 
@@ -186,14 +205,22 @@ void _overheadTests() {
       // Near-flat: z dominates, in-plane components are the tip off level.
       final gz = g * math.sin(p);
       final gx = g * math.sin(offXDeg * 3.141592653589793 / 180);
-      final gy = g * math.cos(p) + g * math.sin(offYDeg * 3.141592653589793 / 180);
+      final gy =
+          g * math.cos(p) + g * math.sin(offYDeg * 3.141592653589793 / 180);
       return (gx: gx, gy: gy, gz: gz);
     }
 
     test('stays in line mode when upright', () {
       final m = LevelLineMachine();
       final v = grav(10);
-      m.update(tiltDeg: 5, nowMs: 1000, pitchDeg: 10, gx: v.gx, gy: v.gy, gz: v.gz);
+      m.update(
+        tiltDeg: 5,
+        nowMs: 1000,
+        pitchDeg: 10,
+        gx: v.gx,
+        gy: v.gy,
+        gz: v.gz,
+      );
       expect(m.overhead, isFalse);
     });
 
@@ -201,8 +228,14 @@ void _overheadTests() {
       final m = LevelLineMachine();
       final v = grav(80);
       for (int i = 1; i <= 20; i++) {
-        m.update(tiltDeg: 0, nowMs: 1000 + i * 20, pitchDeg: 80,
-            gx: v.gx, gy: v.gy, gz: v.gz);
+        m.update(
+          tiltDeg: 0,
+          nowMs: 1000 + i * 20,
+          pitchDeg: 80,
+          gx: v.gx,
+          gy: v.gy,
+          gz: v.gz,
+        );
       }
       expect(m.overhead, isTrue);
       expect(m.overheadBlend, greaterThan(0.5), reason: 'morph is progressing');
@@ -212,35 +245,65 @@ void _overheadTests() {
       final m = LevelLineMachine();
       final hi = grav(80);
       for (int i = 1; i <= 20; i++) {
-        m.update(tiltDeg: 0, nowMs: 1000 + i * 20, pitchDeg: 80,
-            gx: hi.gx, gy: hi.gy, gz: hi.gz);
+        m.update(
+          tiltDeg: 0,
+          nowMs: 1000 + i * 20,
+          pitchDeg: 80,
+          gx: hi.gx,
+          gy: hi.gy,
+          gz: hi.gz,
+        );
       }
       expect(m.overhead, isTrue);
       // Drop to 50deg — below enter (54) but above exit (46): must NOT switch.
       final mid = grav(50);
-      m.update(tiltDeg: 0, nowMs: 1500, pitchDeg: 50,
-          gx: mid.gx, gy: mid.gy, gz: mid.gz);
+      m.update(
+        tiltDeg: 0,
+        nowMs: 1500,
+        pitchDeg: 50,
+        gx: mid.gx,
+        gy: mid.gy,
+        gz: mid.gz,
+      );
       expect(m.overhead, isTrue, reason: 'inside the hysteresis band');
       // Below exit — now it returns.
       final lo = grav(40);
-      m.update(tiltDeg: 0, nowMs: 1520, pitchDeg: 40,
-          gx: lo.gx, gy: lo.gy, gz: lo.gz);
+      m.update(
+        tiltDeg: 0,
+        nowMs: 1520,
+        pitchDeg: 40,
+        gx: lo.gx,
+        gy: lo.gy,
+        gz: lo.gz,
+      );
       expect(m.overhead, isFalse);
     });
 
-    test('the morph is continuous, never a jump', () {
+    test('the swap is instant: line or bubble, never a shape in between', () {
+      // It used to ease over ~0.16s while the bar bowed into a ring, and
+      // every in-between frame was a squashed, eye-shaped ellipse.
       final m = LevelLineMachine();
-      final v = grav(80);
-      double prev = m.overheadBlend;
-      double maxStep = 0;
-      for (int i = 1; i <= 40; i++) {
-        m.update(tiltDeg: 0, nowMs: 1000 + i * 20, pitchDeg: 80,
-            gx: v.gx, gy: v.gy, gz: v.gz, dtSec: 0.02);
-        maxStep = math.max(maxStep, (m.overheadBlend - prev).abs());
-        prev = m.overheadBlend;
-      }
-      expect(maxStep, lessThan(0.2),
-          reason: 'eased morph should never step visibly');
+      final flat = grav(80);
+      m.update(
+        tiltDeg: 0,
+        nowMs: 1000,
+        pitchDeg: 80,
+        gx: flat.gx,
+        gy: flat.gy,
+        gz: flat.gz,
+      );
+      expect(m.overhead, isTrue);
+      expect(m.overheadBlend, 1.0, reason: 'bubble on the very first tick');
+      final upright = grav(20);
+      m.update(
+        tiltDeg: 0,
+        nowMs: 1020,
+        pitchDeg: 20,
+        gx: upright.gx,
+        gy: upright.gy,
+        gz: upright.gz,
+      );
+      expect(m.overheadBlend, 0.0, reason: 'line on the very first tick back');
     });
 
     test('no dead zone: bubble engages before the line gives up', () {
@@ -248,16 +311,25 @@ void _overheadTests() {
       // must be in play by then, or there's a band showing nothing at all.
       const cfg = LevelLineConfig();
       final lineCutoff = cfg.correctionRangeDeg / cfg.pitchScale;
-      expect(cfg.overheadEnterDeg, lessThanOrEqualTo(lineCutoff),
-          reason: 'bubble must engage at or before the line cutoff');
+      expect(
+        cfg.overheadEnterDeg,
+        lessThanOrEqualTo(lineCutoff),
+        reason: 'bubble must engage at or before the line cutoff',
+      );
     });
 
     test('bubble centres when flat and confirms level', () {
       final m = LevelLineMachine();
       final v = grav(90); // dead flat
       for (int i = 1; i <= 30; i++) {
-        m.update(tiltDeg: 0, nowMs: 1000 + i * 20, pitchDeg: 90,
-            gx: v.gx, gy: v.gy, gz: v.gz);
+        m.update(
+          tiltDeg: 0,
+          nowMs: 1000 + i * 20,
+          pitchDeg: 90,
+          gx: v.gx,
+          gy: v.gy,
+          gz: v.gz,
+        );
       }
       expect(m.overhead, isTrue);
       expect(m.bubbleOffDeg, lessThan(1.5));

@@ -2138,10 +2138,6 @@ class _CameraPageState extends State<CameraPage>
     final double physPitchDeg = LevelLineMachine.radToDeg(
       math.atan2(_gravZ, math.sqrt(_gravX * _gravX + _gravY * _gravY)),
     );
-    final double dtSec = _levelLastMs == 0
-        ? 1 / 50
-        : ((nowMs - _levelLastMs) / 1000.0).clamp(0.0, 0.2);
-    _levelLastMs = nowMs;
     _levelLine.update(
       tiltDeg: tiltDeg,
       nowMs: nowMs,
@@ -2149,7 +2145,6 @@ class _CameraPageState extends State<CameraPage>
       gx: _gravX,
       gy: _gravY,
       gz: _gravZ,
-      dtSec: dtSec,
     );
 
     // The machine owns the level confirmation now, so the haptic is simply its
@@ -2503,7 +2498,7 @@ class _CameraPageState extends State<CameraPage>
 
   /// Hold the level machine was last seeded for; a change re-seeds it.
   int _levelLineTurns = 0;
-  int _levelLastMs = 0; // previous sensor tick, for dt-based easing
+
   /// Drives when the gravity line is shown — see [LevelLineMachine].
   final LevelLineMachine _levelLine = LevelLineMachine();
 

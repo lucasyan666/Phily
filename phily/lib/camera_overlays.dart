@@ -671,46 +671,35 @@ List<_FocalDot> _buildFocalDots() {
   return dots;
 }
 
-/// Standalone painter for the "hold it level" gravity indicator. Kept in its own
-/// CustomPaint + RepaintBoundary so the ~50 Hz gravity updates repaint only this,
-/// never the whole (expensive) composition overlay.
-///
-/// Deliberately minimal: a single hair-thin bar of even weight that rides and
-/// rolls with the phone, plus two short stubs marking true level. No
-/// housing, bezel or ladder ticks — it sits at the centre of the preview band,
-/// over the composition guides, so every extra mark would be clutter.
-///
-/// Reads AMBER while the shot is off-level and cools to GREEN as it squares up
-/// (the universal warning→good read on a spirit level). Drawn in the USER's
-/// frame, so it works identically in portrait and both landscape holds.
 /// Test seam: the bubble level's proportions decide whether a flat, overhead
 /// shot can actually be aligned by eye. The painter is private, so its
 /// geometry is exposed here for `test/bubble_level_test.dart`.
 @visibleForTesting
-({double bubbleR, double targetR, double targetAlpha, double targetStroke})
+({
+  double bubbleR,
+  double referenceR,
+  double travel,
+  double referenceAlpha,
+  double referenceStroke,
+})
 debugBubbleGeometry() => (
   bubbleR: _LevelDialPainter.kBubbleR,
-  targetR: _LevelDialPainter.kBubbleR * _LevelDialPainter.kBubbleTargetScale,
-  targetAlpha: _LevelDialPainter.kBubbleTargetAlpha,
-  targetStroke: _LevelDialPainter.kBubbleTargetStroke,
+  referenceR: _LevelDialPainter.kBubbleR,
+  travel: _LevelDialPainter.kBubbleTravel,
+  referenceAlpha: _LevelDialPainter.kReferenceAlpha,
+  referenceStroke: _LevelDialPainter.kReferenceStroke,
 );
+
+/// Test seam: where the painter puts the bubble, relative to centre — the
+/// painter's own call, so a test can't pass by recomputing the formula.
+@visibleForTesting
+Offset debugBubbleOffset(double bubbleX, double bubbleY, double lit) =>
+    _LevelDialPainter.bubbleOffset(bubbleX, bubbleY, lit);
 
 /// Test seam: paint the level dial at a given attitude, so the save/restore
 /// balance of its layered fades can be checked directly. The dial takes an
-/// early `return` on some paths (fully hidden, bubble not yet faded in), and
-/// an unbalanced one silently corrupts everything drawn afterwards.
-/// See `test/level_dial_test.dart`.
-/// Test seam: the bounding box of the morphing ring at a given [overhead],
-/// straight from the painter's own geometry. Rasterising the dial and
-/// measuring ink is too slow and flaky in the test harness, and recomputing
-/// the formula inside the test would pass even if the painter changed — so
-/// the painter exposes the shape it actually builds.
-@visibleForTesting
-Size debugLevelRingExtent(double overhead, {double halfLength = 100}) {
-  final r = _LevelDialPainter.levelRingGeometry(overhead, halfLength);
-  return Size(r.halfWidth * 2, r.apex * 2);
-}
-
+/// early `return` when fully hidden, and an unbalanced save silently corrupts
+/// everything drawn afterwards. See `test/level_dial_test.dart`.
 @visibleForTesting
 void debugPaintLevelDial(
   Canvas canvas,
@@ -721,13 +710,14 @@ void debugPaintLevelDial(
   required double visible,
   double bubbleX = 0,
   double bubbleY = 0,
+  double tone = 0,
 }) {
   final n = ValueNotifier<LevelReading?>((
     roll: roll,
     vert: vert,
-    level: false,
+    level: tone >= 1,
     visible: visible,
-    tone: 0.0,
+    tone: tone,
     snap: false,
     overhead: overhead,
     bubbleX: bubbleX,
@@ -737,6 +727,27 @@ void debugPaintLevelDial(
   n.dispose();
 }
 
+/// Standalone painter for the "hold it level" gravity indicator. Kept in its own
+/// CustomPaint + RepaintBoundary so the ~50 Hz gravity updates repaint only this,
+/// never the whole (expensive) composition overlay.
+///
+/// Two instruments, one at a time, swapped instantly:
+///
+///  * **Horizon line**, for ordinary framing: a single hair-thin bar that rides
+///    and rolls with the phone, plus two short stubs marking true level. No
+///    housing, bezel or ladder ticks: it sits over the composition guides, so
+///    every extra mark would be clutter.
+///  * **Bubble level**, for a flat overhead shot, where roll means nothing: a
+///    fixed ring at the centre and a matching ring that drifts with the tilt.
+///    Bring them together and they become one gold ring.
+///
+/// They used to morph, the bar bowing into a ring over ~0.16s; every frame of
+/// that was a squashed, eye-shaped ellipse. An instant swap reads cleaner.
+///
+/// White while off level, like the composition guides; the app's gold once
+/// it's level, the same gold that means "you've got it" everywhere else.
+/// Drawn in the USER's frame, so it works identically in portrait and both
+/// landscape holds.
 class _LevelDialPainter extends CustomPainter {
   final ValueNotifier<LevelReading?> attitude;
   final double bottomInset;
@@ -747,7 +758,7 @@ class _LevelDialPainter extends CustomPainter {
   /// tuning lives in one place with the rest of its constants.
   final double fadeInTau;
   final double fadeOutTau;
-  // Eased 0..1 "aligned" — the amber→green crossfade rides the ~50 Hz attitude
+  // Eased 0..1 "aligned" — the white→gold crossfade rides the ~50 Hz attitude
   // repaints, so no extra ticker is needed. Seeded from the live verdict so a
   // page rebuild doesn't replay the bloom.
   double _litE;
@@ -767,50 +778,40 @@ class _LevelDialPainter extends CustomPainter {
        _visE = attitude.value?.visible ?? 0.0,
        super(repaint: attitude);
 
-  /// Amber while tilted, cooling to green as the phone squares up — the
-  /// universal "warning → good" read on a spirit level.
-  static const Color _amber = Color(0xFFFFB020);
-  static const Color _levelGreen = Color(0xFF4CD97B);
+  static const Color _offTone = Colors.white;
+  static const Color _levelTone = kGold;
 
-  /// The morphing ring's shape at a given [overhead] (0 = straight bar,
-  /// 1 = closed circle), for a bar of half-length [L].
-  ///
-  /// Half-width eases from the bar's L to the ring's radius while the Bézier
-  /// control rises to twice that radius — a quadratic's apex sits at half its
-  /// control height, so width and height converge on the same value and the
-  /// shape ARRIVES as a circle.
-  ///
-  /// It used to hold half-width at L and bow two curves toward each other: at
-  /// full morph that is a lens 3.2x wider than tall (the "squashed eye"),
-  /// which then snapped to a true circle at ov >= 0.999.
-  static ({double halfWidth, double apex, double bow, double radius})
-  levelRingGeometry(double overhead, double L) {
-    final double ov = overhead.clamp(0.0, 1.0);
-    final double radius = L * 0.78;
-    final double halfWidth = L + (radius - L) * ov;
-    final double bow = 2 * radius * ov;
-    return (halfWidth: halfWidth, apex: bow / 2, bow: bow, radius: radius);
-  }
+  /// Half-length of the horizon bar, in points.
+  static const double _kLineHalf = 59.4;
 
   // ── Bubble level geometry (flat / overhead framing) ──
-  // The bubble is the only instrument for a birds-eye shot, so its target has
-  // to be legible over a live scene at a glance. Named here rather than inline
-  // so the proportion is tunable in one place — see [LevelLineConfig] for the
-  // same idea applied to the state machine's timing.
+  // The bubble is the only instrument for a birds-eye shot, so it has to be
+  // legible over a live scene at a glance. Named here so the proportions are
+  // tunable in one place.
 
-  /// The gilded bead's radius, in points.
-  static const double kBubbleR = 3.4;
+  /// Radius of both rings, the drifting bubble and the fixed reference. Equal
+  /// on purpose: when level they coincide exactly and read as one ring.
+  static const double kBubbleR = 12;
 
-  /// Centre target radius as a multiple of [kBubbleR]. Must be comfortably
-  /// greater than 1 or the bubble can't be seen to sit *inside* it.
-  static const double kBubbleTargetScale = 2.6;
+  /// How far the bubble drifts at the edge of its range (offset ±1). More
+  /// than twice the radius, so a clearly tilted phone shows two separate
+  /// rings rather than two overlapping ones.
+  static const double kBubbleTravel = 34;
 
-  /// Resting alpha of the target ring. It carries the whole "where is centre"
-  /// question when the phone is flat, so it is drawn to be found, not hinted.
-  static const double kBubbleTargetAlpha = 0.52;
+  /// The fixed ring answers "where is centre?" over a live scene, so it is
+  /// drawn to be found: below ~0.45 alpha a hairline vanishes against bright
+  /// sky or a white tabletop.
+  static const double kReferenceAlpha = 0.55;
+  static const double kReferenceStroke = 1.0;
 
-  /// Resting stroke width of the target ring, in points.
-  static const double kBubbleTargetStroke = 0.9;
+  /// Where the bubble sits relative to centre, for an offset of [bx],[by]
+  /// (-1..1, 1 = edge of range) and the eased level verdict [lit]. It glides
+  /// home as [lit] rises, so the rings click together rather than sitting a
+  /// fraction of a degree apart once the phone counts as level.
+  static Offset bubbleOffset(double bx, double by, double lit) {
+    final double t = kBubbleTravel * (1 - lit.clamp(0.0, 1.0));
+    return Offset(bx.clamp(-1.0, 1.0) * t, by.clamp(-1.0, 1.0) * t);
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -826,7 +827,6 @@ class _LevelDialPainter extends CustomPainter {
       topInset + (size.height - topInset - bottomInset) / 2,
     );
     final double cx = c.dx, cy = c.dy;
-    final double roll = a.roll, vert = a.vert;
 
     // ── Visibility ──
     // The DECISION is the state machine's ([LevelLineMachine], driven from the
@@ -852,34 +852,24 @@ class _LevelDialPainter extends CustomPainter {
       _visE = 0.0;
       return; // fully tucked away — skip all drawing
     }
-    // Everything below renders through one alpha layer, so the whole dial
-    // (glow, face, horizon, bezel) fades as a single object.
+    // Everything below renders through one alpha layer, so the whole
+    // instrument fades as a single object. The bounds cover the bar's ends at
+    // full roll and pitch (~67pt out) and the bubble's glow at full travel.
     canvas.saveLayer(
-      Rect.fromCircle(center: c, radius: r + 18),
+      Rect.fromCircle(center: c, radius: 72),
       Paint()..color = Colors.black.withValues(alpha: _visE),
     );
 
-    // Ease the aligned state so the line crossfades amber→green instead of
+    // Ease the aligned state so the colour crossfades white→gold instead of
     // snapping (~100ms at the 50 Hz attitude stream). The target is the
     // machine's verdict, so colour and visibility can never disagree.
-    final double target = a.tone;
     // Same dt-based easing as the fade — a per-tick step here shows up as an
     // uneven colour crawl whenever the attitude stream jitters.
+    final double target = a.tone;
     _litE += (target - _litE) * (1 - math.exp(-dt / 0.12));
     if ((target - _litE).abs() < 0.01) _litE = target;
     final double lit = _litE;
-    final Color tone = Color.lerp(_amber, _levelGreen, lit)!;
-
-    // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°). On the
-    // level confirmation the machine asks for a dead-centre snap, so the line
-    // settles flat rather than sitting at whatever fraction of a degree remains.
-    final double rollEx = a.snap ? 0.0 : (roll * 1.8).clamp(-1.3, 1.3);
-    // Vertical deflection → how far the bar rides off centre. Tightened now the
-    // indicator lives at frame centre: a big swing would wander across the
-    // composition guides instead of reading as a horizon near the middle.
-    final double pitchPx = a.snap
-        ? 0.0
-        : (vert * r * 0.62).clamp(-r * 0.72, r * 0.72);
+    final Color tone = Color.lerp(_offTone, _levelTone, lit)!;
 
     // Everything below draws in the user's frame: rotate about the centre by
     // the hold, so "up" is the user's up and the hold-relative roll/pitch read
@@ -889,200 +879,158 @@ class _LevelDialPainter extends CustomPainter {
     canvas.rotate(-t * math.pi / 2);
     canvas.translate(-cx, -cy);
 
-    // ── Horizon line ⇄ bubble level ──
-    // `ov` (0..1, eased by the state machine) morphs one instrument into the
-    // other: the straight bar bows into a ring as the phone tips toward flat.
-    // Bowing a single arc — rather than cross-fading two shapes — is what makes
-    // the change read as one object turning, not two overlapping ones.
-    final double ov = Curves.easeInOut.transform(a.overhead.clamp(0.0, 1.0));
-    const double L = r * 1.35;
-    // Halo + line share one geometry, so they bow together.
-    final Paint halo = Paint()
-      ..color = Colors.black.withValues(alpha: 0.16 - 0.05 * ov)
-      ..strokeWidth = 1.6 - 0.5 * ov
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.butt
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0);
-    // A closed ring carries far more ink than a single bar at the same weight,
-    // so the stroke thins and softens as the morph completes — the ring reads
-    // as a delicate hoop rather than a heavy 'O'.
-    final double ringW = 0.9 - 0.35 * ov; // 0.9 → 0.55
-    final double ringA = 0.82 - 0.22 * ov; // 0.82 → 0.60
-    final Paint stroke = Paint()
-      ..color = tone.withValues(alpha: ringA)
-      ..strokeWidth = ringW
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.butt
-      ..isAntiAlias = true;
-
-    if (ov < 0.999) {
-      // The bar, bowed by `ov`. At ov=0 it's dead straight; as ov rises the
-      // ends sweep down into what becomes the ring's lower arc.
-      canvas.save();
-      canvas.translate(cx, cy);
-      canvas.rotate(rollEx * (1 - ov)); // roll fades out as it becomes a ring
-      canvas.translate(0, pitchPx * (1 - ov));
-
-      // Half-width shrinks from the bar's L to the ring's radius, so the shape
-      // ARRIVES as a circle instead of snapping to one at the last moment.
-      //
-      // It used to hold half-width L throughout and bow two quadratic Béziers
-      // toward each other: at full morph that is a lens 3.2× wider than tall —
-      // the "squashed eye" — which then jumped to a true circle at ov ≥ 0.999.
-      // A fast tilt simply makes the frames where it is still easing visible.
-      final g = levelRingGeometry(ov, L);
-      final double halfW = g.halfWidth;
-      final double bow = g.bow;
-      final Path bar = Path()
-        ..moveTo(-halfW, 0)
-        ..quadraticBezierTo(0, bow, halfW, 0);
-      canvas.drawPath(bar, halo);
-      canvas.drawPath(bar, stroke);
-      // Mirror arc grows in as the ring closes, completing the circle.
-      if (ov > 0.001) {
-        final Path top = Path()
-          ..moveTo(-halfW, 0)
-          ..quadraticBezierTo(0, -bow, halfW, 0);
-        // Separate paints — mutating the shared ones would leak this fade into
-        // everything drawn afterwards.
-        canvas.drawPath(
-          top,
-          Paint()
-            ..color = Colors.black.withValues(alpha: (0.16 - 0.05 * ov) * ov)
-            ..strokeWidth = 1.6 - 0.5 * ov
-            ..style = PaintingStyle.stroke
-            ..strokeCap = StrokeCap.butt
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0),
-        );
-        canvas.drawPath(
-          top,
-          Paint()
-            ..color = tone.withValues(alpha: ringA * ov)
-            ..strokeWidth = ringW
-            ..style = PaintingStyle.stroke
-            ..strokeCap = StrokeCap.butt
-            ..isAntiAlias = true,
-        );
-      }
-      canvas.restore();
+    // One instrument or the other, never a shape in between. The machine
+    // latches the choice with hysteresis, so it can't flicker at the boundary.
+    if (a.overhead >= 0.5) {
+      _paintBubble(canvas, c, tone, lit, a.bubbleX, a.bubbleY);
     } else {
-      // Fully a ring.
-      canvas.drawCircle(c, L * 0.78, halo);
-      canvas.drawCircle(c, L * 0.78, stroke);
-    }
-
-    // ── Bubble ──
-    // Rides inside the ring, fading in with the morph. Its own soft halo keeps
-    // it legible over a bright scene, matching the line's treatment.
-    // Eased, and held back until the ring has started closing. Scaling the
-    // bubble's alpha by raw `ov` off a hard `ov > 0.02` cutoff meant it
-    // arrived at 2% opacity on the very frame the gate opened — a visible pop
-    // against the dial's smooth fade, especially on a fast tilt where the
-    // morph crosses that threshold in a single frame.
-    //
-    // Gated on the EASED value, not on `ov`: an early `return` here would sit
-    // inside the visibility saveLayer and leave it unbalanced (caught by
-    // test/level_dial_test.dart).
-    final double bubFade = Curves.easeInOut.transform(
-      ((ov - 0.08) / 0.55).clamp(0.0, 1.0),
-    );
-    if (bubFade > 0.0) {
-      final double ringR = L * 0.78;
-      final double bx = (a.bubbleX).clamp(-1.0, 1.0) * ringR * 0.72;
-      final double by = (a.bubbleY).clamp(-1.0, 1.0) * ringR * 0.72;
-      final Offset bub = Offset(cx + bx, cy + by);
-
-      // Centre target — a hairline ring the bubble nests into, rather than four
-      // ticks. It echoes the outer hoop, so the instrument reads as concentric
-      // circles: a still point to bring the bubble home to.
-      //
-      // Sized against the bubble, not in absolute points: a target the bubble
-      // can visibly sit *inside* is what makes "centred" readable at a glance.
-      // It was 4.6pt against a 3.4pt bead — barely larger than the thing it
-      // had to contain, at 0.30 alpha over a live scene, which is why flat
-      // overhead framing was hard to judge.
-      //
-      // It also closes the loop as you arrive: the ring brightens and tightens
-      // with [lit], so the last degree of correction is visible rather than
-      // guessed.
-      final double targetR = kBubbleR * kBubbleTargetScale - 1.2 * lit;
-      canvas.drawCircle(
-        c,
-        targetR,
-        Paint()
-          ..color = tone.withValues(
-            alpha: (kBubbleTargetAlpha + 0.34 * lit) * bubFade,
-          )
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = kBubbleTargetStroke + 0.35 * lit
-          ..isAntiAlias = true,
-      );
-
-      // ── The bubble ──
-      // A gilded bead: a wide soft aura, a body lit from the upper-left with a
-      // radial gradient (champagne core melting to deep gold at the rim), and a
-      // tiny specular highlight. Same light source and metal as the app's gold
-      // chrome, so it reads as a jewel rather than a flat dot.
-      final double bloom = 1.0 + 0.30 * lit;
-      final double rad = kBubbleR * bloom;
-
-      // Aura — widens and warms as it lands.
-      canvas.drawCircle(
-        bub,
-        rad * (2.0 + 0.6 * lit),
-        Paint()
-          ..color = tone.withValues(alpha: (0.16 + 0.10 * lit) * bubFade)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 2 * lit),
-      );
-      // Body: lit upper-left, deepening to the lower-right.
-      canvas.drawCircle(
-        bub,
-        rad,
-        Paint()
-          ..shader = ui.Gradient.radial(
-            bub.translate(-rad * 0.35, -rad * 0.35),
-            rad * 1.5,
-            [
-              Color.lerp(
-                kGoldLit,
-                tone,
-                0.35,
-              )!.withValues(alpha: 0.98 * bubFade),
-              tone.withValues(alpha: 0.95 * bubFade),
-              Color.lerp(
-                tone,
-                kGoldDeep,
-                0.45,
-              )!.withValues(alpha: 0.90 * bubFade),
-            ],
-            const [0.0, 0.55, 1.0],
-          )
-          ..isAntiAlias = true,
-      );
-      // Specular pin-prick — the single highlight that sells it as rounded.
-      canvas.drawCircle(
-        bub.translate(-rad * 0.34, -rad * 0.34),
-        rad * 0.26,
-        Paint()
-          ..color = kGoldLit.withValues(alpha: 0.75 * bubFade)
-          ..isAntiAlias = true,
-      );
-    }
-
-    // ── Fixed reference stubs (the phone) ──
-    // Two short marks at true level. They belong to the horizon line, so they
-    // fade out as the bubble takes over.
-    if (ov < 0.98) {
-      final ref = Paint()
-        ..color = tone.withValues(alpha: 0.78 * (1 - ov))
-        ..strokeWidth = 0.9
-        ..strokeCap = StrokeCap.round;
-      canvas.drawLine(Offset(cx - 13, cy), Offset(cx - 6, cy), ref);
-      canvas.drawLine(Offset(cx + 6, cy), Offset(cx + 13, cy), ref);
+      // Exaggerate roll so small tilts read clearly (≈1.8×: 3° → ~5.4°). On
+      // the level confirmation the machine asks for a dead-centre snap, so
+      // the line settles flat rather than sitting at whatever fraction of a
+      // degree remains.
+      final double rollEx = a.snap ? 0.0 : (a.roll * 1.8).clamp(-1.3, 1.3);
+      // Vertical deflection → how far the bar rides off centre. Tight, so it
+      // reads as a horizon near the middle rather than wandering across the
+      // composition guides.
+      final double pitchPx = a.snap
+          ? 0.0
+          : (a.vert * r * 0.62).clamp(-r * 0.72, r * 0.72);
+      _paintLine(canvas, c, tone, rollEx, pitchPx);
     }
 
     canvas.restore(); // user-frame rotation
     canvas.restore(); // visibility alpha layer
+  }
+
+  /// The horizon bar, rolled and raised with the phone, over two fixed stubs
+  /// at true level.
+  void _paintLine(
+    Canvas canvas,
+    Offset c,
+    Color tone,
+    double roll,
+    double pitchPx,
+  ) {
+    const Offset a = Offset(-_kLineHalf, 0), b = Offset(_kLineHalf, 0);
+    canvas.save();
+    canvas.translate(c.dx, c.dy);
+    canvas.rotate(roll);
+    canvas.translate(0, pitchPx);
+    // A thin dark edge under the hairline keeps white legible over a pale
+    // sky. Tight and light: just enough contrast, not a visible shadow.
+    canvas.drawLine(
+      a,
+      b,
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.22)
+        ..strokeWidth = 1.7
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 0.8),
+    );
+    canvas.drawLine(
+      a,
+      b,
+      Paint()
+        ..color = tone.withValues(alpha: 0.82)
+        ..strokeWidth = 0.9
+        ..isAntiAlias = true,
+    );
+    canvas.restore();
+
+    // The phone's own level: two short stubs that never move.
+    final Paint refHalo = Paint()
+      ..color = Colors.black.withValues(alpha: 0.20)
+      ..strokeWidth = 1.7
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 0.8);
+    final Paint ref = Paint()
+      ..color = tone.withValues(alpha: 0.78)
+      ..strokeWidth = 0.9
+      ..strokeCap = StrokeCap.round;
+    for (final side in const [-1.0, 1.0]) {
+      final Offset p1 = Offset(c.dx + side * 6, c.dy);
+      final Offset p2 = Offset(c.dx + side * 13, c.dy);
+      canvas.drawLine(p1, p2, refHalo);
+      canvas.drawLine(p1, p2, ref);
+    }
+  }
+
+  /// The bubble level: a fixed ring marking centre, and a glass ring with a
+  /// centre point that drifts with the tilt. Thin rims and a whisper of fill,
+  /// in the same hairline language as the guides. No bead, no gradient: it
+  /// has to be read at a glance over a moving scene.
+  void _paintBubble(
+    Canvas canvas,
+    Offset c,
+    Color tone,
+    double lit,
+    double bx,
+    double by,
+  ) {
+    const double R = kBubbleR;
+    final Offset b = c + bubbleOffset(bx, by, lit);
+
+    // Contact shadow under each rim, so a white hairline survives a white
+    // tabletop: the scrim the viewfinder text uses, in stroke form.
+    Paint shadow(double alpha) => Paint()
+      ..color = Colors.black.withValues(alpha: alpha)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 0.8);
+
+    // The fixed ring: where the bubble belongs. It fades as the bubble lands
+    // on it, so the two finish as a single ring rather than a doubled one.
+    final double refFade = 1 - lit;
+    if (refFade > 0.01) {
+      canvas.drawCircle(c, R, shadow(0.18 * refFade));
+      canvas.drawCircle(
+        c,
+        R,
+        Paint()
+          ..color = Colors.white.withValues(alpha: kReferenceAlpha * refFade)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = kReferenceStroke
+          ..isAntiAlias = true,
+      );
+    }
+
+    // Landing glow: a faint gold halo as it locks.
+    if (lit > 0.01) {
+      canvas.drawCircle(
+        b,
+        R + 1.5,
+        Paint()
+          ..color = kGold.withValues(alpha: 0.18 * lit)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+      );
+    }
+
+    // The bubble: a clear disc, a crisp rim and a centre point.
+    canvas.drawCircle(
+      b,
+      R,
+      Paint()
+        ..color = tone.withValues(alpha: 0.10 + 0.12 * lit)
+        ..isAntiAlias = true,
+    );
+    canvas.drawCircle(b, R, shadow(0.22));
+    canvas.drawCircle(
+      b,
+      R,
+      Paint()
+        ..color = tone.withValues(alpha: 0.95)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..isAntiAlias = true,
+    );
+    canvas.drawCircle(
+      b,
+      1.6,
+      Paint()
+        ..color = tone
+        ..isAntiAlias = true,
+    );
   }
 
   @override
